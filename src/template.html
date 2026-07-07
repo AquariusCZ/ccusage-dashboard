@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Claude Code 用量仪表盘</title>
+<style>
+  :root{
+    --surface:#fcfcfb; --plane:#f4f3ef; --card:#ffffff;
+    --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10);
+    --brand:#d1602f; --brand-soft:rgba(209,96,47,.10);
+    --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100; --s4:#4a3aa7; --s5:#e34948; --s6:#e87ba4;
+    --good:#0ca30c; --shadow:0 1px 2px rgba(11,11,11,.05),0 8px 24px rgba(11,11,11,.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root[data-theme="auto"]{
+      --surface:#1a1a19; --plane:#0d0d0d; --card:#1f1f1d;
+      --ink:#ffffff; --ink2:#c3c2b7; --muted:#8f8d86;
+      --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+      --brand:#e8763f; --brand-soft:rgba(232,118,63,.12);
+      --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#9085e9; --s5:#e66767; --s6:#d55181;
+      --good:#0ca30c; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px rgba(0,0,0,.45);
+    }
+  }
+  :root[data-theme="dark"]{
+    --surface:#1a1a19; --plane:#0d0d0d; --card:#1f1f1d;
+    --ink:#ffffff; --ink2:#c3c2b7; --muted:#8f8d86;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+    --brand:#e8763f; --brand-soft:rgba(232,118,63,.12);
+    --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#9085e9; --s5:#e66767; --s6:#d55181;
+    --good:#0ca30c; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 28px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--plane); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 20px 64px}
+
+  /* ---------- loader ---------- */
+  #loader{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:var(--plane);transition:opacity .45s ease}
+  #loader.done{opacity:0;pointer-events:none}
+  .ldlogo{width:66px;height:66px;border-radius:18px;background:linear-gradient(135deg,var(--brand),#bd3e16);
+    display:grid;place-items:center;color:#fff;font-weight:700;font-size:32px;box-shadow:var(--shadow);
+    animation:breathe 1.9s ease-in-out infinite}
+  @keyframes breathe{0%,100%{transform:scale(1);box-shadow:0 8px 24px rgba(209,96,47,.25)}50%{transform:scale(1.06);box-shadow:0 14px 40px rgba(209,96,47,.45)}}
+  .ldtitle{margin-top:22px;font-size:16px;font-weight:600;letter-spacing:.3px}
+  .ldbar{margin-top:20px;width:220px;height:5px;border-radius:5px;background:var(--grid);overflow:hidden;position:relative}
+  .ldbar::after{content:"";position:absolute;top:0;left:-40%;width:40%;height:100%;border-radius:5px;
+    background:linear-gradient(90deg,transparent,var(--brand),transparent);animation:sweep 1.25s ease-in-out infinite}
+  @keyframes sweep{0%{left:-40%}100%{left:100%}}
+  .ldmsg{margin-top:16px;font-size:12.5px;color:var(--muted);height:18px;transition:opacity .3s}
+  .ldskel{margin-top:34px;display:grid;grid-template-columns:repeat(4,74px);gap:12px}
+  .ldskel span{height:56px;border-radius:12px;background:linear-gradient(100deg,var(--grid) 30%,var(--card) 50%,var(--grid) 70%);
+    background-size:200% 100%;animation:shim 1.4s linear infinite}
+  @keyframes shim{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+  /* ---------- header ---------- */
+  .top{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:12px}
+  .dot{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--brand),#c0451c);
+    display:grid;place-items:center;color:#fff;font-weight:700;font-size:17px;box-shadow:var(--shadow)}
+  h1{font-size:20px;font-weight:650;margin:0;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .badges{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .chip{font-size:11.5px;color:var(--ink2);background:var(--card);border:1px solid var(--border);
+    padding:5px 10px;border-radius:999px;display:inline-flex;gap:6px;align-items:center}
+  .chip.soft{background:var(--brand-soft);border-color:transparent;color:var(--brand)}
+  .toggle{cursor:pointer;font-size:12px;color:var(--ink2);background:var(--card);border:1px solid var(--border);
+    padding:6px 12px;border-radius:999px;user-select:none}
+  .toggle:hover{border-color:var(--axis)}
+  /* kpi */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+  @media(max-width:820px){.kpis{grid-template-columns:repeat(2,1fr)}}
+  .kpi{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow)}
+  .kpi .lab{color:var(--muted);font-size:12px;font-weight:500;display:flex;align-items:center;gap:6px}
+  .kpi .val{font-size:27px;font-weight:680;margin-top:8px;letter-spacing:-.4px;line-height:1.1}
+  .kpi .note{color:var(--muted);font-size:11px;margin-top:5px}
+  .swatch{width:8px;height:8px;border-radius:2px;display:inline-block}
+  .active{display:none;align-items:center;gap:12px;background:var(--brand-soft);border:1px solid transparent;
+    color:var(--ink);border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px}
+  .active .pulse{width:9px;height:9px;border-radius:50%;background:var(--brand);animation:p 1.8s infinite}
+  @keyframes p{0%{box-shadow:0 0 0 0 rgba(209,96,47,.5)}70%{box-shadow:0 0 0 8px rgba(209,96,47,0)}100%{box-shadow:0 0 0 0 rgba(209,96,47,0)}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .card h2{font-size:14.5px;font-weight:620;margin:0 0 2px}
+  .card .cap{color:var(--muted);font-size:12px;margin:0 0 16px}
+  .grid2{display:grid;grid-template-columns:1.35fr 1fr;gap:16px}
+  @media(max-width:820px){.grid2{grid-template-columns:1fr}}
+  .chart{width:100%;height:auto;display:block;overflow:visible}
+  .chart .bar{transition:opacity .12s}
+  .chart .bar:hover{opacity:.75}
+  .axtxt{fill:var(--muted);font-size:10px}
+  .gl{stroke:var(--grid);stroke-width:1;shape-rendering:crispEdges}
+  .base{stroke:var(--axis);stroke-width:1;shape-rendering:crispEdges}
+  .mrow{display:flex;align-items:center;gap:10px;margin:11px 0}
+  .mname{width:88px;flex:none;font-size:12.5px;color:var(--ink2);display:flex;align-items:center;gap:7px;font-variant-numeric:tabular-nums}
+  .mtrack{flex:1;height:9px;background:var(--grid);border-radius:5px;overflow:hidden}
+  .mfill{height:100%;border-radius:5px}
+  .mval{width:118px;flex:none;text-align:right;font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--ink)}
+  .mval span{color:var(--muted);font-size:11px}
+  details{background:var(--card);border:1px solid var(--border);border-radius:14px;margin-bottom:12px;overflow:hidden}
+  summary{cursor:pointer;padding:15px 20px;font-weight:600;font-size:13.5px;list-style:none;display:flex;justify-content:space-between;align-items:center}
+  summary::-webkit-details-marker{display:none}
+  summary .arw{color:var(--muted);transition:transform .2s;font-size:11px}
+  details[open] summary .arw{transform:rotate(90deg)}
+  summary:hover{background:var(--brand-soft)}
+  .twrap{overflow-x:auto;border-top:1px solid var(--border)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:9px 14px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  th:first-child,td:first-child{text-align:left;font-variant-numeric:normal}
+  thead th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;
+    position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--border)}
+  tbody tr{border-top:1px solid var(--border)}
+  tbody tr:hover{background:var(--brand-soft)}
+  .mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;color:var(--ink2)}
+  .pill{font-size:10.5px;padding:2px 8px;border-radius:999px;background:var(--grid);color:var(--ink2)}
+  .pill.live{background:var(--brand);color:#fff}
+  .foot{text-align:center;color:var(--muted);font-size:11.5px;margin-top:26px;line-height:1.7}
+  #tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);padding:7px 10px;border-radius:8px;
+    font-size:11.5px;line-height:1.45;opacity:0;transition:opacity .1s;z-index:50;box-shadow:0 6px 20px rgba(0,0,0,.25);white-space:nowrap}
+  #tip .c{color:var(--brand);font-weight:600}
+  #app{opacity:0;transition:opacity .5s ease}
+  #app.show{opacity:1}
+</style>
+</head>
+<body>
+  <!-- 加载动画 -->
+  <div id="loader">
+    <div class="ldlogo">C</div>
+    <div class="ldtitle">Claude Code 用量仪表盘</div>
+    <div class="ldbar"></div>
+    <div class="ldmsg" id="ldmsg">正在读取本地用量记录…</div>
+    <div class="ldskel"><span></span><span></span><span></span><span></span></div>
+  </div>
+
+  <!-- 仪表盘(数据就绪后渲染并淡入) -->
+  <div class="wrap" id="app">
+    <div class="top">
+      <div class="brand">
+        <div class="dot">C</div>
+        <div><h1>Claude Code 用量仪表盘</h1><div class="sub" id="sub">—</div></div>
+      </div>
+      <div class="badges">
+        <span class="chip soft">🔥 阅后即焚</span>
+        <span class="chip">🔒 数据仅存本地</span>
+        <span class="toggle" id="tgl" title="切换明暗">◐ 主题</span>
+      </div>
+    </div>
+    <div class="active" id="active"></div>
+    <div class="kpis" id="kpis"></div>
+    <div class="grid2">
+      <div class="card"><h2>每日花费趋势</h2><p class="cap">按天统计的等值花费(USD)。悬停查看当日明细。</p><div id="dailyChart"></div></div>
+      <div class="card"><h2>各模型累计花费</h2><p class="cap">全部历史按模型拆分的花费占比。</p><div id="modelBars"></div></div>
+    </div>
+    <div style="margin:26px 0 12px;color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.5px;text-transform:uppercase">明细数据</div>
+    <div id="tables"></div>
+    <div class="foot" id="foot"></div>
+  </div>
+  <div id="tip"></div>
+
+<script>
+(function(){
+  "use strict";
+  // 加载动画的轮播状态文字
+  var msgs=["正在读取本地用量记录…","正在汇总各模型花费…","正在计算计费窗口…","正在渲染图表…"];
+  var mi=0, msgTimer=setInterval(function(){
+    mi=(mi+1)%msgs.length; var el=document.getElementById("ldmsg");
+    if(el){ el.style.opacity="0"; setTimeout(function(){ el.textContent=msgs[mi]; el.style.opacity="1"; },300); }
+  },1900);
+
+  function num(n){ return +n || 0; }
+  function fmtInt(n){ return num(n).toLocaleString("en-US"); }
+  function fmtTok(n){ n=num(n);
+    if(n>=1e9) return (n/1e9).toFixed(2)+"B";
+    if(n>=1e6) return (n/1e6).toFixed(1)+"M";
+    if(n>=1e3) return (n/1e3).toFixed(1)+"K";
+    return ""+n; }
+  function fmtUSD(n){ n=num(n); var d=n>=100?0:2;
+    return "$"+n.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}); }
+  function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
+  function prettyModel(m){ m=String(m||""); var x=m.replace(/^claude-/,"");
+    if(/opus-4-8/.test(x))return "Opus 4.8"; if(/opus/.test(x))return "Opus";
+    if(/haiku-4-5/.test(x))return "Haiku 4.5"; if(/haiku/.test(x))return "Haiku";
+    if(/sonnet/.test(x))return "Sonnet";
+    if(/fable-5/.test(x))return "Fable 5"; if(/fable/.test(x))return "Fable";
+    return x.length>16?x.slice(0,15)+"…":x; }
+  function modelColor(m){ m=String(m||"").toLowerCase();
+    if(m.indexOf("opus")>=0)return "var(--s1)"; if(m.indexOf("haiku")>=0)return "var(--s2)";
+    if(m.indexOf("fable")>=0)return "var(--s3)"; if(m.indexOf("sonnet")>=0)return "var(--s4)"; return "var(--s5)"; }
+  function mdDate(p){ var s=String(p||""); var m=s.match(/^\d{4}-(\d{2})-(\d{2})$/); return m?(m[1]+"-"+m[2]):s; }
+  function cnMonth(p){ var m=String(p||"").match(/^(\d{4})-(\d{2})$/); return m?(m[1]+"年"+(+m[2])+"月"):p; }
+
+  // ---------- 主渲染函数:数据就绪后由 data.js 调用 ----------
+  window.__render__ = function(){
+    var D = window.__DATA__ || {};
+    var months=(D.monthly&&D.monthly.monthly)||[];
+    var days=(D.daily&&D.daily.daily)||[];
+    var sessions=(D.session&&D.session.session)||[];
+    var blocks=(D.blocks&&D.blocks.blocks)||[];
+    var totals=(D.daily&&D.daily.totals)||(D.monthly&&D.monthly.totals)||{};
+    var genAt=D.generatedAt||"";
+    var appDir=D.appDir||"";
+
+    document.getElementById("sub").textContent="生成于 "+genAt+" · 花费为按 API 官方价折算的等值金额(订阅套餐不会实际扣此金额)";
+
+    var curMonth=months.length?months[months.length-1]:null;
+    var lastDay=days.length?days[days.length-1]:null;
+    var todayStr=(genAt.match(/^(\d{4}-\d{2}-\d{2})/)||[])[1];
+    var todayDay=null; for(var i=0;i<days.length;i++){ if(days[i].period===todayStr){todayDay=days[i];break;} }
+    var last=todayDay||lastDay;
+    var lastLabel=todayDay?"今日花费":("最近一天 "+(lastDay?mdDate(lastDay.period):""));
+    var kpis=[
+      {lab:"累计花费",val:fmtUSD(totals.totalCost),note:"≈ API 等值 · 共 "+fmtInt(days.length)+" 天数据"},
+      {lab:"累计 Tokens",val:fmtTok(totals.totalTokens),note:"输出 "+fmtTok(totals.outputTokens)+" · 缓存读 "+fmtTok(totals.cacheReadTokens)},
+      {lab:"本月花费",val:curMonth?fmtUSD(curMonth.totalCost):"$0",note:curMonth?cnMonth(curMonth.period)+" · "+fmtTok(curMonth.totalTokens)+" tokens":"—"},
+      {lab:lastLabel,val:last?fmtUSD(last.totalCost):"$0",note:last?fmtTok(last.totalTokens)+" tokens":"—"}
+    ];
+    document.getElementById("kpis").innerHTML=kpis.map(function(k){
+      return '<div class="kpi"><div class="lab">'+esc(k.lab)+'</div><div class="val">'+k.val+'</div><div class="note">'+esc(k.note)+'</div></div>';
+    }).join("");
+
+    var act=null; for(var b=0;b<blocks.length;b++){ if(blocks[b].isActive){act=blocks[b];break;} }
+    if(act){ var el=document.getElementById("active"); el.style.display="flex";
+      var remain=""; if(act.endTime){ var ms=new Date(act.endTime)-new Date(); if(ms>0)remain=" · 剩余约 "+Math.round(ms/60000)+" 分钟"; }
+      var proj=act.projection&&act.projection.totalCost!=null?" · 预计 "+fmtUSD(act.projection.totalCost):"";
+      el.innerHTML='<span class="pulse"></span><b>当前计费窗口进行中</b>&nbsp;已用 '+fmtUSD(act.costUSD)+' / '+fmtTok(act.totalTokens)+' tokens'+esc(remain+proj);
+    }
+
+    // 每日柱状图
+    (function(){
+      var data=days.slice(-30);
+      var host=document.getElementById("dailyChart");
+      if(!data.length){ host.innerHTML='<p class="cap">暂无数据</p>'; return; }
+      var W=560,H=210,pl=8,pr=8,pt=12,pb=26,plotW=W-pl-pr,plotH=H-pt-pb;
+      var max=0; data.forEach(function(d){ if(d.totalCost>max)max=d.totalCost; }); max=max||1;
+      var n=data.length,step=plotW/n,bw=Math.min(26,step*0.64);
+      var svg='<svg class="chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img" aria-label="每日花费">';
+      [0,max/2,max].forEach(function(t){ var y=pt+plotH-(t/max)*plotH;
+        svg+='<line class="gl" x1="'+pl+'" y1="'+y.toFixed(1)+'" x2="'+(W-pr)+'" y2="'+y.toFixed(1)+'"/>';
+        svg+='<text class="axtxt" x="'+(W-pr)+'" y="'+(y-3).toFixed(1)+'" text-anchor="end">'+fmtUSD(t)+'</text>'; });
+      svg+='<line class="base" x1="'+pl+'" y1="'+(pt+plotH)+'" x2="'+(W-pr)+'" y2="'+(pt+plotH)+'"/>';
+      data.forEach(function(d,i){ var h=Math.max(1,(d.totalCost/max)*plotH),x=pl+step*i+(step-bw)/2,y=pt+plotH-h,isLast=(i===data.length-1);
+        svg+='<rect class="bar" x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="3" fill="'+(isLast?'var(--brand)':'var(--s1)')+'" data-d="'+esc(d.period)+'" data-c="'+fmtUSD(d.totalCost)+'" data-t="'+fmtTok(d.totalTokens)+'"></rect>';
+        if(i%Math.ceil(n/8)===0||isLast){ svg+='<text class="axtxt" x="'+(x+bw/2).toFixed(1)+'" y="'+(H-9)+'" text-anchor="middle">'+mdDate(d.period)+'</text>'; }
+      });
+      svg+='</svg>'; host.innerHTML=svg;
+      var tip=document.getElementById("tip");
+      host.querySelectorAll("rect.bar").forEach(function(r){
+        r.addEventListener("mouseenter",function(){ tip.innerHTML='<b>'+esc(r.getAttribute("data-d"))+'</b><br><span class="c">'+r.getAttribute("data-c")+'</span> · '+r.getAttribute("data-t")+' tokens'; tip.style.opacity="1"; });
+        r.addEventListener("mousemove",function(e){ tip.style.left=(e.clientX+14)+"px"; tip.style.top=(e.clientY-10)+"px"; });
+        r.addEventListener("mouseleave",function(){ tip.style.opacity="0"; });
+      });
+    })();
+
+    // 模型花费构成
+    (function(){
+      var agg={}; days.forEach(function(d){ (d.modelBreakdowns||[]).forEach(function(mb){ var k=mb.modelName; if(!agg[k])agg[k]={cost:0,tok:0};
+        agg[k].cost+=num(mb.cost); agg[k].tok+=num(mb.inputTokens)+num(mb.outputTokens)+num(mb.cacheCreationTokens)+num(mb.cacheReadTokens); }); });
+      var arr=Object.keys(agg).map(function(k){return {name:k,cost:agg[k].cost};}); arr.sort(function(a,b){return b.cost-a.cost;});
+      var host=document.getElementById("modelBars");
+      if(!arr.length){ host.innerHTML='<p class="cap">暂无数据</p>'; return; }
+      var totalCost=arr.reduce(function(s,x){return s+x.cost;},0)||1, maxCost=arr[0].cost||1;
+      host.innerHTML=arr.map(function(m){ var pct=m.cost/totalCost*100,w=m.cost/maxCost*100;
+        return '<div class="mrow"><div class="mname"><span class="swatch" style="background:'+modelColor(m.name)+'"></span>'+esc(prettyModel(m.name))+'</div>'+
+          '<div class="mtrack"><div class="mfill" style="width:'+w.toFixed(1)+'%;background:'+modelColor(m.name)+'"></div></div>'+
+          '<div class="mval">'+fmtUSD(m.cost)+' <span>'+pct.toFixed(0)+'%</span></div></div>';
+      }).join("");
+    })();
+
+    // 明细表
+    function tableCard(title,count,head,rows,openIt){
+      return '<details'+(openIt?' open':'')+'><summary><span>'+esc(title)+' <span class="pill">'+count+'</span></span><span class="arw">▶</span></summary>'+
+        '<div class="twrap"><table><thead>'+head+'</thead><tbody>'+rows+'</tbody></table></div></details>';
+    }
+    var html="";
+    (function(){ var rows=days.slice().reverse().map(function(d){
+      return '<tr><td>'+esc(d.period)+'</td><td>'+fmtInt(d.inputTokens)+'</td><td>'+fmtInt(d.outputTokens)+'</td><td>'+fmtTok(d.cacheCreationTokens)+'</td><td>'+fmtTok(d.cacheReadTokens)+'</td><td>'+fmtTok(d.totalTokens)+'</td><td style="color:var(--brand);font-weight:600">'+fmtUSD(d.totalCost)+'</td></tr>';
+    }).join(""); html+=tableCard("每日明细",days.length,'<tr><th>日期</th><th>输入</th><th>输出</th><th>缓存写</th><th>缓存读</th><th>总Tokens</th><th>花费</th></tr>',rows,true); })();
+    (function(){ var ss=sessions.slice().sort(function(a,b){return num(b.totalCost)-num(a.totalCost);}).slice(0,20);
+      var rows=ss.map(function(s){ var la=s.metadata&&s.metadata.lastActivity?new Date(s.metadata.lastActivity):null;
+        var lad=la?(la.getFullYear()+"-"+String(la.getMonth()+1).padStart(2,"0")+"-"+String(la.getDate()).padStart(2,"0")):"—";
+        var mdl=(s.modelsUsed||[]).map(prettyModel).join(", ");
+        return '<tr><td class="mono">'+esc(String(s.period).slice(0,8))+'</td><td>'+esc(lad)+'</td><td>'+esc(mdl)+'</td><td>'+fmtTok(s.totalTokens)+'</td><td style="color:var(--brand);font-weight:600">'+fmtUSD(s.totalCost)+'</td></tr>';
+      }).join(""); html+=tableCard("最费钱的会话 (Top 20)",sessions.length,'<tr><th>会话</th><th>最后活动</th><th>模型</th><th>总Tokens</th><th>花费</th></tr>',rows,false); })();
+    (function(){ var bs=blocks.filter(function(b){return !b.isGap;}).slice(-14).reverse();
+      function bt(iso){ var d=new Date(iso); return String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
+      var rows=bs.map(function(b){ var range=bt(b.startTime)+" → "+bt(b.endTime);
+        var st=b.isActive?'<span class="pill live">进行中</span>':'<span class="pill">已结束</span>';
+        return '<tr><td>'+esc(range)+'</td><td>'+st+'</td><td>'+(b.entries||0)+'</td><td>'+fmtTok(b.totalTokens)+'</td><td style="color:var(--brand);font-weight:600">'+fmtUSD(b.costUSD)+'</td></tr>';
+      }).join(""); html+=tableCard("计费窗口(最近 14 个)",blocks.filter(function(b){return !b.isGap;}).length,'<tr><th>时间段(5小时窗口)</th><th>状态</th><th>请求数</th><th>总Tokens</th><th>花费</th></tr>',rows,false); })();
+    document.getElementById("tables").innerHTML=html;
+
+    document.getElementById("foot").innerHTML="由 ccusage 数据生成 · 本页面为一次性快照,关闭即失效<br>累计 "+fmtInt(sessions.length)+" 个会话 · "+fmtInt(days.length)+" 天 · "+fmtInt(blocks.filter(function(b){return !b.isGap;}).length)+" 个计费窗口"+
+      (appDir?'<br><span style="opacity:.85">📁 项目文件夹:<span class="mono" style="user-select:all">'+esc(appDir)+'</span> · 改这里的文件即可定制/提需求</span>':"");
+
+    // 主题切换
+    (function(){ var root=document.documentElement,key="ccu-theme";
+      try{ var saved=localStorage.getItem(key); if(saved)root.setAttribute("data-theme",saved); }catch(e){}
+      document.getElementById("tgl").addEventListener("click",function(){ var cur=root.getAttribute("data-theme");
+        var mqDark=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;
+        var isDark=cur==="dark"||(cur==="auto"&&mqDark); var next=isDark?"light":"dark";
+        root.setAttribute("data-theme",next); try{ localStorage.setItem(key,next); }catch(e){} });
+    })();
+
+    // 揭幕:停动画、淡出 loader、淡入仪表盘
+    clearInterval(msgTimer);
+    document.getElementById("app").classList.add("show");
+    var ld=document.getElementById("loader"); ld.classList.add("done");
+    setTimeout(function(){ ld.style.display="none"; },500);
+  };
+
+  // ---------- 轮询 data.js,直到数据写好 ----------
+  var tries=0, MAX=240;
+  function attempt(){
+    var s=document.createElement("script"); s.src="data.js";
+    s.onload=function(){ this.remove(); };
+    s.onerror=function(){ this.remove(); if(++tries<MAX){ setTimeout(attempt,500); }
+      else { var m=document.getElementById("ldmsg"); if(m){ clearInterval(msgTimer); m.textContent="数据读取超时,请重新打开"; } } };
+    document.body.appendChild(s);
+  }
+  attempt();
+})();
+</script>
+</body>
+</html>
