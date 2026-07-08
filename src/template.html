@@ -226,7 +226,9 @@
 
     var act=null; for(var b=0;b<blocks.length;b++){ if(blocks[b].isActive){act=blocks[b];break;} }
     if(act){ var el=document.getElementById("active"); el.style.display="flex";
-      var remain=""; if(act.endTime){ var ms=new Date(act.endTime)-new Date(); if(ms>0)remain=" · 剩余约 "+Math.round(ms/60000)+" 分钟"; }
+      var remain=""; var sr=D.sessionReset;
+      if(sr&&sr.hasActivity&&sr.secondsUntilReset!=null&&sr.secondsUntilReset>0){ remain=" · ≈ 剩余 "+Math.round(sr.secondsUntilReset/60)+" 分钟(估算,精确见 claude.ai)"; }
+      else if(act.endTime){ var ms=new Date(act.endTime)-new Date(); if(ms>0)remain=" · ≈ 剩余 "+Math.round(ms/60000)+" 分钟(估算)"; }
       var proj=act.projection&&act.projection.totalCost!=null?" · 预计 "+fmtUSD(act.projection.totalCost):"";
       el.innerHTML='<span class="pulse"></span><b>当前计费窗口进行中</b>&nbsp;已用 '+fmtUSD(act.costUSD)+' / '+fmtTok(act.totalTokens)+' tokens'+esc(remain+proj);
     }

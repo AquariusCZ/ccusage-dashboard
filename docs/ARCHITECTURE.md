@@ -40,6 +40,7 @@ report.html (shell)  ──polls──►  data.js   (when it appears, window.__
 - **Atomic data.js.** Written to a temp name then moved, so the poller never reads a half-written file.
 - **Encoding.** `template.html` is UTF-8 with `<meta charset>`; the report is written UTF-8 (no BOM).
 - **AV-safe launcher.** Uses a `wscript`-hidden `.vbs`, never the `.lnk → powershell -WindowStyle Hidden -ExecutionPolicy Bypass` pattern that some antivirus (e.g. Huorong/火绒) deletes.
+- **Session-reset estimate.** The active-window banner's *剩余* time used to use `ccusage`'s block `endTime`, which splits on activity gaps and can be **hours** off from Claude's real rolling window. It now uses a rolling estimate — `(oldest message in the last 5h) + 5h`, computed from `~/.claude` message timestamps and injected as `sessionReset` — shown labelled approximate (the exact reset is only on claude.ai).
 
 ## Data source
 
