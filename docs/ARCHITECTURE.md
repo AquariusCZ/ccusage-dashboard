@@ -1,47 +1,58 @@
 # Architecture
 
-## What it is
+## Purpose
 
-A zero-install, **ephemeral** usage dashboard: click a shortcut → the browser opens instantly with a loading animation → a beautiful HTML dashboard fades in a few seconds later → the temp files delete themselves. Nothing accumulates; nothing is uploaded.
+AI Usage Ledger is a local Windows dashboard that normalizes Claude Code and OpenAI Codex usage into one disposable browser snapshot. The dashboard displays metadata and aggregate usage only; it never renders prompt text, tool arguments, API keys, provider URLs, or authorization headers.
 
-## Flow
+## Runtime flow
 
+```text
+Desktop shortcut
+  -> dashboard.vbs (hidden wscript launcher)
+  -> Generate-ClaudeReport.ps1
+       1. copy template.html to %TEMP%\ClaudeUsage\report.html
+       2. open the browser immediately
+       3. run CodeBurn Claude and Codex reports in parallel
+       4. optionally run ccusage blocks for Claude window metadata
+       5. read the latest locally available Codex rate-limit snapshot
+       6. atomically write data.js
+       7. delete report.html and data.js after the page has loaded them
+
+report.html polls data.js
+  -> window.__DATA__
+  -> provider rail, KPIs, charts, project/model/session tables
 ```
-Desktop shortcut ─► dashboard.vbs (wscript, hidden)
-                       └─► Generate-ClaudeReport.ps1
-                              1. copy template.html ──► %TEMP%\ClaudeUsage\report.html
-                              2. open browser NOW  (shows the loader)
-                              3. run ccusage monthly/daily/session/blocks --json  (in PARALLEL)
-                              4. write data.js  (atomic: tmp → move)
-                              5. wait ~12s, then delete report.html + data.js   (burn-after-read)
 
-report.html (shell)  ──polls──►  data.js   (when it appears, window.__render__() runs → dashboard fades in)
-```
+## Data contract
 
-## Why this shape
+`data.js` contains:
 
-- **Instant + animated.** The browser is opened *before* the slow work, showing a loader, so the ~5s of parallel `ccusage` calls feel responsive instead of a blank wait.
-- **Shell + data split.** `template.html` is a static shell containing all the CSS/JS and a poller that repeatedly injects `data.js` via a `<script>` tag (a `fetch()` of a local file is CORS-blocked; a script tag is not). When `data.js` lands it sets `window.__DATA__` and calls the render function.
-- **Burn-after-read.** Only ever one temp file set, in `%TEMP%`, deleted a few seconds after the browser has loaded it into memory. The page keeps rendering after the files are gone.
+- `providers.claude` and `providers.codex`: CodeBurn JSON reports
+- `limits.claudeBlocks`: optional ccusage block data
+- `limits.codex`: latest rate-limit metadata when the configured provider exposes it
+- `generatedAt`, `period`, `currency`, and source version metadata
 
-## Files
+The default period is 30 days. Cost is always labelled as an API reference-price estimate because subscription and custom-provider billing can differ.
 
-| File (`%LOCALAPPDATA%\ClaudeUsage`) | Role |
-|---|---|
-| `template.html` | the shell: loader animation + all dashboard CSS/JS + the `data.js` poller |
-| `Generate-ClaudeReport.ps1` | gather data (parallel), inject, open browser, burn |
-| `dashboard.vbs` | silent (no-console) launcher |
-| `dashboard.bat` | fallback launcher (shows a console) |
-| `icon.ico` | shortcut icon |
+## Design boundaries
 
-## Gotchas handled
+- Source session stores are read-only.
+- Aggregation runs locally and does not call a project backend.
+- The browser receives a single static snapshot; there is no server-side application state.
+- `data.js` is written through a temporary name and atomic move to prevent partial reads.
+- The normal launcher preserves burn-after-read behavior. `-KeepFile` is for debugging only.
+- Codex rate-limit fields may be absent with custom providers; the UI displays an explicit unavailable state.
 
-- **Parallel data.** The four `ccusage … --json` calls run concurrently via `Start-Process -RedirectStandardOutput`, cutting cold-start time ~15s → ~5s.
-- **Atomic data.js.** Written to a temp name then moved, so the poller never reads a half-written file.
-- **Encoding.** `template.html` is UTF-8 with `<meta charset>`; the report is written UTF-8 (no BOM).
-- **AV-safe launcher.** Uses a `wscript`-hidden `.vbs`, never the `.lnk → powershell -WindowStyle Hidden -ExecutionPolicy Bypass` pattern that some antivirus (e.g. Huorong/火绒) deletes.
-- **Session-reset estimate.** The active-window banner's *剩余* time used to use `ccusage`'s block `endTime`, which splits on activity gaps and can be **hours** off from Claude's real rolling window. It now uses a rolling estimate — `(oldest message in the last 5h) + 5h`, computed from `~/.claude` message timestamps and injected as `sessionReset` — shown labelled approximate (the exact reset is only on claude.ai).
+## Repository and installation
 
-## Data source
+Canonical source lives in `src/`. `install.ps1` copies those files to `%LOCALAPPDATA%\ClaudeUsage` and creates the desktop shortcut. Running the generator directly from `src/` is supported because it resolves `template.html` relative to `$PSScriptRoot`.
 
-Everything derives from [`ccusage`](https://github.com/ryoppippi/ccusage)'s JSON: `monthly`/`daily`/`session` share a shape (`period`, token fields, `totalCost`, `modelBreakdowns`), and `blocks` gives the 5-hour billing windows (with the active window's reset time). All amounts are **API-equivalent** cost, not subscription billing.
+When the repository itself is checked out at `%LOCALAPPDATA%\ClaudeUsage`, root-level runtime copies are ignored by Git. The uninstall script detects `.git` and removes only those runtime copies, preserving the repository.
+
+## Verification
+
+- Parse `src/Generate-ClaudeReport.ps1` with the PowerShell AST parser.
+- Generate a real snapshot with `-NoLaunch -KeepFile`.
+- Parse `data.js` and verify both provider reports.
+- Render at desktop and mobile widths; check console errors and horizontal overflow.
+- Confirm all cost copy says API reference estimate rather than actual billing.

@@ -5,3 +5,11 @@ ehthumbs.db
 
 # transient
 *.tmp
+*.log
+
+# Installed runtime mirror when this repository lives in %LOCALAPPDATA%\ClaudeUsage
+/Generate-ClaudeReport.ps1
+/template.html
+/dashboard.bat
+/dashboard.vbs
+/icon.ico

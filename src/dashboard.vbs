@@ -1,8 +1,7 @@
-' Claude Usage Dashboard - silent launcher (no console window)
-' Runs the report generator (located in this script's own folder) hidden.
-' Only the browser appears; no black console flashes.
-Dim fso, here, cmd
+' AI Usage Ledger - silent launcher
+Dim shell, fso, scriptDir, command
+Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
-here = fso.GetParentFolderName(WScript.ScriptFullName)
-cmd = "powershell -NoProfile -ExecutionPolicy RemoteSigned -File """ & here & "\Generate-ClaudeReport.ps1"""
-CreateObject("WScript.Shell").Run cmd, 0, False
+scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
+command = "powershell -NoProfile -ExecutionPolicy RemoteSigned -File """ & scriptDir & "\Generate-ClaudeReport.ps1"""
+shell.Run command, 0, False

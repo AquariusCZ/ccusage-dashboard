@@ -1,104 +1,82 @@
-# ccusage-dashboard
+# AI Usage Ledger
 
-> A beautiful, **ephemeral** usage dashboard for Claude Code — one click, no console window, burn-after-read.
+一个面向 Windows 的本地、阅后即焚 AI 编程用量账本，同时汇总 **Claude Code** 与 **OpenAI Codex** 的调用、会话、Token、缓存、模型和项目数据。
 
-Turns [`ccusage`](https://github.com/ryoppippi/ccusage) data into a polished local web dashboard: KPI cards, a daily-cost chart, a per-model breakdown, and detail tables. Click the shortcut → the browser opens **instantly** with a loading animation → your dashboard fades in a few seconds later → the temp files delete themselves.
+![桌面端界面](docs/dashboard.png)
 
-![dashboard](docs/dashboard.png)
+<p align="center"><img src="docs/mobile.png" width="390" alt="AI Usage Ledger mobile layout"></p>
 
-## Why another usage tool?
+## 特点
 
-- **No binary to install or trust** — it's a tiny HTML + PowerShell tool, not a compiled tray app.
-- **Burn-after-read** — the report lives in `%TEMP%` for ~20s, then deletes itself. Only ever one temp file; nothing accumulates.
-- **Private** — all data stays on your machine; nothing is uploaded.
-- **Instant + animated** — the browser opens immediately with a loader while `ccusage` runs **in parallel** (~5s), then the dashboard fades in.
-- **Light / Dark**, responsive, hover tooltips.
+- Claude + Codex 统一视图与独立筛选
+- 最近 30 天的调用、会话、Token、缓存命中率与项目排行
+- 使用公开 API 价格进行参考估算，不冒充订阅套餐或实际账单
+- 数据只在本机读取，不上传提示词、工具参数、密钥或会话正文
+- 浏览器先打开加载页，统计完成后自动渲染
+- 正常启动后自动删除 `%TEMP%\ClaudeUsage` 中的一次性快照
+- 中文界面、明暗主题、桌面与移动端响应式布局
 
-<p align="center"><img src="docs/loader.png" width="460" alt="loading animation"></p>
+## 数据来源
 
-## Requirements
+- [CodeBurn](https://github.com/getagentseal/codeburn)：统一解析 Claude、Codex 等本地会话并计算 API 参考价
+- [ccusage](https://github.com/ccusage/ccusage)：可选，用于补充 Claude 活跃 5 小时窗口
+
+金额仅是公开 API 单价下的参考估算。订阅套餐、自定义网关、企业协议或中转服务的实际计费可能不同。
+
+## 要求
 
 - Windows 10 / 11
-- [Node.js](https://nodejs.org) (LTS)
-- [`ccusage`](https://github.com/ryoppippi/ccusage) — the installer adds it automatically if missing
+- Node.js LTS
+- CodeBurn（安装脚本会自动安装）
+- ccusage（安装脚本会自动安装，用于 Claude 活跃窗口）
 
-## Install
+## 安装
 
 ```powershell
-git clone https://github.com/YOUR-NAME/ccusage-dashboard.git
+git clone https://github.com/AquariusCZ/ccusage-dashboard.git
 cd ccusage-dashboard
-# double-click install.bat  — or run:
-powershell -ExecutionPolicy Bypass -File install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer copies the program to `%LOCALAPPDATA%\ClaudeUsage`, creates a **Desktop shortcut**, and installs `ccusage` if it's missing.
+也可以双击 `install.bat`。安装器会：
 
-## Use
+1. 检查 Node.js；
+2. 安装缺失的 `codeburn` 与 `ccusage`；
+3. 将 `src/` 复制到 `%LOCALAPPDATA%\ClaudeUsage`；
+4. 在桌面创建 `AI Usage Ledger` 快捷方式。
 
-Double-click **Claude Usage Dashboard** on your Desktop.
+## 使用与开发
 
-**Pin to taskbar:** drag the shortcut onto the taskbar. (Windows 11 removed the right-click *Pin to taskbar* for script shortcuts, so dragging is the way.)
+双击桌面上的 `AI Usage Ledger`。
 
-## Customize
-
-Everything lives in `%LOCALAPPDATA%\ClaudeUsage`:
-
-| File | Controls |
-|---|---|
-| `template.html` | look & feel — layout, colors, charts, copy |
-| `Generate-ClaudeReport.ps1` | data collection, parallelism, burn delay |
-| `dashboard.vbs` | the silent (no-window) launcher |
-| `dashboard.bat` | fallback launcher (shows a console) |
-| `icon.ico` | the shortcut icon |
-
-## How it works
-
-1. `dashboard.vbs` (run hidden by `wscript`) starts `Generate-ClaudeReport.ps1`.
-2. The script drops a static **shell page** and opens it in your browser immediately → you see the loading animation.
-3. It runs `ccusage monthly / daily / session / blocks --json` **in parallel**, then writes `data.js` atomically.
-4. The page polls for `data.js`, renders, and fades in.
-5. After a short delay both temp files are deleted (the page is already in memory).
-
-## Security note
-
-The launcher is a plain-text `.vbs` that runs PowerShell with a hidden window. It deliberately **avoids** the classic `powershell -WindowStyle Hidden -ExecutionPolicy Bypass` shortcut pattern that antivirus tools flag — no `Bypass`, no hidden flags baked into the shortcut. Every file is readable and auditable. If your AV ever prompts, allow it.
-
-## Uninstall
+在仓库内生成调试快照：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File uninstall.ps1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\src\Generate-ClaudeReport.ps1 -NoLaunch -KeepFile
 ```
 
-(Node.js and `ccusage` are left installed.)
+输出位于 `%TEMP%\ClaudeUsage\report.html` 和 `data.js`。
 
-## Credits
+| 文件 | 作用 |
+|---|---|
+| `src/Generate-ClaudeReport.ps1` | 并行采集 Claude/Codex 数据，生成一次性快照 |
+| `src/template.html` | 自包含的中文前端、图表、筛选和明暗主题 |
+| `src/dashboard.vbs` | 无控制台窗口启动器 |
+| `install.ps1` | 安装依赖、复制文件和创建桌面快捷方式 |
+| `docs/ARCHITECTURE.md` | 数据流、隐私和运行边界 |
 
-Built on [`ccusage`](https://github.com/ryoppippi/ccusage) by @ryoppippi. Dashboard, launcher and installer by the contributors of this repo.
+## 卸载
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+```
+
+如果仓库本身位于 `%LOCALAPPDATA%\ClaudeUsage`，卸载器只删除运行副本，不会删除 `.git`、`src/`、文档或提交历史。
+
+## English
+
+AI Usage Ledger is a local, ephemeral Windows dashboard for Claude Code and OpenAI Codex usage. It reads existing local session metadata, estimates API-equivalent cost, opens instantly with a loading shell, and removes its temporary report after use. No prompt content, credentials, or session bodies are uploaded.
 
 ## License
 
 [MIT](LICENSE)
-
----
-
-<details>
-<summary><b>中文说明</b></summary>
-
-一个给 Claude Code 用的**阅后即焚**用量仪表盘。点击桌面图标 → 浏览器**秒开**加载动画 → 几秒后淡入精美仪表盘 → 临时文件自动焚毁,磁盘不留痕、不堆文件。
-
-**特点**
-- 无需安装任何常驻程序 / 二进制
-- 阅后即焚:报告只在 `%TEMP%` 存在约 20 秒,永远只有 1 个临时文件
-- 数据全在本地,不上传
-- 秒开 + 加载动画,并行取数(约 5 秒)
-- 明暗自适应、悬停提示
-
-**依赖**:Windows 10/11、[Node.js](https://nodejs.org)(LTS)、[ccusage](https://github.com/ryoppippi/ccusage)(安装脚本会自动装)。
-
-**安装**:`git clone` 后**双击 `install.bat`**(或 `powershell -ExecutionPolicy Bypass -File install.ps1`)。会拷到 `%LOCALAPPDATA%\ClaudeUsage` 并在桌面建快捷方式。
-
-**固定到任务栏**:把桌面快捷方式**拖到任务栏**即可(Win11 移除了快捷方式的右键"固定到任务栏")。
-
-**自定义**:外观改 `template.html`,数据/行为改 `Generate-ClaudeReport.ps1`。
-
-</details>

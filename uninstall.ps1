@@ -1,7 +1,19 @@
 $ErrorActionPreference = 'SilentlyContinue'
 $dest = Join-Path $env:LOCALAPPDATA 'ClaudeUsage'
-Remove-Item $dest -Recurse -Force
-Remove-Item (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Claude Usage Dashboard.lnk') -Force
-Remove-Item (Join-Path $env:TEMP 'ClaudeUsage') -Recurse -Force
-Write-Host "Removed ccusage-dashboard. (Node.js and ccusage were left installed.)" -ForegroundColor Green
-Read-Host "Press Enter"
+$desktop = [Environment]::GetFolderPath('Desktop')
+
+Remove-Item -LiteralPath (Join-Path $desktop 'AI Usage Ledger.lnk') -Force
+Remove-Item -LiteralPath (Join-Path $desktop 'Claude Usage Dashboard.lnk') -Force
+Remove-Item -LiteralPath (Join-Path $env:TEMP 'ClaudeUsage') -Recurse -Force
+
+if (Test-Path (Join-Path $dest '.git')) {
+  foreach ($name in @('Generate-ClaudeReport.ps1', 'template.html', 'dashboard.bat', 'dashboard.vbs', 'icon.ico')) {
+    Remove-Item -LiteralPath (Join-Path $dest $name) -Force
+  }
+  Write-Host 'Removed the installed runtime copy. The Git repository was preserved.' -ForegroundColor Green
+} else {
+  Remove-Item -LiteralPath $dest -Recurse -Force
+  Write-Host 'Removed AI Usage Ledger. Node.js, CodeBurn, and ccusage were left installed.' -ForegroundColor Green
+}
+
+Read-Host 'Press Enter'
