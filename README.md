@@ -1,10 +1,10 @@
-# AI Usage Ledger
+# AI Usage
 
 一个面向 Windows 的本地、阅后即焚 AI 编程用量账本，同时汇总 **Claude Code** 与 **OpenAI Codex** 的调用、会话、Token、缓存、模型和项目数据。
 
 ![桌面端界面](docs/dashboard.png)
 
-<p align="center"><img src="docs/mobile.png" width="390" alt="AI Usage Ledger mobile layout"></p>
+<p align="center"><img src="docs/mobile.png" width="390" alt="AI Usage mobile layout"></p>
 
 ## 特点
 
@@ -43,11 +43,13 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 1. 检查 Node.js；
 2. 安装缺失的 `codeburn` 与 `ccusage`；
 3. 将 `src/` 复制到 `%LOCALAPPDATA%\ClaudeUsage`；
-4. 在桌面创建 `AI Usage Ledger` 快捷方式。
+4. 在桌面创建 `AI Usage` 快捷方式。
+
+为兼容现有安装，运行目录仍使用 `%LOCALAPPDATA%\ClaudeUsage`，生成脚本仍名为 `Generate-ClaudeReport.ps1`；这些是历史兼容标识，不代表应用只统计 Claude。
 
 ## 使用与开发
 
-双击桌面上的 `AI Usage Ledger`。
+双击桌面上的 `AI Usage`。
 
 在仓库内生成调试快照：
 
@@ -75,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 
 ## English
 
-AI Usage Ledger is a local, ephemeral Windows dashboard for Claude Code and OpenAI Codex usage. It reads existing local session metadata, estimates API-equivalent cost, opens instantly with a loading shell, and removes its temporary report after use. No prompt content, credentials, or session bodies are uploaded.
+AI Usage is a local, ephemeral Windows dashboard for Claude Code and OpenAI Codex usage. It reads existing local session metadata, estimates API-equivalent cost, opens instantly with a loading shell, and removes its temporary report after use. No prompt content, credentials, or session bodies are uploaded.
 
 ## License
 

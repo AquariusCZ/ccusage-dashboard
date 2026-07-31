@@ -2,7 +2,7 @@
 
 ## Purpose
 
-AI Usage Ledger is a local Windows dashboard that normalizes Claude Code and OpenAI Codex usage into one disposable browser snapshot. The dashboard displays metadata and aggregate usage only; it never renders prompt text, tool arguments, API keys, provider URLs, or authorization headers.
+AI Usage is a local Windows dashboard that normalizes Claude Code and OpenAI Codex usage into one disposable browser snapshot. The dashboard displays metadata and aggregate usage only; it never renders prompt text, tool arguments, API keys, provider URLs, or authorization headers.
 
 ## Runtime flow
 
@@ -16,7 +16,7 @@ Desktop shortcut
        4. optionally run ccusage blocks for Claude window metadata
        5. read the latest locally available Codex rate-limit snapshot
        6. atomically write data.js
-       7. delete report.html and data.js after the page has loaded them
+       7. delete report.html and data.js after a short browser-read grace period
 
 report.html polls data.js
   -> window.__DATA__
@@ -48,6 +48,10 @@ The default period is 30 days. Cost is always labelled as an API reference-price
 Canonical source lives in `src/`. `install.ps1` copies those files to `%LOCALAPPDATA%\ClaudeUsage` and creates the desktop shortcut. Running the generator directly from `src/` is supported because it resolves `template.html` relative to `$PSScriptRoot`.
 
 When the repository itself is checked out at `%LOCALAPPDATA%\ClaudeUsage`, root-level runtime copies are ignored by Git. The uninstall script detects `.git` and removes only those runtime copies, preserving the repository.
+
+## Compatibility identifiers
+
+The product name is `AI Usage`. The `%LOCALAPPDATA%\ClaudeUsage` and `%TEMP%\ClaudeUsage` directories, the `Generate-ClaudeReport.ps1` filename, the `ai-usage-ledger-theme` browser preference key, and the `ccusage-dashboard` repository slug are retained compatibility identifiers. Renaming them requires an explicit migration covering existing installs, shortcuts, uninstall behavior, saved user settings, and documentation links. The installer removes the previous `Claude用量仪表盘`, `Claude Usage Dashboard`, and `AI Usage Ledger` shortcuts before creating the current shortcut.
 
 ## Verification
 

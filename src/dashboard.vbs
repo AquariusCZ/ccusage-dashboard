@@ -1,4 +1,4 @@
-' AI Usage Ledger - silent launcher
+' AI Usage - silent launcher
 Dim shell, fso, scriptDir, command
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")

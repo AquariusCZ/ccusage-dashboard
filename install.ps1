@@ -3,8 +3,8 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 Write-Host ''
-Write-Host '  AI Usage Ledger - installer' -ForegroundColor Cyan
-Write-Host '  ============================'
+Write-Host '  AI Usage - installer' -ForegroundColor Cyan
+Write-Host '  ==================='
 Write-Host ''
 
 $srcDir = Join-Path $PSScriptRoot 'src'
@@ -47,22 +47,24 @@ try {
 } catch {}
 
 $desktop = [Environment]::GetFolderPath('Desktop')
-$oldShortcut = Join-Path $desktop 'Claude Usage Dashboard.lnk'
-if (Test-Path $oldShortcut) { Remove-Item -LiteralPath $oldShortcut -Force }
+foreach ($oldName in @('Claude用量仪表盘.lnk', 'Claude Usage Dashboard.lnk', 'AI Usage Ledger.lnk')) {
+  $oldShortcut = Join-Path $desktop $oldName
+  if (Test-Path $oldShortcut) { Remove-Item -LiteralPath $oldShortcut -Force }
+}
 
 $wsh = New-Object -ComObject WScript.Shell
-$shortcutPath = Join-Path $desktop 'AI Usage Ledger.lnk'
+$shortcutPath = Join-Path $desktop 'AI Usage.lnk'
 $shortcut = $wsh.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
 $shortcut.Arguments = '"' + (Join-Path $dest 'dashboard.vbs') + '"'
 $shortcut.WorkingDirectory = $dest
 $shortcut.IconLocation = (Join-Path $dest 'icon.ico') + ',0'
 $shortcut.WindowStyle = 1
-$shortcut.Description = 'Local Claude and Codex usage ledger'
+$shortcut.Description = 'Local Claude and Codex AI usage dashboard'
 $shortcut.Save()
 Write-Host '  [ok] Desktop shortcut created' -ForegroundColor Green
 
 Write-Host ''
-Write-Host "  Done. Double-click 'AI Usage Ledger' on the Desktop." -ForegroundColor Cyan
+Write-Host "  Done. Double-click 'AI Usage' on the Desktop." -ForegroundColor Cyan
 Write-Host ''
 Read-Host '  Press Enter to finish'
