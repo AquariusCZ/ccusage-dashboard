@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" id="themeColor" content="#f4f2ed">
+<meta name="theme-color" id="themeColor" content="#ecebe6">
 <link rel="icon" href="data:,">
 <title>AI Usage</title>
 <script>
@@ -19,6 +19,20 @@
 }
 </script>
 <style>
+@font-face {
+  font-family: "Ark Pixel 12px";
+  src: url("ark-pixel-12px-monospaced-zh_cn.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+@font-face {
+  font-family: "Fusion Pixel 12px";
+  src: url("fusion-pixel-12px-monospaced-zh_hans.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
 @layer reset, base, components, chart, utilities;
 
 @layer reset {
@@ -35,15 +49,16 @@
 
 @layer base {
   :root {
-    /* ── surfaces: soft cards on a warm canvas ── */
-    --canvas:   light-dark(#f4f2ed, #12141a);
-    --card:     light-dark(#ffffff, #1a1d26);
-    --card-2:   light-dark(#f7f5f0, #222633);
-    --ink:      light-dark(#1b1d22, #eef1f6);
-    --ink-2:    light-dark(#4d5361, #b3bccd);
-    --muted:    light-dark(#78808f, #7f8899);
-    --line:     light-dark(#e7e3da, #2b3040);
-    --line-2:   light-dark(#d2ccbe, #3a4155);
+    /* ── surfaces: compact desktop UI with hard, tactile depth ── */
+    --canvas:   light-dark(#ecebe6, #11140f);
+    --card:     light-dark(#fffef9, #1b2018);
+    --card-2:   light-dark(#f1efe8, #252b21);
+    --ink:      light-dark(#20231f, #f3f0df);
+    --ink-2:    light-dark(#4d524a, #c3c5b6);
+    --muted:    light-dark(#666b62, #a9af9f);
+    --line:     light-dark(#d3d0c5, #343b30);
+    --line-2:   light-dark(#999b91, #66705e);
+    --edge:     light-dark(#777b72, #080a07);
 
     /* ── provider identity: reserved, never a series slot ── */
     --claude:   light-dark(#d9581d, #e05e26);
@@ -62,21 +77,21 @@
     --c4: #943de0;  --c5: #009db9;  --c6: #bc6900;
     --c-rest: var(--muted);
 
-    /* ── activity heatmap: single hue, monotone lightness ── */
-    --s1: light-dark(#f3b45c, #5c3a12);
-    --s2: light-dark(#e79a2e, #86541a);
-    --s3: light-dark(#d17f10, #b06f1f);
-    --s4: light-dark(#ad6403, #db8b28);
-    --s5: light-dark(#874c00, #f7ab45);
+    /* ── activity heatmap: validated retro thermal scale. Hue and lightness both
+          move, so adjacent levels survive low-contrast panels and CVD simulation. ── */
+    --s1: light-dark(#f7e8b5, #433619);
+    --s2: light-dark(#f7b840, #6b561a);
+    --s3: light-dark(#ea672d, #b87927);
+    --s4: light-dark(#c52e52, #ff8582);
+    --s5: light-dark(#63225f, #ffd0e8);
 
-    --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-    --mono: "Cascadia Code", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+    --font: "Ark Pixel 12px", "Fusion Pixel 12px", "Cascadia Mono", "Microsoft YaHei", monospace;
+    --mono: "Ark Pixel 12px", "Fusion Pixel 12px", "Cascadia Mono", Consolas, monospace;
 
-    --r-card: 16px;
-    --r-item: 10px;
-    --r-pill: 999px;
-    --shadow: light-dark(0 1px 2px rgb(30 26 18 / .05), 0 1px 2px rgb(0 0 0 / .3)),
-              light-dark(0 10px 26px rgb(30 26 18 / .06), 0 12px 30px rgb(0 0 0 / .32));
+    --r-card: 6px;
+    --r-item: 3px;
+    --r-pill: 3px;
+    --shadow: 3px 3px 0 color-mix(in oklab, var(--edge) 52%, transparent);
   }
 
   /* The canvas colour lives on `html`, not just `body`: without it the browser
@@ -88,16 +103,18 @@
     background: var(--canvas);
     color: var(--ink);
     font-family: var(--font);
-    font-size: 0.875rem;
-    line-height: 1.55;
+    font-size: .75rem;
+    line-height: 1.65;
+    letter-spacing: 0;
+    font-synthesis: none;
     accent-color: var(--claude);
     scrollbar-color: var(--line-2) var(--canvas);
     scrollbar-width: thin;
-    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeSpeed;
   }
   .mono { font-family: var(--mono); }
   .num { font-variant-numeric: tabular-nums; }
-  h1, h2, h3 { text-wrap: balance; font-weight: 700; scroll-margin-block-start: 1rem; }
+  h1, h2, h3 { text-wrap: balance; font-weight: 700; letter-spacing: 0; scroll-margin-block-start: 1rem; }
   #app { scroll-margin-block-start: 1rem; }
   button {
     touch-action: manipulation;
@@ -117,11 +134,11 @@
 }
 
 @layer components {
-  .shell { max-inline-size: 84rem; margin-inline: auto; padding: 1.25rem clamp(.75rem, 2.6vw, 1.75rem) 3rem; }
+  .shell { max-inline-size: 88rem; margin-inline: auto; padding: 1.25rem clamp(.75rem, 2.6vw, 1.75rem) 3rem; }
 
   .card {
     background: var(--card);
-    border: 1px solid var(--line);
+    border: 1px solid var(--line-2);
     border-radius: var(--r-card);
     box-shadow: var(--shadow);
   }
@@ -131,67 +148,93 @@
   .brand { display: flex; align-items: center; gap: .7rem; min-inline-size: 0; }
   .brand-badge {
     inline-size: 42px; block-size: 42px; flex: none; display: grid; place-items: center;
-    border-radius: 13px; color: #fff;
-    background: linear-gradient(135deg in oklab, var(--claude), color-mix(in oklab, var(--claude) 55%, var(--c2)));
-    box-shadow: 0 4px 12px color-mix(in oklab, var(--claude) 34%, transparent);
+    border: 2px solid var(--ink); border-radius: var(--r-item); color: #fff;
+    background: var(--claude);
+    box-shadow: 4px 4px 0 var(--codex);
   }
   .brand-badge svg { inline-size: 23px; block-size: 23px; }
   .wordmark { color: var(--ink); line-height: 1; display: block; }
-  .brand p { color: var(--muted); font-size: .6875rem; margin-block-start: .3rem; overflow-wrap: anywhere; }
+  .brand p { color: var(--muted); font-size: .75rem; margin-block-start: .3rem; overflow-wrap: anywhere; }
   .topbar-actions { display: flex; align-items: center; gap: .45rem; margin-inline-start: auto; flex-wrap: wrap; }
 
-  .seg { display: flex; gap: 2px; padding: 3px; background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r-pill); }
+  .seg { display: flex; gap: 2px; padding: 3px; background: var(--card-2); border: 1px solid var(--line-2); border-radius: var(--r-pill); box-shadow: inset 1px 1px 0 var(--card); }
   .seg button {
     min-block-size: 30px; padding-inline: .8rem; border-radius: var(--r-pill);
     display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
-    color: var(--ink-2); cursor: pointer; font-size: .75rem; white-space: nowrap;
-    transition: background-color .15s ease, color .15s ease;
+    color: var(--ink-2); cursor: pointer; font-size: .75rem; white-space: nowrap; border: 1px solid transparent;
+    transition: background-color .16s ease, color .16s ease, transform .16s ease, box-shadow .16s ease;
   }
   .seg button:hover:not([aria-pressed="true"]) { color: var(--ink); background: color-mix(in oklab, var(--ink) 7%, transparent); }
-  .seg button[aria-pressed="true"] { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgb(0 0 0 / .12); }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: var(--card); border-color: var(--ink); font-weight: 600; box-shadow: 2px 2px 0 color-mix(in oklab, var(--edge) 55%, transparent); transform: translate(-1px, -1px); }
+  .seg button:active { transform: translate(1px, 1px); box-shadow: none; }
   .iconbtn {
     min-inline-size: 38px; min-block-size: 38px; display: grid; place-items: center;
-    border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--card); color: var(--ink-2); cursor: pointer;
-    transition: color .15s ease, border-color .15s ease;
+    border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--card); color: var(--ink-2); cursor: pointer;
+    box-shadow: 2px 2px 0 color-mix(in oklab, var(--edge) 45%, transparent);
+    transition: color .16s ease, border-color .16s ease, transform .16s ease, box-shadow .16s ease;
   }
-  .iconbtn:hover { color: var(--ink); border-color: var(--line-2); }
+  .iconbtn:hover { color: var(--ink); border-color: var(--ink); transform: translate(-1px, -1px); box-shadow: 3px 3px 0 color-mix(in oklab, var(--edge) 48%, transparent); }
+  .iconbtn:active { transform: translate(1px, 1px); box-shadow: none; }
 
   .notice {
     display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .9rem;
     margin-block-start: .9rem; padding: .55rem .85rem;
-    border-radius: var(--r-pill);
+    border: 1px solid color-mix(in oklab, var(--warn) 45%, var(--line));
+    border-radius: var(--r-card);
     background: color-mix(in oklab, var(--warn) 12%, var(--card));
-    color: var(--ink-2); font-size: .6875rem;
+    color: var(--ink-2); font-size: .75rem;
   }
   .notice b { color: light-dark(#8a5406, #f0a72a); }
   .notice .live { display: inline-flex; align-items: center; gap: .4rem; margin-inline-start: auto; white-space: nowrap; }
   .notice .live::before { content: ""; inline-size: 7px; block-size: 7px; border-radius: 50%; background: var(--good); }
 
   /* ── sections ── */
-  .section { margin-block-start: 1.5rem; }
+  .section { margin-block-start: 1.35rem; }
   .section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .8rem; margin-block-end: .75rem; }
-  .h2 { font-size: 1rem; }
-  .cap { color: var(--muted); font-size: .6875rem; }
+  .h2 { font-size: .75rem; }
+  .cap { color: var(--muted); font-size: .75rem; }
   .tools { margin-inline-start: auto; display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
   .total { color: var(--ink-2); font: 600 .75rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
 
-  .grid-2 { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
+  .grid-2 { display: grid; gap: .85rem; grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); }
 
   /* ── quota card ── */
   .quota { padding: 1rem 1.1rem; display: grid; gap: .85rem; }
   .quota-head { display: flex; align-items: center; gap: .5rem; }
-  .quota-head .dot { inline-size: 10px; block-size: 10px; border-radius: 50%; background: var(--p); flex: none; }
-  .quota-head h3 { font-size: .875rem; }
-  .quota-src { margin-inline-start: auto; color: var(--muted); font-size: .625rem; letter-spacing: .06em; text-transform: uppercase; }
+  .quota-head .dot { inline-size: 10px; block-size: 10px; border-radius: 1px; background: var(--p); flex: none; box-shadow: 2px 2px 0 color-mix(in oklab, var(--p) 35%, transparent); }
+  .quota-head h3 { font-size: .75rem; }
+  .quota-src { margin-inline-start: auto; color: var(--muted); font-size: .75rem; letter-spacing: 0; }
+
+  .quota-unavailable { overflow: hidden; }
+  .quota-unavailable .quota-offline-note { align-self: end; }
+  .quota-offline {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem;
+    padding: .75rem; border: 1px solid color-mix(in oklab, var(--p) 28%, var(--line));
+    border-radius: var(--r-item); background: color-mix(in oklab, var(--p) 5%, var(--card));
+  }
+  .quota-port {
+    inline-size: 34px; block-size: 34px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px;
+    padding: 6px; border: 1px solid var(--p); border-radius: var(--r-item);
+    box-shadow: 2px 2px 0 color-mix(in oklab, var(--p) 24%, transparent);
+  }
+  .quota-port i { background: color-mix(in oklab, var(--p) 32%, var(--card)); border: 1px solid color-mix(in oklab, var(--p) 58%, var(--card)); }
+  .quota-port i:first-child { background: var(--p); animation: port-blink 1.7s steps(2, end) infinite; }
+  .quota-offline-copy { min-inline-size: 0; display: grid; gap: .12rem; }
+  .quota-offline-copy b { color: var(--ink); font-size: .75rem; }
+  .quota-offline-copy span { color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
+  .quota-local-ok { display: inline-flex; align-items: center; gap: .35rem; color: var(--ink-2); font-size: .75rem; white-space: nowrap; }
+  .quota-local-ok::before { content: ""; inline-size: 7px; block-size: 7px; border-radius: 1px; background: var(--good); }
+  .quota-offline-note { display: flex; align-items: center; gap: .45rem; color: var(--muted); font-size: .75rem; }
+  .quota-offline-note svg { inline-size: 14px; block-size: 14px; color: var(--p); flex: none; }
 
   .meter-row { display: grid; gap: .4rem; }
   .meter-top { display: flex; align-items: flex-end; gap: .5rem; flex-wrap: wrap; }
   .meter-label { color: var(--ink-2); font-size: .75rem; font-weight: 600; }
-  .meter-pct { color: var(--sev, var(--good)); font: 700 1.35rem/1 var(--mono); font-variant-numeric: tabular-nums; }
-  .meter-note { margin-inline-start: auto; color: var(--muted); font-size: .6875rem; white-space: nowrap; }
+  .meter-pct { color: var(--sev, var(--good)); font: 700 1.5rem/1 var(--mono); font-variant-numeric: tabular-nums; }
+  .meter-note { margin-inline-start: auto; color: var(--muted); font-size: .75rem; white-space: nowrap; }
   .blocks { display: flex; gap: 2px; }
-  .blocks i { flex: 1; block-size: 12px; border-radius: 2px; background: var(--off); }
-  .meter-foot { display: flex; gap: .5rem; color: var(--muted); font-size: .625rem; }
+  .blocks i { flex: 1; block-size: 12px; border-radius: 1px; background: var(--off); transform-origin: bottom; animation: block-pop .32s cubic-bezier(.2,.8,.2,1) backwards; }
+  .meter-foot { display: flex; gap: .5rem; color: var(--muted); font-size: .75rem; }
   .meter-foot :last-child { margin-inline-start: auto; }
   .alarm {
     display: flex; align-items: center; gap: .45rem; padding: .5rem .7rem;
@@ -202,65 +245,72 @@
   .alarm svg { inline-size: 16px; block-size: 16px; flex: none; }
   .stale {
     display: flex; align-items: center; gap: .45rem; padding: .45rem .7rem;
-    border-radius: var(--r-item); font-size: .6875rem;
+    border-radius: var(--r-item); font-size: .75rem;
     background: color-mix(in oklab, var(--warn) 15%, var(--card));
     color: light-dark(#8a5406, #f0a72a);
   }
   .stale svg { inline-size: 14px; block-size: 14px; flex: none; }
 
   /* ── hero ── */
-  .hero { margin-block-start: .75rem; padding: 1.15rem 1.25rem; display: flex; flex-wrap: wrap; align-items: center; gap: .9rem 2rem; }
-  .hero-label { color: var(--muted); font-size: .6875rem; text-transform: uppercase; letter-spacing: .13em; }
+  .hero { margin-block-start: .85rem; padding: 1.15rem 1.25rem; display: grid; grid-template-columns: minmax(10rem, .75fr) minmax(18rem, 1.5fr) auto; align-items: center; gap: 1rem 1.4rem; }
+  .hero-label { color: var(--muted); font-size: .75rem; letter-spacing: 0; }
   .hero-figure { display: block; margin-block-start: .5rem; color: var(--claude); }
-  .hero-spark { inline-size: clamp(8rem, 20vw, 15rem); block-size: 3rem; }
+  .hero-spark { inline-size: 100%; min-inline-size: 0; block-size: 4.5rem; }
   .hero-facts { display: flex; flex-wrap: wrap; gap: .4rem 1.4rem; }
   .hero-facts div { display: grid; }
-  .hero-facts span { color: var(--muted); font-size: .6875rem; }
-  .hero-facts b { color: var(--ink); font: 700 .95rem/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+  .hero-facts span { color: var(--muted); font-size: .75rem; }
+  .hero-facts b { color: var(--ink); font: 700 .75rem/1.3 var(--mono); font-variant-numeric: tabular-nums; }
 
   /* ── provider cards ── */
   .prov { padding: 1rem 1.1rem; --p: var(--claude); display: grid; gap: .7rem; }
   .prov-top { display: flex; align-items: center; gap: .5rem; }
   .prov-name { display: inline-flex; align-items: center; gap: .5rem; font-weight: 700; }
-  .prov-name .chip { inline-size: 26px; block-size: 26px; border-radius: 9px; display: grid; place-items: center; color: #fff; background: var(--p); flex: none; }
+  .prov-name .chip { inline-size: 28px; block-size: 28px; border: 1px solid var(--ink); border-radius: var(--r-item); display: grid; place-items: center; color: #fff; background: var(--p); box-shadow: 2px 2px 0 color-mix(in oklab, var(--p) 35%, transparent); flex: none; }
   .prov-name .chip svg { inline-size: 15px; block-size: 15px; }
-  .prov-share { margin-inline-start: auto; padding: .1rem .5rem; border-radius: var(--r-pill); background: color-mix(in oklab, var(--p) 14%, transparent); color: var(--p); font-size: .6875rem; font-weight: 600; }
-  .prov-cost { color: var(--p); }
-  .prov-cost + span { color: var(--muted); font-size: .6875rem; }
+  .prov-share { margin-inline-start: auto; padding: .15rem .5rem; border: 1px solid color-mix(in oklab, var(--p) 42%, var(--line)); border-radius: var(--r-item); background: color-mix(in oklab, var(--p) 11%, var(--card)); color: var(--ink); font-size: .75rem; font-weight: 600; }
+  .prov-cost-row { display: flex; align-items: end; gap: .35rem; flex-wrap: wrap; min-inline-size: 0; }
+  .prov-cost { display: inline-block; max-inline-size: 100%; color: var(--p); }
+  .prov-cost + span { color: var(--muted); font-size: .75rem; }
   .prov-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
-  .prov-stats span { display: block; color: var(--muted); font-size: .6875rem; }
-  .prov-stats b { display: block; font: 700 .875rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
+  .prov-stats span { display: block; color: var(--muted); font-size: .75rem; }
+  .prov-stats b { display: block; font: 700 .75rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
   .rail { block-size: 10px; display: flex; gap: 2px; }
-  .rail i { display: block; min-inline-size: 0; border-radius: 2px; }
+  .rail i { display: block; min-inline-size: 0; border-radius: 1px; transform-origin: left; animation: grow-x .58s cubic-bezier(.2,.8,.2,1) backwards; }
 
-  .legend { display: flex; flex-wrap: wrap; gap: .2rem .85rem; color: var(--muted); font-size: .6875rem; }
+  .legend { display: flex; flex-wrap: wrap; gap: .3rem .9rem; color: var(--muted); font-size: .75rem; }
   .legend span { display: inline-flex; align-items: center; gap: .35rem; }
-  .legend i { inline-size: 9px; block-size: 9px; border-radius: 3px; flex: none; }
+  .legend i { inline-size: 10px; block-size: 10px; border-radius: 1px; flex: none; }
   .legend b { color: var(--ink-2); font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; }
 
   /* Both panes share one alignment: chart centred, caption centred directly
      under it. Previously the heatmap was centred while its legend hugged the
      card's left edge, which read as a misalignment rather than a choice. */
-  .activity-split { display: grid; gap: 1.25rem 1.5rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); align-items: start; }
-  .activity-pane { margin: 0; display: grid; justify-items: center; gap: .6rem; }
-  .activity-pane .chart-box { max-inline-size: 22rem; }
+  .activity-split { display: grid; gap: 1.25rem 2rem; grid-template-columns: minmax(22rem, 1.15fr) minmax(18rem, .85fr); align-items: center; }
+  .activity-pane { margin: 0; display: grid; grid-template-rows: auto minmax(2rem, auto); align-items: start; justify-items: center; gap: .75rem; }
+  .activity-pane .chart-box { max-inline-size: 32rem; min-block-size: 300px; display: grid; place-items: center; }
+  #heatmap { overflow-x: hidden; overflow-y: hidden; justify-items: start; scrollbar-width: thin; }
+  #heatmap.heat-scroll { overflow-x: auto; }
+  #heatmap .chart { inline-size: auto; min-inline-size: 100%; max-inline-size: none; }
   .activity-pane figcaption { justify-content: center; text-align: center; }
 
   /* ── tiles ── */
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: .6rem; }
-  .tile { padding: .7rem .85rem; border-radius: var(--r-item); background: var(--card-2); }
-  .tile span { display: block; color: var(--muted); font-size: .6875rem; }
+  .tile { padding: .75rem .85rem; border: 1px solid var(--line); border-radius: var(--r-item); background: var(--card-2); animation: tile-in .4s cubic-bezier(.2,.8,.2,1) backwards; }
+  .tile:nth-child(2) { animation-delay: 55ms; }
+  .tile:nth-child(3) { animation-delay: 110ms; }
+  .tile:nth-child(4) { animation-delay: 165ms; }
+  .tile span { display: block; color: var(--muted); font-size: .75rem; }
   .tile .big { display: block; margin-block: .3rem .15rem; color: var(--tint, var(--ink)); }
-  .tile em { display: block; color: var(--ink-2); font-size: .625rem; font-style: normal; }
+  .tile em { display: block; color: var(--ink-2); font-size: .75rem; font-style: normal; }
 
   /* ── ranked rows ── */
   .ranks { display: grid; gap: .6rem; }
   .rank { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(3.5rem, 1.7fr) auto; align-items: center; gap: .6rem; --p: var(--claude); }
   .rank-name { min-inline-size: 0; }
   .rank-name b { display: block; font-size: .75rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rank-name span { display: block; color: var(--muted); font-size: .625rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rank-track { block-size: 10px; border-radius: var(--r-pill); background: color-mix(in oklab, var(--p) 13%, var(--card-2)); }
-  .rank-fill { block-size: 100%; border-radius: var(--r-pill); background: linear-gradient(90deg in oklab, color-mix(in oklab, var(--p) 72%, white 12%), var(--p)); }
+  .rank-name span { display: block; color: var(--muted); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rank-track { block-size: 10px; border: 1px solid color-mix(in oklab, var(--p) 28%, var(--line)); border-radius: 1px; background: color-mix(in oklab, var(--p) 10%, var(--card-2)); overflow: hidden; }
+  .rank-fill { block-size: 100%; border-radius: 0; background: var(--p); transform-origin: left; animation: grow-x .65s cubic-bezier(.2,.8,.2,1) backwards; }
   .rank-val { font: 600 .75rem/1 var(--mono); font-variant-numeric: tabular-nums; text-align: end; }
 
   /* ── tables ── */
@@ -268,7 +318,7 @@
   table { inline-size: 100%; font-size: .75rem; }
   th, td { padding: .5rem .7rem; text-align: end; white-space: nowrap; border-block-end: 1px solid var(--line); }
   th:first-child, td:first-child { text-align: start; }
-  thead th { color: var(--muted); font-size: .6875rem; font-weight: 600; background: var(--card-2); position: sticky; inset-block-start: 0; }
+  thead th { color: var(--muted); font-size: .75rem; font-weight: 600; background: var(--card-2); position: sticky; inset-block-start: 0; }
   td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
   tbody tr { content-visibility: auto; contain-intrinsic-block-size: auto 2.1lh; }
   tbody tr:hover { background: color-mix(in oklab, var(--claude) 7%, transparent); }
@@ -280,17 +330,17 @@
   details + details { margin-block-start: .5rem; }
   summary {
     min-block-size: 48px; display: flex; align-items: center; gap: .55rem; cursor: pointer;
-    font-weight: 600; font-size: .8125rem; padding-inline: 1rem; background: var(--card-2);
+    font-weight: 600; font-size: .75rem; padding-inline: 1rem; background: var(--card-2);
   }
-  summary .count { color: var(--muted); font: 500 .6875rem/1 var(--mono); }
+  summary .count { color: var(--muted); font: 500 .75rem/1 var(--mono); }
   summary .chev { margin-inline-start: auto; color: var(--muted); transition: rotate .18s ease; }
   details[open] summary .chev { rotate: 90deg; }
 
   .empty { display: grid; place-items: center; min-block-size: 4rem; padding: .9rem; border-radius: var(--r-item); background: var(--card-2); color: var(--muted); font-size: .75rem; text-align: center; text-wrap: pretty; }
-  /* an unavailable provider must not stretch to match its neighbour's height */
-  #quota { align-items: start; }
+  /* Paired quota cards share a baseline; a filtered single card keeps its natural height. */
+  #quota { align-items: stretch; }
 
-  footer { margin-block-start: 1.5rem; display: flex; flex-wrap: wrap; gap: .3rem 1rem; color: var(--muted); font-size: .6875rem; padding-inline: .3rem; }
+  footer { margin-block-start: 1.5rem; display: flex; flex-wrap: wrap; gap: .3rem 1rem; color: var(--muted); font-size: .75rem; padding-inline: .3rem; }
   footer .grow { margin-inline-start: auto; overflow-wrap: anywhere; }
 
   .sr-only { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -303,23 +353,38 @@
   .chart-box { inline-size: 100%; }
   .chart { display: block; inline-size: 100%; block-size: auto; overflow: visible; }
   .gridline { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
-  .axis { fill: var(--muted); font: 10px var(--mono); font-variant-numeric: tabular-nums; }
-  .callout { fill: var(--ink); font: 600 10px var(--mono); font-variant-numeric: tabular-nums; }
+  .axis { fill: var(--muted); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+  .callout { fill: var(--ink); font: 600 12px var(--mono); font-variant-numeric: tabular-nums; }
+  .series-area { animation: area-in .6s ease-out backwards; }
   .series-line { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .series-line.draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-line .85s cubic-bezier(.2,.8,.2,1) forwards; }
   .hit { fill: transparent; cursor: crosshair; }
-  .marker { stroke: var(--card); stroke-width: 2.5; }
+  [data-tip]:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .marker { stroke: var(--card); stroke-width: 2.5; transform-box: fill-box; transform-origin: center; animation: marker-in .36s .48s cubic-bezier(.2,.9,.3,1.4) backwards; }
   .arc-fill { fill: none; stroke-linecap: round; }
   /* polar spokes are wide strokes; a round cap would balloon each one into a
      blob that overlaps its neighbours */
   .spoke { fill: none; stroke-linecap: butt; }
-  .cell { shape-rendering: crispEdges; }
+  .cell {
+    shape-rendering: crispEdges; stroke: color-mix(in oklab, var(--card) 54%, var(--line)); stroke-width: 1;
+    transform-box: fill-box; transform-origin: center; animation: cell-in .3s cubic-bezier(.2,.8,.2,1) backwards;
+    transition: filter .14s ease, stroke .14s ease, stroke-width .14s ease;
+  }
+  .cell:hover, .cell:focus { filter: brightness(1.08) saturate(1.08); stroke: var(--ink); stroke-width: 2; }
+  .cell-off { stroke: var(--line); stroke-dasharray: 2 2; }
+  .heat-scale { gap: .25rem !important; }
+  .heat-scale i { inline-size: 14px; }
+  .heat-bounds { color: var(--muted); }
+  .heat-bounds b { color: var(--ink-2); }
 
   #tip {
     position: fixed; z-index: 70; pointer-events: none; opacity: 0;
-    padding: .45rem .6rem; border-radius: 10px;
+    padding: .5rem .65rem; border: 1px solid light-dark(#575b54, #c4c9bb); border-radius: var(--r-item);
     background: light-dark(#26292f, #eef1f6); color: light-dark(#fff, #12141a);
-    box-shadow: 0 8px 22px rgb(0 0 0 / .28);
-    font: .6875rem/1.5 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
+    box-shadow: 3px 3px 0 rgb(0 0 0 / .28);
+    box-sizing: border-box; max-inline-size: calc(100vw - 1rem);
+    white-space: pre-line; overflow-wrap: anywhere;
+    font: .75rem/1.55 var(--mono); font-variant-numeric: tabular-nums;
     transition: opacity .12s ease;
   }
 
@@ -327,10 +392,10 @@
   #loader.done { opacity: 0; pointer-events: none; }
   .boot { inline-size: min(26rem, calc(100vw - 2.5rem)); text-align: center; }
   .boot .brand-badge { margin-inline: auto; }
-  .boot-line { block-size: 4px; border-radius: var(--r-pill); margin-block-start: 1.3rem; background: var(--card-2); overflow: hidden; }
+  .boot-line { block-size: 8px; border: 1px solid var(--line-2); border-radius: 1px; margin-block-start: 1.3rem; background: var(--card-2); overflow: hidden; }
   .boot-line::after {
-    content: ""; display: block; inline-size: 38%; block-size: 100%; border-radius: var(--r-pill);
-    background: linear-gradient(90deg in oklab, var(--claude), var(--c2));
+    content: ""; display: block; inline-size: 38%; block-size: 100%;
+    background: var(--claude);
     animation: sweep 1.25s ease-in-out infinite;
   }
   .boot p { margin-block-start: .85rem; color: var(--muted); font-size: .75rem; }
@@ -338,12 +403,44 @@
 
   #app { opacity: 0; transition: opacity .3s ease; }
   #app.show { opacity: 1; }
+  #app.show .card { animation: card-in .44s cubic-bezier(.2,.8,.2,1) both; }
+  #app.show .hero { animation-delay: 45ms; }
+  #app.show #split .card:nth-child(1) { animation-delay: 90ms; }
+  #app.show #split .card:nth-child(2) { animation-delay: 135ms; }
+
+  @keyframes card-in { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
+  @keyframes tile-in { from { opacity: 0; translate: -7px 0; } to { opacity: 1; translate: 0 0; } }
+  @keyframes grow-x { from { scale: 0 1; } to { scale: 1 1; } }
+  @keyframes block-pop { from { opacity: .2; scale: 1 .25; } to { opacity: 1; scale: 1 1; } }
+  @keyframes draw-line { to { stroke-dashoffset: 0; } }
+  @keyframes area-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes marker-in { from { opacity: 0; scale: .2; } to { opacity: 1; scale: 1; } }
+  @keyframes cell-in { from { opacity: 0; scale: .45; } to { opacity: 1; scale: 1; } }
+  @keyframes live-pulse { 0%, 100% { opacity: .45; scale: .8; } 50% { opacity: 1; scale: 1; } }
+  @keyframes port-blink { 0%, 45% { opacity: 1; } 46%, 100% { opacity: .38; } }
 }
 
 @layer utilities {
+  .notice .live::before { animation: live-pulse 1.7s steps(2, end) infinite; }
+  @media (max-width: 800px) {
+    .shell { padding-block-start: .9rem; }
+    .topbar-actions { inline-size: 100%; margin-inline-start: 0; }
+    .topbar-actions .seg { max-inline-size: 100%; overflow-x: auto; }
+    .hero { grid-template-columns: 1fr; }
+    .hero-spark { min-inline-size: 0; }
+    .activity-split { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 420px) {
+    .shell { padding-inline: .6rem; }
+    .seg button { padding-inline: .6rem; }
+    .prov-stats { gap: .25rem; }
+    .section.card { padding-inline: .8rem !important; }
+    .quota-offline { grid-template-columns: auto minmax(0, 1fr); }
+    .quota-local-ok { grid-column: 2; }
+  }
   @media (prefers-reduced-motion: reduce) {
     .boot-line::after { animation: none; inline-size: 100%; }
-    #loader, #app, summary .chev, #tip, .seg button, .iconbtn { transition: none; }
+    *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
   }
   @media (pointer: coarse) { .seg button, .iconbtn { min-block-size: 42px; } }
 }
@@ -411,8 +508,8 @@
         <button type="button" data-filter="claude" aria-pressed="false"><svg width="14" height="14" aria-hidden="true"><use href="#i-claude"/></svg><span translate="no">Claude</span></button>
         <button type="button" data-filter="codex" aria-pressed="false"><svg width="14" height="14" aria-hidden="true"><use href="#i-codex"/></svg><span translate="no">Codex</span></button>
       </div>
-      <button type="button" class="iconbtn" id="themeBtn" aria-pressed="false">
-        <svg width="18" height="18" aria-hidden="true"><use href="#i-theme"/></svg><span class="sr-only">切换明暗主题</span>
+      <button type="button" class="iconbtn" id="themeBtn" aria-pressed="false" aria-label="深色主题">
+        <svg width="18" height="18" aria-hidden="true"><use href="#i-theme"/></svg><span class="sr-only">深色主题</span>
       </button>
     </div>
   </header>
@@ -500,6 +597,15 @@
 <div id="tip" aria-hidden="true"></div>
 
 <script>
+addEventListener("error", function (event) {
+  window.__BOOT_ERROR__ = {
+    message: event.message || "unknown",
+    line: event.lineno || 0,
+    column: event.colno || 0
+  };
+  var message = document.getElementById("bootMessage");
+  if (message) message.textContent = "界面初始化失败，请重新启动";
+});
 (function () {
   "use strict";
 
@@ -564,15 +670,26 @@
     return "剩 " + Math.floor(h / 24) + " 天 " + (h % 24) + " 小时";
   }
 
+  /* Horizontal cubic tangents keep each segment between its endpoint values,
+     so sparse cost data looks smooth without overshooting peaks or zero. */
+  function smoothPath(points) {
+    if (!points.length) return "";
+    var out = "M" + points[0][0].toFixed(1) + " " + points[0][1].toFixed(1);
+    for (var i = 1; i < points.length; i++) {
+      var a = points[i - 1], b = points[i], dx = (b[0] - a[0]) * .38;
+      out += "C" + (a[0] + dx).toFixed(1) + " " + a[1].toFixed(1) + " " +
+        (b[0] - dx).toFixed(1) + " " + b[1].toFixed(1) + " " +
+        b[0].toFixed(1) + " " + b[1].toFixed(1);
+    }
+    return out;
+  }
+
   /* ── 5x7 bitmap type ───────────────────────────────────────────────
-     THE TYPE RULE, three faces with one job each:
-       pixel  the display figure only (hero total, provider total, tile value)
-       mono   anything tabular or inline-numeric (stats, legends, axes, tables)
-       sans   all prose, labels and headings, including every Chinese string
+     The whole UI uses the bundled 12px pixel stack. Large display figures
+     remain hand-drawn 5x7 bitmaps so their cells stay square at every scale.
      Display numerals are drawn as pixel grids rather than set in a font: the
-     look needs real square pixels at any size and the file has to stay
-     self-contained (no webfont fetch). Latin and numeric only, so Chinese copy
-     always keeps the UI face. Every call is paired with a real text node for
+     look needs real square pixels at any size. Latin and numeric only, so
+     Chinese copy keeps the bundled UI face. Every call is paired with a real text node for
      screen readers and copy-paste. */
   var GLYPHS = {
     "0": "01110,10001,10011,10101,11001,10001,01110",
@@ -692,19 +809,63 @@
       if (c) paint(c.host, c.draw);
     });
   });
-  function svgOpen(w, h, label) {
-    return '<svg class="chart" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" role="img" aria-label="' + esc(label) + '">';
+  function svgOpen(w, h, label, fixedWidth) {
+    var sizing = fixedWidth ? ' style="inline-size:' + w + 'px;min-inline-size:' + w + 'px"' : "";
+    return '<svg class="chart"' + sizing + ' width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" role="group" aria-label="' + esc(label) + '">';
   }
   function wireHover(host) {
     var tip = $("tip");
-    host.querySelectorAll("[data-tip]").forEach(function (el) {
-      el.addEventListener("mouseenter", function () { tip.innerHTML = el.dataset.tip; tip.style.opacity = "1"; });
-      el.addEventListener("mousemove", function (e) {
-        tip.style.insetInlineStart = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px";
-        tip.style.insetBlockStart = Math.max(8, e.clientY - 14) + "px";
+    function position(x, y) {
+      tip.style.insetInlineStart = Math.max(8, Math.min(x + 14, innerWidth - tip.offsetWidth - 8)) + "px";
+      tip.style.insetBlockStart = Math.max(8, Math.min(y - 14, innerHeight - tip.offsetHeight - 8)) + "px";
+    }
+    function show(el, x, y) {
+      tip.textContent = el.dataset.tip;
+      tip.style.opacity = "1";
+      if (x == null || y == null) {
+        var box = el.getBoundingClientRect();
+        x = box.left + box.width / 2;
+        y = box.top;
+      }
+      position(x, y);
+    }
+    function hide() { tip.style.opacity = "0"; }
+    var items = Array.from(host.querySelectorAll("[data-tip]"));
+    items.forEach(function (el, index) {
+      el.setAttribute("tabindex", index ? "-1" : "0");
+      el.setAttribute("focusable", "true");
+      el.setAttribute("role", "img");
+      el.setAttribute("aria-label", el.dataset.tip.replace(/\s*\n+\s*/g, "，"));
+      el.addEventListener("mouseenter", function (e) { show(el, e.clientX, e.clientY); });
+      el.addEventListener("mousemove", function (e) { position(e.clientX, e.clientY); });
+      el.addEventListener("mouseleave", hide);
+      el.addEventListener("focus", function () { show(el); });
+      el.addEventListener("focusin", function () { show(el); });
+      el.addEventListener("blur", hide);
+      el.addEventListener("keydown", function (e) {
+        var next = null;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (index + 1) % items.length;
+        if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (index - 1 + items.length) % items.length;
+        if (e.key === "Home") next = 0;
+        if (e.key === "End") next = items.length - 1;
+        if (next != null) {
+          e.preventDefault();
+          el.setAttribute("tabindex", "-1");
+          items[next].setAttribute("tabindex", "0");
+          items[next].focus();
+          return;
+        }
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(el); }
+        if (e.key === "Escape") hide();
       });
-      el.addEventListener("mouseleave", function () { tip.style.opacity = "0"; });
+      el.addEventListener("pointerdown", function (e) { show(el, e.clientX, e.clientY); });
     });
+    if (!window.__tipDismissBound) {
+      window.__tipDismissBound = true;
+      document.addEventListener("pointerdown", function (e) {
+        if (!e.target.closest || !e.target.closest("[data-tip]")) hide();
+      }, true);
+    }
   }
   function niceMax(v) {
     if (v <= 0) return 1;
@@ -747,6 +908,7 @@
   function quotaReason(code) {
     var map = {
       no_credentials: "未找到 Claude 登录凭据",
+      malformed_credentials: "Claude 登录凭据格式异常，请在 Claude Code 中重新登录",
       token_expired: "登录凭据已过期，请在 Claude Code 中重新登录",
       rate_limited: "额度接口暂时限流",
       failed_local: "无法连接 Claude 服务",
@@ -817,11 +979,15 @@
         body = meterRow("主限额", n(cx.primary.used_percent), cx.primary.resets_at, null) +
           (cx.secondary && cx.secondary.used_percent != null ? meterRow("次限额", n(cx.secondary.used_percent), cx.secondary.resets_at, null) : "");
       } else {
-        body = '<p class="empty">当前服务商未返回可显示的限额数据。自定义服务商通常不下发 rate_limits 字段。</p>';
+        body = '<div class="quota-offline" role="status">' +
+          '<span class="quota-port" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' +
+          '<span class="quota-offline-copy"><b>未收到额度窗口</b><span>服务商未下发 rate_limits</span></span>' +
+          '<span class="quota-local-ok">本地统计正常</span></div>' +
+          '<p class="quota-offline-note"><svg aria-hidden="true"><use href="#i-alert"/></svg>成本、调用与会话仍按本地记录统计</p>';
       }
-      out.push('<article class="card quota" style="--p:var(--codex)">' +
+      out.push('<article class="card quota' + (cx.primary ? '' : ' quota-unavailable') + '" style="--p:var(--codex)">' +
         '<div class="quota-head"><span class="dot"></span><h3>Codex 额度</h3>' +
-        '<span class="quota-src">' + (cx.primary ? "会话记录" : "不可用") + "</span></div>" + body + "</article>");
+        '<span class="quota-src">' + (cx.primary ? "会话记录" : "未下发") + "</span></div>" + body + "</article>");
     }
 
     host.innerHTML = out.join("");
@@ -849,7 +1015,8 @@
     var cr = sum(sel.map(function (p) { return n(tokens(p).cacheRead); }));
 
     $("heroLabel").textContent = (filter === "all" ? "Claude + Codex 合计" : pname(filter)) + " · API 参考价";
-    $("heroFigure").innerHTML = figure(usd(total, false), 7, "var(--claude)");
+    window.__heroFigureText = usd(total, false);
+    fitHeroFigure();
     $("heroFacts").innerHTML = [
       ["调用", int(calls)], ["会话", int(sess)], ["Tokens", kmb(toks)],
       ["缓存读占比", (toks ? (cr / toks * 100).toFixed(1) : "0") + "%"]
@@ -858,21 +1025,36 @@
     var rows = dailyRows(), host = $("heroSpark");
     if (rows.length < 2) { host.innerHTML = ""; return; }
     register(host, function (w) {
-      var h = 48, pad = 4;
+      var h = 72, pad = 5;
       var vals = rows.map(rowTotal), max = Math.max.apply(null, vals.concat([1]));
       var step = (w - pad * 2) / (vals.length - 1);
       var pts = vals.map(function (v, i) { return [pad + i * step, h - pad - v / max * (h - pad * 2)]; });
-      var line = pts.map(function (q, i) { return (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); }).join("");
+      var line = smoothPath(pts);
       var last = pts[pts.length - 1];
       return svgOpen(w, h, "周期内每日合计走势") +
         '<defs><linearGradient id="sparkFade" x1="0" y1="0" x2="0" y2="1">' +
         '<stop offset="0" stop-color="var(--claude)" stop-opacity=".28"/>' +
         '<stop offset="1" stop-color="var(--claude)" stop-opacity="0"/></linearGradient></defs>' +
-        '<path d="' + line + "L" + last[0].toFixed(1) + " " + h + "L" + pad + " " + h + '" fill="url(#sparkFade)"/>' +
-        '<path class="series-line" d="' + line + '" stroke="var(--claude)"/>' +
+        '<path class="series-area" d="' + line + "L" + last[0].toFixed(1) + " " + h + "L" + pad + " " + h + 'Z" fill="url(#sparkFade)"/>' +
+        '<path class="series-line draw" pathLength="1" d="' + line + '" stroke="var(--claude)"/>' +
         '<circle class="marker" cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="4" fill="var(--claude)"/>' + "</svg>";
     });
     ro.observe(host);
+  }
+
+  function fitHeroFigure() {
+    var host = $("heroFigure"), text = window.__heroFigureText || "$0.00";
+    var available = Math.max(120, Math.floor(host.parentElement.clientWidth || 0));
+    var px = Math.max(3, Math.min(7, Math.floor((available - 2) / Math.max(1, pixelWidth(text, 1)))));
+    host.innerHTML = figure(text, px, "var(--claude)");
+  }
+  function fitProviderFigures() {
+    document.querySelectorAll(".prov-cost[data-figure-text]").forEach(function (host) {
+      var text = host.dataset.figureText || "$0.00";
+      var available = Math.max(96, Math.floor(host.parentElement.clientWidth || 0));
+      var px = Math.max(2, Math.min(5, Math.floor((available - 2) / Math.max(1, pixelWidth(text, 1)))));
+      host.innerHTML = figure(text, px, getComputedStyle(host).color);
+    });
   }
 
   /* ──────────────────────────── ③ provider cards ── */
@@ -887,11 +1069,12 @@
       var lg = TOKEN_PARTS.map(function (k) {
         return '<span><i style="background:' + k.css + '"></i>' + k.label + " <b>" + kmb(t[k.key]) + "</b></span>";
       }).join("");
+      var costText = usd(cost(p));
       return '<article class="card prov" style="--p:' + pcolor(p) + '">' +
         '<div class="prov-top"><span class="prov-name"><span class="chip"><svg aria-hidden="true"><use href="#i-' + p + '"/></svg></span>' +
         '<span translate="no">' + pname(p) + "</span></span>" +
         '<span class="prov-share">' + (grand ? (cost(p) / grand * 100).toFixed(1) : "0") + "%</span></div>" +
-        '<div><span class="prov-cost">' + figure(usd(cost(p)), 5, pcolor(p)) + "</span> <span>API 参考价</span></div>" +
+        '<div class="prov-cost-row"><span class="prov-cost" data-figure-text="' + esc(costText) + '"></span><span>API 参考价</span></div>' +
         '<div class="prov-stats">' +
           "<div><span>调用</span><b>" + int(o.calls) + "</b></div>" +
           "<div><span>会话</span><b>" + int(o.sessions) + "</b></div>" +
@@ -899,9 +1082,10 @@
         '<div class="rail" role="img" aria-label="' + pname(p) + ' token 构成">' + segs + "</div>" +
         '<p class="legend">' + lg + "</p></article>";
     }).join("");
+    fitProviderFigures();
   }
 
-  /* ───────────────────── ④ 每日成本 · 面积 + 折线 ── */
+  /* ───────────────────── ④ 每日成本 · 面积 + 平滑曲线 ── */
   function renderTrend() {
     var rows = dailyRows(), sel = shown(), host = $("trendChart");
     $("trendCap").textContent = PERIOD_LABEL[period] + "，" + (sel.length > 1 ? "两个提供商分别成线" : pname(sel[0]));
@@ -918,7 +1102,7 @@
     }).join("");
 
     register(host, function (w) {
-      var h = 240, ml = 8, mr = 56, mt = 24, mb = 26;
+      var h = 280, ml = 10, mr = 72, mt = 30, mb = 34;
       var pw = w - ml - mr, ph = h - mt - mb;
       var max = niceMax(Math.max.apply(null, totals.concat([0.01])));
       var step = pw / Math.max(1, rows.length - 1);
@@ -938,9 +1122,9 @@
       });
       sel.forEach(function (p) {
         var pts = rows.map(function (r, i) { return [x(i), y(r[p])]; });
-        var line = pts.map(function (q, i) { return (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); }).join("");
-        s += '<path d="' + line + "L" + x(rows.length - 1).toFixed(1) + " " + (mt + ph) + "L" + ml + " " + (mt + ph) + '" fill="url(#fade-' + p + ')"/>' +
-          '<path class="series-line" d="' + line + '" stroke="' + pcolor(p) + '"/>';
+        var line = smoothPath(pts);
+        s += '<path class="series-area" d="' + line + "L" + x(rows.length - 1).toFixed(1) + " " + (mt + ph) + "L" + ml + " " + (mt + ph) + 'Z" fill="url(#fade-' + p + ')"/>' +
+          '<path class="series-line draw" pathLength="1" d="' + line + '" stroke="' + pcolor(p) + '"/>';
       });
       var peak = totals.indexOf(Math.max.apply(null, totals));
       s += '<text class="callout" x="' + Math.min(w - mr - 6, Math.max(ml + 30, x(peak))) + '" y="' + (y(totals[peak]) - 10) +
@@ -948,14 +1132,18 @@
       sel.forEach(function (p) {
         s += '<circle class="marker" cx="' + x(peak).toFixed(1) + '" cy="' + y(rows[peak][p]).toFixed(1) + '" r="4.5" fill="' + pcolor(p) + '"/>';
       });
-      var every = Math.max(1, Math.ceil(rows.length / 7));
+      var tickCount = Math.max(2, Math.min(7, Math.floor(pw / 72)));
+      var tickIndexes = [];
+      for (var ti = 0; ti < tickCount; ti++) {
+        tickIndexes.push(Math.round(ti * (rows.length - 1) / (tickCount - 1)));
+      }
       rows.forEach(function (r, i) {
-        if (i % every === 0 || i === rows.length - 1) {
+        if (tickIndexes.indexOf(i) >= 0) {
           s += '<text class="axis" x="' + Math.min(w - mr, Math.max(ml + 14, x(i))) + '" y="' + (h - 7) + '" text-anchor="middle">' + r.date.slice(5) + "</text>";
         }
         s += '<rect class="hit" x="' + (x(i) - step / 2).toFixed(1) + '" y="' + mt + '" width="' + step.toFixed(1) + '" height="' + ph + '" data-tip="' +
-          esc(r.date) + "<br>" + sel.map(function (p) { return pname(p) + " " + usd(r[p]); }).join("<br>") +
-          (sel.length > 1 ? "<br>合计 " + usd(totals[i]) : "") + '"/>';
+          esc(r.date) + "&#10;" + sel.map(function (p) { return pname(p) + " " + usd(r[p]); }).join("&#10;") +
+          (sel.length > 1 ? "&#10;合计 " + usd(totals[i]) : "") + '"/>';
       });
       return s + "</svg>";
     });
@@ -976,6 +1164,7 @@
     $("activityCap").textContent = "日历按天，圆盘按小时（仅 Claude）";
     if (!rows.length) {
       host.innerHTML = '<p class="empty">该周期内没有日粒度数据</p>';
+      host.classList.remove("heat-scroll");
       $("activityTiles").innerHTML = ""; $("heatLegend").innerHTML = ""; $("heatRange").textContent = "";
       $("hoursWrap").classList.add("hide");
       return;
@@ -1002,45 +1191,60 @@
       ["最长连续", int(best) + " 天", "该周期内", "var(--c4)"],
       ["单日峰值", usd(peak.value), peak.date, "var(--claude)"]
     ].map(function (t) {
+      var tileScale = String(t[1]).length > 6 ? 3 : 4;
       return '<article class="tile" style="--tint:' + t[3] + '"><span>' + t[0] + "</span>" +
-        '<span class="big">' + figure(t[1], 4, t[3]) + "</span><em>" + esc(t[2]) + "</em></article>";
+        '<span class="big">' + figure(t[1], tileScale, t[3]) + "</span><em>" + esc(t[2]) + "</em></article>";
     }).join("");
 
     var sorted = active.map(function (x) { return x.value; }).sort(function (a, b) { return a - b; });
+    function quantile(values, q) {
+      if (!values.length) return 0;
+      var pos = (values.length - 1) * q, lo = Math.floor(pos), hi = Math.ceil(pos);
+      if (lo === hi) return values[lo];
+      return values[lo] + (values[hi] - values[lo]) * (pos - lo);
+    }
+    var scaleLow = quantile(sorted, .1);
+    var scaleHigh = quantile(sorted, .9);
+    var logLow = Math.log1p(scaleLow), logSpan = Math.log1p(scaleHigh) - logLow;
     function stepOf(v) {
       if (v <= 0) return -1;
-      for (var s = 4; s >= 0; s--) if (v >= sorted[Math.floor(sorted.length * s / 5)]) return s;
-      return 0;
+      if (sorted.length === 1) return 4;
+      if (logSpan <= .000001) return 2;
+      var score = (Math.log1p(v) - logLow) / logSpan;
+      return Math.max(0, Math.min(4, Math.floor(score * 5)));
     }
 
     register(host, function (w) {
-      var weeks = Math.ceil((days[0].dow + days.length) / 7), gap = 3;
-      var cell = Math.max(8, Math.min(16, Math.floor((w - 24 - (weeks - 1) * gap) / weeks)));
-      var top = 14, gridW = weeks * (cell + gap) - gap;
-      var left = Math.max(22, Math.round((w - gridW) / 2));
+      var weeks = Math.ceil((days[0].dow + days.length) / 7), gap = 4;
+      var cell = Math.max(12, Math.min(28, Math.floor((w - 32 - (weeks - 1) * gap) / weeks)));
+      var top = 22, gridW = weeks * (cell + gap) - gap;
+      var chartWidth = Math.max(w, gridW + 52);
+      host.classList.toggle("heat-scroll", chartWidth > w + 1);
+      var left = chartWidth > w ? 26 : Math.max(26, Math.round((chartWidth - gridW) / 2));
       var h = top + 7 * (cell + gap);
-      var s = svgOpen(w, h, "每日用量日历热力图");
+      var s = svgOpen(chartWidth, h, "每日用量日历热力图", true);
       ["一", "三", "五"].forEach(function (lbl, k) {
-        s += '<text class="axis" x="' + (left - 18) + '" y="' + (top + (k * 2 + 1) * (cell + gap) + cell * 0.78) + '">' + lbl + "</text>";
+        s += '<text class="axis" x="' + (left - 22) + '" y="' + (top + (k * 2 + 1) * (cell + gap) + cell * 0.72) + '">' + lbl + "</text>";
       });
       var lastMonth = "";
       days.forEach(function (x, idx) {
         var col = Math.floor((days[0].dow + idx) / 7);
         var cx = left + col * (cell + gap), cy = top + x.dow * (cell + gap);
         var st = stepOf(x.value);
-        s += '<rect class="cell" rx="2" x="' + cx + '" y="' + cy + '" width="' + cell + '" height="' + cell +
-          '" fill="' + (st < 0 ? "var(--card-2)" : RAMP[st]) + '" data-tip="' + esc(x.date) + "<br>" +
-          (x.value > 0 ? usd(x.value) : "无用量") + '"/>';
+        s += '<rect class="cell' + (st < 0 ? ' cell-off' : '') + '" style="animation-delay:' + Math.min(idx, 40) * 12 + 'ms" rx="1" x="' + cx + '" y="' + cy + '" width="' + cell + '" height="' + cell +
+          '" fill="' + (st < 0 ? "var(--card-2)" : RAMP[st]) + '" data-tip="' + esc(x.date) + "&#10;" +
+          (x.value > 0 ? usd(x.value) + "&#10;强度 " + (st + 1) + "/5" : "无用量") + '"/>';
         var month = x.date.slice(5, 7);
-        if (month !== lastMonth && x.dow <= 1) { lastMonth = month; s += '<text class="axis" x="' + cx + '" y="9">' + Number(month) + "月</text>"; }
+        if (month !== lastMonth && x.dow <= 1) { lastMonth = month; s += '<text class="axis" x="' + cx + '" y="13">' + Number(month) + "月</text>"; }
       });
       return s + "</svg>";
     });
     ro.observe(host);
 
     $("heatLegend").innerHTML =
-      '<span><i style="background:var(--card-2)"></i>无用量</span>' +
-      '<span style="gap:.2rem">少' + RAMP.map(function (c) { return '<i style="background:' + c + '"></i>'; }).join("") + "多</span>";
+      '<span><i style="background:var(--card-2);border:1px dashed var(--line-2)"></i>无用量</span>' +
+      '<span class="heat-scale">低' + RAMP.map(function (c, i) { return '<i style="background:' + c + '" title="强度 ' + (i + 1) + '/5"></i>'; }).join("") + "高</span>" +
+      (sorted.length ? '<span class="heat-bounds">对数色阶 <b>' + usd(scaleLow) + '</b>–<b>' + usd(scaleHigh) + '</b></span>' : '');
 
     renderHours(rows);
   }
@@ -1075,7 +1279,7 @@
     $("hoursCap").textContent = "峰值 " + peakHour + ":00，按 " + used + " 个 5 小时窗口的实际跨度摊分";
 
     register(host, function (w) {
-      var size = Math.min(w, 260), c = size / 2, rMax = c - 26, rMin = 20;
+      var size = Math.min(w, 300), c = size / 2, rMax = c - 32, rMin = 22;
       var s = svgOpen(w, size, "24 小时用量分布");
       var ox = (w - size) / 2 + c;
       [0.5, 1].forEach(function (f) {
@@ -1088,7 +1292,7 @@
         var isPeak = hr === peakHour;
         s += '<path class="spoke" d="' + arc(ox, c, (rMin + len) / 2, a0, a1) + '" stroke="' +
           (isPeak ? "var(--c2)" : "var(--claude)") + '" stroke-width="' + Math.max(1, len - rMin) +
-          '" opacity="' + (isPeak ? 1 : 0.62) + '" data-tip="' + hr + ":00-" + ((hr + 1) % 24) + ':00<br>' + usd(v) + '"/>';
+          '" opacity="' + (isPeak ? 1 : 0.62) + '" data-tip="' + hr + ":00-" + ((hr + 1) % 24) + ':00&#10;' + usd(v) + '"/>';
       });
       [0, 6, 12, 18].forEach(function (hr) {
         var a = (hr / 24) * Math.PI * 2 - Math.PI / 2;
@@ -1141,14 +1345,14 @@
         var span = part.value / total * Math.PI * 2;
         if (span > gapAngle) {
           s += '<path class="arc-fill" d="' + arc(ox + c, c, r, a, a + span - gapAngle) + '" stroke="' + part.color +
-            '" stroke-width="' + sw + '" data-tip="' + esc(part.name) + "<br>" + usd(part.value) + " · " +
+            '" stroke-width="' + sw + '" data-tip="' + esc(part.name) + "&#10;" + usd(part.value) + " · " +
             (part.value / total * 100).toFixed(1) + '%"/>';
         }
         a += span;
       });
       // inline figure, so mono per the type rule; pixel is reserved for display figures
       s += '<text x="' + (ox + c) + '" y="' + (c + 2) + '" text-anchor="middle" fill="var(--ink)" ' +
-        'style="font:700 19px var(--mono);font-variant-numeric:tabular-nums">' + usd(total, false) + "</text>";
+        'style="font:700 24px var(--mono);font-variant-numeric:tabular-nums">' + usd(total, false) + "</text>";
       s += '<text class="axis" x="' + (ox + c) + '" y="' + (c + 19) + '" text-anchor="middle">模型合计</text>';
       return s + "</svg>";
     });
@@ -1264,8 +1468,11 @@
   var mq = matchMedia("(prefers-color-scheme: dark)");
   function isDark() { var pin = document.documentElement.dataset.cs; return pin ? pin === "dark" : mq.matches; }
   function syncTheme() {
-    $("themeBtn").setAttribute("aria-pressed", String(!!document.documentElement.dataset.cs));
-    $("themeColor").setAttribute("content", isDark() ? "#12141a" : "#f4f2ed");
+    var dark = isDark(), button = $("themeBtn");
+    button.setAttribute("aria-pressed", String(dark));
+    button.setAttribute("aria-label", "深色主题");
+    button.querySelector(".sr-only").textContent = "深色主题";
+    $("themeColor").setAttribute("content", dark ? "#11140f" : "#ecebe6");
   }
   mq.addEventListener("change", function () { syncTheme(); repaintAll(); });
   $("themeBtn").addEventListener("click", function () {
@@ -1289,7 +1496,10 @@
   syncPressed(Array.from(document.querySelectorAll("[data-filter]")), function (b) { return b.dataset.filter === filter; });
   $("wordmark").innerHTML = pixel("AI USAGE", 3, "currentColor");
 
-  addEventListener("resize", function () { clearTimeout(window.__rz); window.__rz = setTimeout(repaintAll, 150); });
+  addEventListener("resize", function () {
+    clearTimeout(window.__rz);
+    window.__rz = setTimeout(function () { fitHeroFigure(); fitProviderFigures(); repaintAll(); }, 150);
+  });
 
   /* ─────────────────────────── data intake ── */
   window.__render__ = function () {

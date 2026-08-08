@@ -13,9 +13,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $AppDir = $PSScriptRoot
 $Template = Join-Path $AppDir 'template.html'
-$OutDir = Join-Path $env:TEMP 'ClaudeUsage'
+$FontDir = Join-Path $AppDir 'fonts'
+$RequiredCodeBurnVersion = '0.9.19'
+$RequiredCCUsageVersion = '20.0.14'
+$RuntimeRoot = Join-Path $env:TEMP 'ClaudeUsage'
+$RetainedRun = [bool]($NoLaunch -or $KeepFile)
+$OutDir = if ($RetainedRun) {
+  Join-Path $RuntimeRoot ("debug-{0}-{1}" -f [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff'), $PID)
+} else {
+  $RuntimeRoot
+}
+$QuotaCachePath = Join-Path $RuntimeRoot 'quota-cache.json'
 $OutHtml = Join-Path $OutDir 'report.html'
 $OutData = Join-Path $OutDir 'data.js'
+$FontNames = @(
+  'ark-pixel-12px-monospaced-zh_cn.woff2',
+  'fusion-pixel-12px-monospaced-zh_hans.woff2'
+)
+$OutFonts = @($FontNames | ForEach-Object { Join-Path $OutDir $_ })
 
 function Resolve-CommandPath([string[]]$Names) {
   foreach ($name in $Names) {
@@ -23,6 +38,13 @@ function Resolve-CommandPath([string[]]$Names) {
     if ($command) { return $command.Source }
   }
   return $null
+}
+
+function Get-ToolVersion([string]$CommandPath) {
+  $raw = (& $CommandPath '--version' 2>$null | Out-String).Trim()
+  $match = [regex]::Match($raw, '\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?')
+  if ($match.Success) { return $match.Value }
+  return $raw
 }
 
 function Read-JsonFile([string]$Path) {
@@ -80,7 +102,7 @@ function Get-ClaudeOAuthUsage {
   # The endpoint rate-limits (observed 429 under repeated calls), and the app is
   # launched on demand, so a short cache keeps rapid relaunches from hammering it
   # and keeps the most important card populated when a call fails.
-  $cachePath = Join-Path $OutDir 'quota-cache.json'
+  $cachePath = $QuotaCachePath
   $FreshSeconds = 120      # reuse without calling at all
   $StaleSeconds = 3600     # reuse, clearly labelled, only if the live call fails
   $cached = $null
@@ -118,8 +140,14 @@ function Get-ClaudeOAuthUsage {
     return Use-CachedQuota 'no_credentials'
   }
   if (-not $token) { return Use-CachedQuota 'no_credentials' }
-  if ($expiresAt -and ($expiresAt - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) -lt 60000) {
-    return Use-CachedQuota 'token_expired'
+  if ($expiresAt) {
+    $expiresAtMilliseconds = [int64]0
+    if (-not [int64]::TryParse([string]$expiresAt, [ref]$expiresAtMilliseconds)) {
+      return Use-CachedQuota 'malformed_credentials'
+    }
+    if (($expiresAtMilliseconds - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) -lt 60000) {
+      return Use-CachedQuota 'token_expired'
+    }
   }
 
   $response = $null
@@ -198,129 +226,260 @@ function Get-LatestCodexRateLimit {
   return $null
 }
 
-$CodeBurn = Resolve-CommandPath @('codeburn.cmd', 'codeburn')
-if (-not $CodeBurn) {
-  throw 'CodeBurn is not installed. Run: npm install -g codeburn'
+function Get-DescendantProcessIds([int]$RootProcessId) {
+  try {
+    $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+      Select-Object @{ Name = 'Id'; Expression = { [int]$_.ProcessId } },
+                    @{ Name = 'ParentId'; Expression = { [int]$_.ParentProcessId } })
+    $pending = New-Object Collections.Generic.Queue[int]
+    $pending.Enqueue($RootProcessId)
+    $found = New-Object Collections.Generic.List[int]
+    while ($pending.Count) {
+      $parent = $pending.Dequeue()
+      foreach ($row in @($rows | Where-Object { $_.ParentId -eq $parent })) {
+        if ($found.Contains($row.Id)) { continue }
+        $found.Add($row.Id)
+        $pending.Enqueue($row.Id)
+      }
+    }
+    return @($found)
+  } catch {
+    return @()
+  }
 }
-$CCUsage = Resolve-CommandPath @('ccusage.cmd', 'ccusage')
 
-if (-not (Test-Path $OutDir)) {
-  New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+function Stop-ProcessTree([Diagnostics.Process]$Process) {
+  if (-not $Process) { return $true }
+  $ids = @([int]$Process.Id) + @(Get-DescendantProcessIds ([int]$Process.Id))
+  $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+  try { & $taskkill /PID $Process.Id /T /F 2>$null | Out-Null } catch {}
+
+  $deadline = [DateTime]::UtcNow.AddSeconds(10)
+  do {
+    $alive = @($ids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    if (-not $alive.Count) { return $true }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $deadline)
+  return $false
 }
 
-[IO.File]::Copy($Template, $OutHtml, $true)
-try { if (Test-Path $OutData) { [IO.File]::Delete($OutData) } } catch {}
+function Wait-ChildProcess([Diagnostics.Process]$Process, [int]$TimeoutMilliseconds) {
+  $exited = $false
+  try {
+    $exited = $Process.WaitForExit($TimeoutMilliseconds)
+  } catch {}
 
-if (-not $NoLaunch) {
-  Start-Process $OutHtml | Out-Null
+  if ($exited) {
+    try { return [int]$Process.ExitCode } catch { return $null }
+  }
+
+  if (-not (Stop-ProcessTree $Process)) {
+    throw 'A timed-out child process could not be terminated safely.'
+  }
+  return $null
 }
 
-# CodeBurn aggregates models/projects/sessions per period, so a period the browser
-# can switch to must be produced here - it cannot be re-derived from another period.
-$PeriodKeys = @('week', '30days', 'all')
-if ($PeriodKeys -notcontains $Period) { $PeriodKeys = @($Period) + $PeriodKeys }
-
-# ccusage is a separate tool over the same read-only session files, so it may
-# overlap with CodeBurn.
+$RunMutex = $null
+$RunMutexHeld = $false
+$RunCompleted = $false
+$PreserveFinal = $RetainedRun
 $blocksOutput = Join-Path $OutDir '_claude-blocks.json'
-$blocksJob = $null
-if ($CCUsage) {
-  try { if (Test-Path $blocksOutput) { [IO.File]::Delete($blocksOutput) } } catch {}
-  $blocksJob = Start-Process -FilePath $CCUsage `
-    -ArgumentList @('blocks', '--json') `
-    -RedirectStandardOutput $blocksOutput -WindowStyle Hidden -PassThru
-}
-
-# CodeBurn is NOT concurrency-safe: overlapping invocations leak each other's
-# rows, so a `--provider codex` run can come back holding the union of both
-# providers' models and projects while its overview stays correctly scoped.
-# Verified 2026-08-08 - parallel gave codex/30days 10 models summing $7,585.72,
-# sequential gave the correct 3 models summing $1,263.73. Keep these serial.
-$scratch = @{}
-foreach ($periodKey in $PeriodKeys) {
-  foreach ($provider in @('claude', 'codex')) {
-    $output = Join-Path $OutDir ("_{0}-{1}.json" -f $periodKey, $provider)
-    $scratch["$periodKey/$provider"] = $output
-    try { if (Test-Path $output) { [IO.File]::Delete($output) } } catch {}
-    $run = Start-Process -FilePath $CodeBurn `
-      -ArgumentList @('report', '--period', $periodKey, '--provider', $provider, '--format', 'json') `
-      -RedirectStandardOutput $output -WindowStyle Hidden -PassThru
-    try { $run.WaitForExit(120000) | Out-Null } catch {}
-  }
-}
-
-if ($blocksJob) {
-  try { $blocksJob.WaitForExit(120000) | Out-Null } catch {}
-}
-
-# Keep only the aggregates the dashboard renders. Notably drops shellCommands,
-# which is both the bulkiest section and the closest thing to command content.
-$KeepFields = @(
-  'overview', 'daily', 'models', 'projects', 'topSessions',
-  'activities', 'tools', 'mcpServers', 'skills', 'subagents', 'claudeAgentTypes'
-)
-function Select-ReportFields($Report) {
-  if (-not $Report) { return $null }
-  $slim = [ordered]@{}
-  foreach ($field in $KeepFields) {
-    if ($Report.PSObject.Properties.Name -contains $field) { $slim[$field] = $Report.$field }
-  }
-  return $slim
-}
-
-$reports = [ordered]@{}
-foreach ($periodKey in $PeriodKeys) {
-  $reports[$periodKey] = [ordered]@{
-    claude = Select-ReportFields (Read-JsonFile $scratch["$periodKey/claude"])
-    codex  = Select-ReportFields (Read-JsonFile $scratch["$periodKey/codex"])
-  }
-}
-
-$claudeBlocks = if ($CCUsage) { Read-JsonFile $blocksOutput } else { $null }
-$codexLimits = Get-LatestCodexRateLimit
-$claudeQuota = Get-ClaudeOAuthUsage
-
-$payload = [ordered]@{
-  generatedAt = [DateTimeOffset]::Now.ToString('o')
-  period = $Period
-  currency = 'USD'
-  pricingNote = 'API reference price estimate; subscription plans and custom providers may bill differently.'
-  source = [ordered]@{
-    name = 'CodeBurn'
-    version = (& $CodeBurn '--version' 2>$null | Out-String).Trim()
-  }
-  periods = @($PeriodKeys)
-  reports = $reports
-  limits = [ordered]@{
-    claudeQuota = $claudeQuota
-    claudeBlocks = $claudeBlocks
-    codex = $codexLimits
-  }
-  appDir = $AppDir
-}
-
-$json = $payload | ConvertTo-Json -Depth 100 -Compress
-$encoding = New-Object Text.UTF8Encoding($false)
 $temporaryData = "$OutData.tmp"
-[IO.File]::WriteAllText(
-  $temporaryData,
-  "window.__DATA__ = $json; if (window.__render__) window.__render__();",
-  $encoding
-)
-try { if (Test-Path $OutData) { [IO.File]::Delete($OutData) } } catch {}
-[IO.File]::Move($temporaryData, $OutData)
+$blocksJob = $null
+$scratch = @{}
 
-foreach ($path in @($scratch.Values) + @($blocksOutput)) {
-  try { [IO.File]::Delete($path) } catch {}
-}
+try {
+  # Upstream inventory, 2026-08-08: CodeBurn exposes no Windows-safe locking
+  # primitive. A built-in named .NET mutex is available on this platform and
+  # serializes separate launcher processes as well as the calls within one run.
+  $RunMutex = [Threading.Mutex]::new($false, 'Local\AIUsage-CodeBurn')
+  try {
+    $RunMutexHeld = $RunMutex.WaitOne([TimeSpan]::FromMinutes(5))
+  } catch [Threading.AbandonedMutexException] {
+    $RunMutexHeld = $true
+  }
+  if (-not $RunMutexHeld) {
+    throw 'Another AI Usage report is still running.'
+  }
 
-if ($NoLaunch) {
-  Write-Output $OutHtml
-  return
-}
+  $CodeBurn = Resolve-CommandPath @('codeburn.cmd', 'codeburn')
+  if (-not $CodeBurn) {
+    throw 'CodeBurn is not installed. Run: npm install -g codeburn'
+  }
+  $CodeBurnVersion = Get-ToolVersion $CodeBurn
+  if ($CodeBurnVersion -ne $RequiredCodeBurnVersion) {
+    throw ("Unsupported CodeBurn version {0}; run install.ps1 to install {1}." -f $CodeBurnVersion, $RequiredCodeBurnVersion)
+  }
+  $CCUsage = Resolve-CommandPath @('ccusage.cmd', 'ccusage')
+  if ($CCUsage) {
+    $CCUsageVersion = Get-ToolVersion $CCUsage
+    if ($CCUsageVersion -ne $RequiredCCUsageVersion) {
+      throw ("Unsupported ccusage version {0}; run install.ps1 to install {1}." -f $CCUsageVersion, $RequiredCCUsageVersion)
+    }
+  }
 
-if (-not $KeepFile) {
-  Start-Sleep -Seconds $DeleteAfter
-  try { [IO.File]::Delete($OutData) } catch {}
-  try { [IO.File]::Delete($OutHtml) } catch {}
+  if (-not (Test-Path $OutDir)) {
+    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+  }
+
+  [IO.File]::Copy($Template, $OutHtml, $true)
+  foreach ($fontName in $FontNames) {
+    [IO.File]::Copy((Join-Path $FontDir $fontName), (Join-Path $OutDir $fontName), $true)
+  }
+  try { if (Test-Path $OutData) { [IO.File]::Delete($OutData) } } catch {}
+
+  if (-not $NoLaunch) {
+    Start-Process $OutHtml | Out-Null
+  }
+
+  # CodeBurn aggregates models/projects/sessions per period, so a period the browser
+  # can switch to must be produced here - it cannot be re-derived from another period.
+  $PeriodKeys = @('week', '30days', 'all')
+  if ($PeriodKeys -notcontains $Period) { $PeriodKeys = @($Period) + $PeriodKeys }
+
+  # ccusage is a separate tool over the same read-only session files, so it may
+  # overlap with CodeBurn.
+  if ($CCUsage) {
+    try { if (Test-Path $blocksOutput) { [IO.File]::Delete($blocksOutput) } } catch {}
+    $blocksJob = Start-Process -FilePath $CCUsage `
+      -ArgumentList @('blocks', '--json') `
+      -RedirectStandardOutput $blocksOutput -WindowStyle Hidden -PassThru
+  }
+
+  # CodeBurn is NOT concurrency-safe: overlapping invocations leak each other's
+  # rows, so a `--provider codex` run can come back holding the union of both
+  # providers' models and projects while its overview stays correctly scoped.
+  # Verified 2026-08-08 - parallel gave codex/30days 10 models summing $7,585.72,
+  # sequential gave the correct 3 models summing $1,263.73. Keep these serial.
+  foreach ($periodKey in $PeriodKeys) {
+    foreach ($provider in @('claude', 'codex')) {
+      $output = Join-Path $OutDir ("_{0}-{1}.json" -f $periodKey, $provider)
+      $scratch["$periodKey/$provider"] = $output
+      try { if (Test-Path $output) { [IO.File]::Delete($output) } } catch {}
+      $run = $null
+      try {
+        $run = Start-Process -FilePath $CodeBurn `
+          -ArgumentList @('report', '--period', $periodKey, '--provider', $provider, '--format', 'json') `
+          -RedirectStandardOutput $output -WindowStyle Hidden -PassThru
+        $exitCode = Wait-ChildProcess $run 120000
+        if ($null -eq $exitCode) {
+          throw 'CodeBurn timed out while building a report.'
+        }
+        if ($exitCode -ne 0) {
+          throw ("CodeBurn failed for {0}/{1} with exit code {2}." -f $periodKey, $provider, $exitCode)
+        }
+      } finally {
+        if ($run) {
+          try { if (-not $run.HasExited) { $null = Stop-ProcessTree $run } } catch {}
+          try { $run.Dispose() } catch {}
+        }
+      }
+    }
+  }
+
+  $blocksUsable = $false
+  if ($blocksJob) {
+    try {
+      $blocksExitCode = Wait-ChildProcess $blocksJob 120000
+      $blocksUsable = ($null -ne $blocksExitCode) -and ($blocksExitCode -eq 0)
+    } finally {
+      try { if (-not $blocksJob.HasExited) { $null = Stop-ProcessTree $blocksJob } } catch {}
+      try { $blocksJob.Dispose() } catch {}
+      $blocksJob = $null
+    }
+  }
+
+  # Keep only the aggregates the dashboard renders. Notably drops shellCommands,
+  # which is both the bulkiest section and the closest thing to command content.
+  $KeepFields = @(
+    'overview', 'daily', 'models', 'projects', 'topSessions'
+  )
+  function Select-ReportFields($Report) {
+    if (-not $Report) { return $null }
+    $slim = [ordered]@{}
+    foreach ($field in $KeepFields) {
+      if ($Report.PSObject.Properties.Name -contains $field) { $slim[$field] = $Report.$field }
+    }
+    return $slim
+  }
+
+  $reports = [ordered]@{}
+  foreach ($periodKey in $PeriodKeys) {
+    $reports[$periodKey] = [ordered]@{
+      claude = Select-ReportFields (Read-JsonFile $scratch["$periodKey/claude"])
+      codex  = Select-ReportFields (Read-JsonFile $scratch["$periodKey/codex"])
+    }
+  }
+
+  $claudeBlocks = if ($blocksUsable) { Read-JsonFile $blocksOutput } else { $null }
+  $codexLimits = Get-LatestCodexRateLimit
+  $claudeQuota = Get-ClaudeOAuthUsage
+
+  $payload = [ordered]@{
+    generatedAt = [DateTimeOffset]::Now.ToString('o')
+    period = $Period
+    currency = 'USD'
+    pricingNote = 'API reference price estimate; subscription plans and custom providers may bill differently.'
+    source = [ordered]@{
+      name = 'CodeBurn'
+      version = $CodeBurnVersion
+    }
+    periods = @($PeriodKeys)
+    reports = $reports
+    limits = [ordered]@{
+      claudeQuota = $claudeQuota
+      claudeBlocks = $claudeBlocks
+      codex = $codexLimits
+    }
+    appDir = $AppDir
+  }
+
+  $json = $payload | ConvertTo-Json -Depth 100 -Compress
+  $encoding = New-Object Text.UTF8Encoding($false)
+  [IO.File]::WriteAllText(
+    $temporaryData,
+    "window.__DATA__ = $json; if (window.__render__) window.__render__();",
+    $encoding
+  )
+  try { if (Test-Path $OutData) { [IO.File]::Delete($OutData) } } catch {}
+  [IO.File]::Move($temporaryData, $OutData)
+  $RunCompleted = $true
+
+  if ($NoLaunch) {
+    # NoLaunch is a debugging mode and deliberately retains the final snapshot.
+    Write-Output $OutHtml
+  } elseif (-not $KeepFile) {
+    Start-Sleep -Seconds $DeleteAfter
+  }
+} finally {
+  if ($RunMutexHeld) {
+    if ($blocksJob) {
+      try { if (-not $blocksJob.HasExited) { $null = Stop-ProcessTree $blocksJob } } catch {}
+      try { $blocksJob.Dispose() } catch {}
+    }
+
+    # Raw reports are never a debugging artifact: they include fields intentionally
+    # excluded from data.js and must disappear on both success and failure.
+    foreach ($path in @($scratch.Values) + @($blocksOutput, $temporaryData)) {
+      try { if ($path -and (Test-Path $path)) { [IO.File]::Delete($path) } } catch {}
+    }
+
+    if (-not $RunCompleted -or -not $PreserveFinal) {
+      foreach ($path in @($OutData, $OutHtml) + $OutFonts) {
+        try { if (Test-Path $path) { [IO.File]::Delete($path) } } catch {}
+      }
+    }
+    if ($RetainedRun -and -not $RunCompleted) {
+      try {
+        if ((Test-Path $OutDir) -and -not (Get-ChildItem -LiteralPath $OutDir -Force -ErrorAction SilentlyContinue)) {
+          [IO.Directory]::Delete($OutDir, $false)
+        }
+      } catch {}
+    }
+
+    try { $RunMutex.ReleaseMutex() } catch {}
+  }
+  if ($RunMutex) {
+    try { $RunMutex.Dispose() } catch {}
+  }
 }

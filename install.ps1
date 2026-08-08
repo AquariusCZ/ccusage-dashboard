@@ -17,17 +17,39 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 }
 Write-Host "  [ok] Node.js $(node -v)" -ForegroundColor Green
 
+function Get-ToolVersion([string]$CommandPath) {
+  $raw = (& $CommandPath '--version' 2>$null | Out-String).Trim()
+  $match = [regex]::Match($raw, '\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?')
+  if ($match.Success) { return $match.Value }
+  return $raw
+}
+
 foreach ($tool in @(
-  @{ Command = 'codeburn'; Package = 'codeburn'; Label = 'CodeBurn' },
-  @{ Command = 'ccusage'; Package = 'ccusage'; Label = 'ccusage' }
+  @{ Command = 'codeburn'; Package = 'codeburn'; Label = 'CodeBurn'; Version = '0.9.19' },
+  @{ Command = 'ccusage'; Package = 'ccusage'; Label = 'ccusage'; Version = '20.0.14' }
 )) {
-  $present = (Get-Command "$($tool.Command).cmd" -ErrorAction SilentlyContinue) -or (Get-Command $tool.Command -ErrorAction SilentlyContinue)
-  if ($present) {
-    Write-Host "  [ok] $($tool.Label) present" -ForegroundColor Green
+  $resolved = Get-Command "$($tool.Command).cmd" -ErrorAction SilentlyContinue
+  if (-not $resolved) { $resolved = Get-Command $tool.Command -ErrorAction SilentlyContinue }
+  $installedVersion = if ($resolved -and $tool.Version) {
+    Get-ToolVersion $resolved.Source
+  } else { $null }
+  $needsInstall = -not $resolved -or ($tool.Version -and $installedVersion -ne $tool.Version)
+  if (-not $needsInstall) {
+    $suffix = if ($installedVersion) { " $installedVersion" } else { '' }
+    Write-Host "  [ok] $($tool.Label)$suffix present" -ForegroundColor Green
   } else {
-    Write-Host "  [..] installing $($tool.Package) globally"
-    npm install -g $tool.Package | Out-Null
-    Write-Host "  [ok] $($tool.Label) installed" -ForegroundColor Green
+    $package = if ($tool.Version) { "$($tool.Package)@$($tool.Version)" } else { $tool.Package }
+    Write-Host "  [..] installing $package globally"
+    npm install -g $package | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install $package." }
+    $verified = Get-Command "$($tool.Command).cmd" -ErrorAction SilentlyContinue
+    if (-not $verified) { $verified = Get-Command $tool.Command -ErrorAction SilentlyContinue }
+    if (-not $verified) { throw "$($tool.Label) was installed but is not available on PATH." }
+    $verifiedVersion = Get-ToolVersion $verified.Source
+    if ($tool.Version -and $verifiedVersion -ne $tool.Version) {
+      throw ("{0} {1} was requested, but PATH resolves {2}." -f $tool.Label, $tool.Version, $verifiedVersion)
+    }
+    Write-Host "  [ok] $($tool.Label) $verifiedVersion installed" -ForegroundColor Green
   }
 }
 
@@ -37,14 +59,6 @@ foreach ($name in @('Generate-ClaudeReport.ps1', 'template.html', 'dashboard.bat
   Unblock-File -LiteralPath (Join-Path $dest $name) -ErrorAction SilentlyContinue
 }
 Write-Host "  [ok] installed to $dest" -ForegroundColor Green
-
-try {
-  $policy = Get-ExecutionPolicy -Scope CurrentUser
-  if ($policy -in @('Restricted', 'Undefined', 'AllSigned')) {
-    Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-    Write-Host '  [ok] execution policy set to RemoteSigned for CurrentUser' -ForegroundColor Green
-  }
-} catch {}
 
 $desktop = [Environment]::GetFolderPath('Desktop')
 foreach ($oldName in @('Claude用量仪表盘.lnk', 'Claude Usage Dashboard.lnk', 'AI Usage Ledger.lnk')) {
