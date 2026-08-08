@@ -129,6 +129,27 @@ slightly below the overview total; the section says so.
 - The normal launcher preserves burn-after-read behavior. `-KeepFile` is for debugging only.
 - Codex rate-limit fields may be absent with custom providers; the UI displays an explicit unavailable state.
 
+## The desktop icon cache
+
+Explorer caches a shortcut's icon by **(icon file path + index)**, not by the
+`.lnk`. Rewriting `icon.ico` in place therefore leaves the previous artwork on
+the desktop, and deleting plus recreating the shortcut does not help because the
+icon path is unchanged. `ie4uinit.exe -show` did not reliably evict it either.
+
+`install.ps1` publishes the icon under a content-hashed name,
+`icon-<sha256[0..7]>.ico`, and points the shortcut at that. New artwork changes
+the filename, which changes the cache key, so it appears immediately with no
+cache purge and no shell restart. Stale `icon-*.ico` copies are removed on each
+install, and `icon.ico` is still written under its canonical name.
+
+To check what the shell actually resolves, call `SHGetFileInfo` with
+`SHGFI_ICON` on the `.lnk` and save the returned bitmap. That is what Explorer
+paints, cache included, and it does not require capturing the screen.
+
+The icon itself is pixel art authored on a 16x16 grid and scaled by whole
+multiples with nearest-neighbour, so every size stays crisp. It belongs to the
+same retro family as the dashboard's 5x7 bitmap numerals and block meters.
+
 ## Repository and installation
 
 Canonical source lives in `src/`. `install.ps1` copies those files to `%LOCALAPPDATA%\ClaudeUsage` and creates the desktop shortcut. Running the generator directly from `src/` is supported because it resolves `template.html` relative to `$PSScriptRoot`.
@@ -190,6 +211,6 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 - Grep the generated `data.js` for `accessToken`, `Bearer`, `claudeAiOauth`, and
   `sk-ant` - all must be absent.
 - Confirm all cost copy says API reference estimate rather than actual billing.
-- After changing `icon.ico`, recreate the desktop shortcut and run
-  `ie4uinit.exe -show`; Explorer caches a shortcut's icon by path and will keep
-  showing the old artwork otherwise.
+- After changing `icon.ico`, re-run the installer and confirm the desktop icon
+  actually changed. See the icon-cache note below; a screenshot is not needed,
+  `SHGetFileInfo` on the `.lnk` returns exactly what Explorer paints.

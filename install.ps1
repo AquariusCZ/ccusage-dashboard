@@ -52,16 +52,27 @@ foreach ($oldName in @('Claude用量仪表盘.lnk', 'Claude Usage Dashboard.lnk'
   if (Test-Path $oldShortcut) { Remove-Item -LiteralPath $oldShortcut -Force }
 }
 
+# Explorer caches a shortcut's icon by (icon file path + index), not by the .lnk.
+# Rewriting icon.ico in place therefore keeps the OLD artwork on the desktop even
+# after the shortcut is deleted and recreated, and `ie4uinit -show` does not
+# reliably evict it. Publishing the icon under a content-hashed filename changes
+# the cache key, so a new icon appears immediately with no cache purge and no
+# shell restart. icon.ico is still written for anyone referencing it by name.
+$iconHash = (Get-FileHash (Join-Path $dest 'icon.ico') -Algorithm SHA256).Hash.Substring(0, 8).ToLower()
+$iconPath = Join-Path $dest "icon-$iconHash.ico"
+Copy-Item (Join-Path $dest 'icon.ico') $iconPath -Force
+Get-ChildItem $dest -Filter 'icon-*.ico' -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -ne "icon-$iconHash.ico" } |
+  Remove-Item -Force -ErrorAction SilentlyContinue
+
 $wsh = New-Object -ComObject WScript.Shell
 $shortcutPath = Join-Path $desktop 'AI Usage.lnk'
-# Recreate rather than update: Explorer caches a shortcut's icon by path, so an
-# upgrade that only rewrites icon.ico keeps showing the previous artwork.
 if (Test-Path $shortcutPath) { Remove-Item -LiteralPath $shortcutPath -Force }
 $shortcut = $wsh.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
 $shortcut.Arguments = '"' + (Join-Path $dest 'dashboard.vbs') + '"'
 $shortcut.WorkingDirectory = $dest
-$shortcut.IconLocation = (Join-Path $dest 'icon.ico') + ',0'
+$shortcut.IconLocation = "$iconPath,0"
 $shortcut.WindowStyle = 1
 $shortcut.Description = 'Local Claude and Codex AI usage dashboard'
 $shortcut.Save()

@@ -11,6 +11,8 @@ if (Test-Path (Join-Path $dest '.git')) {
   foreach ($name in @('Generate-ClaudeReport.ps1', 'template.html', 'dashboard.bat', 'dashboard.vbs', 'icon.ico')) {
     Remove-Item -LiteralPath (Join-Path $dest $name) -Force
   }
+  # the content-hashed copies the installer publishes for the shortcut icon
+  Get-ChildItem $dest -Filter 'icon-*.ico' | Remove-Item -Force
   Write-Host 'Removed the installed runtime copy. The Git repository was preserved.' -ForegroundColor Green
 } else {
   Remove-Item -LiteralPath $dest -Recurse -Force
