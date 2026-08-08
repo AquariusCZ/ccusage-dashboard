@@ -54,6 +54,9 @@ foreach ($oldName in @('Claude用量仪表盘.lnk', 'Claude Usage Dashboard.lnk'
 
 $wsh = New-Object -ComObject WScript.Shell
 $shortcutPath = Join-Path $desktop 'AI Usage.lnk'
+# Recreate rather than update: Explorer caches a shortcut's icon by path, so an
+# upgrade that only rewrites icon.ico keeps showing the previous artwork.
+if (Test-Path $shortcutPath) { Remove-Item -LiteralPath $shortcutPath -Force }
 $shortcut = $wsh.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
 $shortcut.Arguments = '"' + (Join-Path $dest 'dashboard.vbs') + '"'
@@ -62,6 +65,9 @@ $shortcut.IconLocation = (Join-Path $dest 'icon.ico') + ',0'
 $shortcut.WindowStyle = 1
 $shortcut.Description = 'Local Claude and Codex AI usage dashboard'
 $shortcut.Save()
+try {
+  Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -ArgumentList '-show' -WindowStyle Hidden -Wait
+} catch {}
 Write-Host '  [ok] Desktop shortcut created' -ForegroundColor Green
 
 Write-Host ''

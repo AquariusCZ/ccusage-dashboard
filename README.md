@@ -1,36 +1,66 @@
 # AI Usage
 
-一个面向 Windows 的本地、阅后即焚 AI 编程用量账本，同时汇总 **Claude Code** 与 **OpenAI Codex** 的调用、会话、Token、缓存、模型和项目数据。
+*[中文说明](README.zh-CN.md)*
 
-![桌面端界面](docs/dashboard.png)
+A local, burn-after-read Windows dashboard for AI coding spend. It reads the session
+metadata **Claude Code** and **OpenAI Codex** already keep on disk, shows your real
+Claude plan quota, and deletes its own report when you close it.
 
-<p align="center"><img src="docs/mobile.png" width="390" alt="AI Usage mobile layout"></p>
+![Desktop dashboard](docs/dashboard.png)
 
-## 特点
+<p align="center"><img src="docs/mobile.png" width="360" alt="AI Usage on a narrow viewport"></p>
 
-- Claude + Codex 统一视图与独立筛选
-- 最近 30 天的调用、会话、Token、缓存命中率与项目排行
-- 使用公开 API 价格进行参考估算，不冒充订阅套餐或实际账单
-- 数据只在本机读取，不上传提示词、工具参数、密钥或会话正文
-- 浏览器先打开加载页，统计完成后自动渲染
-- 正常启动后自动删除 `%TEMP%\ClaudeUsage` 中的一次性快照
-- 中文界面、明暗主题、桌面与移动端响应式布局
+## What it shows
 
-## 数据来源
+- **Real Claude quota**, not a guess: the 5-hour session window, the 7-day total, and any
+  per-model limit, straight from your account. If a single limit hits 100% the dashboard
+  says so in plain language, because a per-model limit can be exhausted while the totals
+  still look healthy.
+- **Claude and Codex side by side**, filterable to either one.
+- **Three periods** you can switch between in the browser: last 7 days, last 30 days, all.
+- Daily cost trend, an activity calendar with streak counts, an hour-of-day profile,
+  model composition, and a project ranking.
+- Light and dark, desktop and mobile.
 
-- [CodeBurn](https://github.com/getagentseal/codeburn)：统一解析 Claude、Codex 等本地会话并计算 API 参考价
-- [ccusage](https://github.com/ccusage/ccusage)：可选，用于补充 Claude 活跃 5 小时窗口
+Cost figures are an **API reference-price estimate**. Subscription plans, custom gateways,
+enterprise agreements, and relay services all bill differently. The dashboard never claims
+to show your invoice.
 
-金额仅是公开 API 单价下的参考估算。订阅套餐、自定义网关、企业协议或中转服务的实际计费可能不同。
+## Privacy
 
-## 要求
+- Session stores are read-only inputs. Nothing is written back to them.
+- Prompt text, tool arguments, API keys, provider URLs, and authorization headers are
+  never rendered, never written to the snapshot, and never committed.
+- `shellCommands` is deliberately dropped from the payload: it is the closest thing in
+  the data to command content.
+- The generated report and its data file are deleted after a short read window. Use
+  `-KeepFile` only when debugging.
 
-- Windows 10 / 11
+### The one network call
+
+Quota comes from `GET https://api.anthropic.com/api/oauth/usage`, authenticated with the
+OAuth token Claude Code already stores locally. It is the same call Claude Code makes,
+with your own credential, to read your own quota. **No session content, prompt text, or
+usage aggregate leaves the machine.** The token is read-only, never refreshed, never
+written back, and never reaches the snapshot, a log, or an error message. If the call
+fails or you are not logged in, the dashboard states the reason and still renders
+everything else from local data.
+
+## Data sources
+
+- [CodeBurn](https://github.com/getagentseal/codeburn) normalizes Claude and Codex
+  sessions and applies public API prices.
+- [ccusage](https://github.com/ccusage/ccusage) supplies the active window's burn rate
+  and projected spend, plus the hour-of-day profile.
+- Claude's OAuth usage endpoint supplies the plan quota.
+
+## Requirements
+
+- Windows 10 or 11
 - Node.js LTS
-- CodeBurn（安装脚本会自动安装）
-- ccusage（安装脚本会自动安装，用于 Claude 活跃窗口）
+- CodeBurn and ccusage (the installer adds them if missing)
 
-## 安装
+## Install
 
 ```powershell
 git clone https://github.com/AquariusCZ/ccusage-dashboard.git
@@ -38,46 +68,55 @@ cd ccusage-dashboard
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-也可以双击 `install.bat`。安装器会：
+Or double-click `install.bat`. The installer checks for Node.js, installs any missing
+CLI dependency, copies `src/` to `%LOCALAPPDATA%\ClaudeUsage`, and creates an
+`AI Usage` shortcut on the desktop.
 
-1. 检查 Node.js；
-2. 安装缺失的 `codeburn` 与 `ccusage`；
-3. 将 `src/` 复制到 `%LOCALAPPDATA%\ClaudeUsage`；
-4. 在桌面创建 `AI Usage` 快捷方式。
+The runtime directory, the `Generate-ClaudeReport.ps1` filename, and the
+`ai-usage-ledger-theme` preference key are retained compatibility identifiers from an
+earlier Claude-only version. They do not mean the app only counts Claude.
 
-为兼容现有安装，运行目录仍使用 `%LOCALAPPDATA%\ClaudeUsage`，生成脚本仍名为 `Generate-ClaudeReport.ps1`；这些是历史兼容标识，不代表应用只统计 Claude。
+## Usage
 
-## 使用与开发
+Double-click **AI Usage** on the desktop.
 
-双击桌面上的 `AI Usage`。
-
-在仓库内生成调试快照：
+To produce a snapshot without launching a browser:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\src\Generate-ClaudeReport.ps1 -NoLaunch -KeepFile
 ```
 
-输出位于 `%TEMP%\ClaudeUsage\report.html` 和 `data.js`。
+Output lands in `%TEMP%\ClaudeUsage\report.html` and `data.js`.
 
-| 文件 | 作用 |
+| Path | Role |
 |---|---|
-| `src/Generate-ClaudeReport.ps1` | 并行采集 Claude/Codex 数据，生成一次性快照 |
-| `src/template.html` | 自包含的中文前端、图表、筛选和明暗主题 |
-| `src/dashboard.vbs` | 无控制台窗口启动器 |
-| `install.ps1` | 安装依赖、复制文件和创建桌面快捷方式 |
-| `docs/ARCHITECTURE.md` | 数据流、隐私和运行边界 |
+| `src/Generate-ClaudeReport.ps1` | Collects usage and quota, writes the one-shot snapshot |
+| `src/template.html` | Self-contained UI: charts, filters, light and dark |
+| `src/dashboard.vbs` | Launcher with no console window |
+| `install.ps1` | Dependencies, file copy, desktop shortcut |
+| `docs/ARCHITECTURE.md` | Data flow, privacy boundary, and the traps worth knowing |
 
-## 卸载
+## Uninstall
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
 
-如果仓库本身位于 `%LOCALAPPDATA%\ClaudeUsage`，卸载器只删除运行副本，不会删除 `.git`、`src/`、文档或提交历史。
+When the repository itself lives at `%LOCALAPPDATA%\ClaudeUsage`, the uninstaller removes
+only the runtime copies. `.git`, `src/`, docs, and history are left alone.
 
-## English
+## Notes for contributors
 
-AI Usage is a local, ephemeral Windows dashboard for Claude Code and OpenAI Codex usage. It reads existing local session metadata, estimates API-equivalent cost, opens instantly with a loading shell, and removes its temporary report after use. No prompt content, credentials, or session bodies are uploaded.
+Two findings are documented in `docs/ARCHITECTURE.md` and are easy to regress:
+
+1. **CodeBurn is not concurrency-safe.** Overlapping invocations leak rows between
+   providers, so a `--provider codex` run can return both providers' models while its
+   overview stays correctly scoped. The generator runs CodeBurn one process at a time.
+2. **`limits[]` is authoritative for "am I blocked".** The two headline windows alone
+   miss a per-model limit that is already exhausted.
+
+Screenshots in `docs/` are rendered from synthetic demo data, never from a real session
+store.
 
 ## License
 
