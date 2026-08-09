@@ -203,10 +203,7 @@
   .quota-head { display: flex; align-items: center; gap: .5rem; }
   .quota-head .dot { inline-size: 10px; block-size: 10px; border-radius: 1px; background: var(--p); flex: none; box-shadow: 2px 2px 0 color-mix(in oklab, var(--p) 35%, transparent); }
   .quota-head h3 { font-size: .75rem; }
-  .quota-src { margin-inline-start: auto; color: var(--muted); font-size: .75rem; letter-spacing: 0; }
-
   .quota-unavailable { overflow: hidden; }
-  .quota-unavailable .quota-offline-note { align-self: end; }
   .quota-offline {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem;
     padding: .75rem; border: 1px solid color-mix(in oklab, var(--p) 28%, var(--line));
@@ -224,8 +221,6 @@
   .quota-offline-copy span { color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
   .quota-local-ok { display: inline-flex; align-items: center; gap: .35rem; color: var(--ink-2); font-size: .75rem; white-space: nowrap; }
   .quota-local-ok::before { content: ""; inline-size: 7px; block-size: 7px; border-radius: 1px; background: var(--good); }
-  .quota-offline-note { display: flex; align-items: center; gap: .45rem; color: var(--muted); font-size: .75rem; }
-  .quota-offline-note svg { inline-size: 14px; block-size: 14px; color: var(--p); flex: none; }
 
   .meter-row { display: grid; gap: .4rem; }
   .meter-top { display: flex; align-items: flex-end; gap: .5rem; flex-wrap: wrap; }
@@ -488,7 +483,7 @@
   <div class="boot">
     <span class="brand-badge"><svg aria-hidden="true"><use href="#i-mark"/></svg></span>
     <div class="boot-line"></div>
-    <p id="bootMessage">读取 Claude 与 Codex 本地会话记录…</p>
+    <p id="bootMessage">读取本地用量…</p>
   </div>
 </div>
 
@@ -515,8 +510,8 @@
   </header>
 
   <p class="notice">
-    <span><b>金额为 API 参考价估算</b>，不等于订阅套餐、自定义服务商或实际账单。</span>
-    <span class="live">仅处理本地会话元数据</span>
+    <span><b>API 参考价估算</b>，仅供比较，不代表订阅或服务商账单。</span>
+    <span class="live">会话数据不会上传</span>
   </p>
 
   <section class="section" aria-label="当前额度" style="margin-block-start:.75rem">
@@ -538,7 +533,6 @@
   <section class="section card" style="padding:1rem 1.1rem">
     <div class="section-head">
       <h2 class="h2">每日参考成本</h2>
-      <p class="cap" id="trendCap"></p>
       <div class="tools">
         <span class="total" id="trendTotal"></span>
         <div class="seg" role="group" aria-label="趋势展示方式">
@@ -555,7 +549,6 @@
   <section class="section card" style="padding:1rem 1.1rem">
     <div class="section-head">
       <h2 class="h2">活跃度与时段</h2>
-      <p class="cap" id="activityCap"></p>
       <span class="total tools" id="heatRange"></span>
     </div>
     <div class="tiles" id="activityTiles" style="margin-block-end:1rem"></div>
@@ -575,7 +568,6 @@
     <div class="card" style="padding:1rem 1.1rem">
       <div class="section-head">
         <h2 class="h2">模型构成</h2>
-        <p class="cap" id="modelCap">按持久化历史归集，与顶部合计一致</p>
         <span class="total tools" id="modelTotal"></span>
       </div>
       <div class="chart-box" id="modelDonut"></div>
@@ -604,7 +596,7 @@ addEventListener("error", function (event) {
     column: event.colno || 0
   };
   var message = document.getElementById("bootMessage");
-  if (message) message.textContent = "界面初始化失败，请重新启动";
+  if (message) message.textContent = "页面加载失败，请重新启动";
 });
 (function () {
   "use strict";
@@ -615,10 +607,10 @@ addEventListener("error", function (event) {
   function $(id) { return document.getElementById(id); }
 
   var bootMessages = [
-    "读取 Claude 与 Codex 本地会话记录…",
-    "向 Claude 查询当前额度…",
-    "统一模型名称与公开 API 参考价…",
-    "生成一次性本地快照…"
+    "读取本地用量…",
+    "获取 Claude 额度…",
+    "计算参考成本…",
+    "生成报表…"
   ];
   var bootIndex = 0;
   var bootTimer = setInterval(function () {
@@ -919,16 +911,16 @@ addEventListener("error", function (event) {
 
   function quotaReason(code) {
     var map = {
-      no_credentials: "未找到 Claude 登录凭据",
-      malformed_credentials: "Claude 登录凭据格式异常，请在 Claude Code 中重新登录",
-      token_expired: "登录凭据已过期，请在 Claude Code 中重新登录",
-      rate_limited: "额度接口暂时限流",
-      failed_local: "无法连接 Claude 服务",
-      malformed_response: "服务端返回了无法解析的内容"
+      no_credentials: "Claude 未登录",
+      malformed_credentials: "Claude 登录信息异常，请重新登录",
+      token_expired: "Claude 登录已过期，请重新登录",
+      rate_limited: "额度查询频繁，请稍后重试",
+      failed_local: "暂时无法查询 Claude 额度",
+      malformed_response: "Claude 额度数据异常"
     };
     if (map[code]) return map[code];
-    if (code && code.indexOf("token_rejected") === 0) return "登录凭据被拒绝，请在 Claude Code 中重新登录";
-    return "未能取得额度数据" + (code ? "（" + code + "）" : "");
+    if (code && code.indexOf("token_rejected") === 0) return "Claude 登录失效，请重新登录";
+    return "Claude 额度暂不可用";
   }
 
   function renderQuota() {
@@ -956,14 +948,14 @@ addEventListener("error", function (event) {
         if (blocked.length) {
           var names = blocked.map(function (l) { return l.kind === "weekly_scoped" ? (l.model || "按模型") + " 专项额度" : l.kind === "weekly_all" ? "7 天总额度" : "5 小时额度"; });
           alarm = '<p class="alarm"><svg aria-hidden="true"><use href="#i-alert"/></svg>' +
-            esc(names.join("、")) + " 已用尽，相关请求会被拒绝</p>";
+            (q.stale ? "缓存显示 " + esc(names.join("、")) + "已用尽，当前状态待刷新" : esc(names.join("、")) + "已用尽，相关请求会被拒绝") + "</p>";
         }
       } else {
-        rows = '<p class="empty">' + esc(quotaReason(q.reason)) + "，下方为本地会话窗口的估算。</p>";
+        rows = '<p class="empty">' + esc(quotaReason(q.reason)) + "，本地用量统计仍可查看。</p>";
       }
       if (q.ok && q.stale) {
         rows = '<p class="stale"><svg aria-hidden="true"><use href="#i-alert"/></svg>' +
-          esc(quotaReason(q.staleReason)) + "，显示的是 " + esc(clock(q.cachedAt)) + " 的缓存额度</p>" + rows;
+          esc(quotaReason(q.staleReason)) + "，当前显示 " + esc(clock(q.cachedAt)) + " 的缓存</p>" + rows;
       }
 
       // ccusage still supplies burn rate and projected spend, which the quota endpoint does not
@@ -975,14 +967,13 @@ addEventListener("error", function (event) {
         var burn = convertUsd(live.burnRate && live.burnRate.costPerHour);
         var projected = convertUsd(live.projection && live.projection.totalCost);
         extra = '<div class="prov-stats" style="border-block-start:1px solid var(--line);padding-block-start:.65rem">' +
-          '<div><span>本窗口已用</span><b>' + (liveCost == null ? "-" : money(liveCost)) + "</b></div>" +
+          '<div><span>窗口成本</span><b>' + (liveCost == null ? "-" : money(liveCost)) + "</b></div>" +
           "<div><span>燃烧率</span><b>" + (burn ? money(burn) + "/时" : "-") + "</b></div>" +
-          "<div><span>按此速预计</span><b>" + (projected ? money(projected) : "-") + "</b></div></div>";
+          "<div><span>窗口预计</span><b>" + (projected ? money(projected) : "-") + "</b></div></div>";
       }
 
       out.push('<article class="card quota" style="--p:var(--claude)">' +
-        '<div class="quota-head"><span class="dot"></span><h3>Claude 额度</h3>' +
-        '<span class="quota-src">' + (q.ok ? (q.stale ? "缓存" : "服务端下发") : "不可用") + "</span></div>" +
+        '<div class="quota-head"><span class="dot"></span><h3>Claude 额度</h3></div>' +
         alarm + rows + extra + "</article>");
     }
 
@@ -995,13 +986,11 @@ addEventListener("error", function (event) {
       } else {
         body = '<div class="quota-offline" role="status">' +
           '<span class="quota-port" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' +
-          '<span class="quota-offline-copy"><b>未收到额度窗口</b><span>服务商未下发 rate_limits</span></span>' +
-          '<span class="quota-local-ok">本地统计正常</span></div>' +
-          '<p class="quota-offline-note"><svg aria-hidden="true"><use href="#i-alert"/></svg>成本、调用与会话仍按本地记录统计</p>';
+          '<span class="quota-offline-copy"><b>暂无额度数据</b><span>当前记录未包含</span></span>' +
+          '<span class="quota-local-ok">本地统计正常</span></div>';
       }
       out.push('<article class="card quota' + (cx.primary ? '' : ' quota-unavailable') + '" style="--p:var(--codex)">' +
-        '<div class="quota-head"><span class="dot"></span><h3>Codex 额度</h3>' +
-        '<span class="quota-src">' + (cx.primary ? "会话记录" : "未下发") + "</span></div>" + body + "</article>");
+        '<div class="quota-head"><span class="dot"></span><h3>Codex 额度</h3></div>' + body + "</article>");
     }
 
     host.innerHTML = out.join("");
@@ -1102,14 +1091,13 @@ addEventListener("error", function (event) {
   /* ───────────────────── ④ 每日成本 · 面积 + 平滑曲线 ── */
   function renderTrend() {
     var rows = dailyRows(), sel = shown(), host = $("trendChart");
-    $("trendCap").textContent = PERIOD_LABEL[period] + "，" + (sel.length > 1 ? "两个提供商分别成线" : pname(sel[0]));
     if (rows.length < 2) {
-      host.innerHTML = '<p class="empty">该周期内不足两天数据，无法绘制走势</p>';
+      host.innerHTML = '<p class="empty">数据不足，暂无趋势</p>';
       $("trendTable").innerHTML = ""; $("trendTotal").textContent = ""; $("trendLegend").innerHTML = "";
       return;
     }
     var totals = rows.map(rowTotal);
-    $("trendTotal").textContent = money(sum(totals), false) + " 合计";
+    $("trendTotal").textContent = "合计 " + money(sum(totals), false);
     $("trendLegend").innerHTML = sel.map(function (p) {
       return '<span><i style="background:' + pcolor(p) + '"></i><span translate="no">' + pname(p) + "</span> <b>" +
         money(sum(rows.map(function (r) { return r[p]; })), false) + "</b></span>";
@@ -1175,9 +1163,8 @@ addEventListener("error", function (event) {
   /* ──────────────────── ⑤ 活跃度与时段（同一张卡） ── */
   function renderActivity() {
     var rows = dailyRows(), host = $("heatmap");
-    $("activityCap").textContent = "日历按天，圆盘按小时（仅 Claude）";
     if (!rows.length) {
-      host.innerHTML = '<p class="empty">该周期内没有日粒度数据</p>';
+      host.innerHTML = '<p class="empty">当前周期暂无每日数据</p>';
       host.classList.remove("heat-scroll");
       $("activityTiles").innerHTML = ""; $("heatLegend").innerHTML = ""; $("heatRange").textContent = "";
       $("hoursWrap").classList.add("hide");
@@ -1200,9 +1187,9 @@ addEventListener("error", function (event) {
 
     $("heatRange").textContent = days[0].date + " → " + days[days.length - 1].date;
     $("activityTiles").innerHTML = [
-      ["活跃天数", int(active.length), "共 " + days.length + " 天", "var(--c3)"],
-      ["当前连续", int(current) + " 天", current ? "仍在持续" : "最近一天没有用量", "var(--c1)"],
-      ["最长连续", int(best) + " 天", "该周期内", "var(--c4)"],
+      ["活跃天数", int(active.length), days.length + " 天内", "var(--c3)"],
+      ["当前连续", int(current) + " 天", current ? "持续中" : "已中断", "var(--c1)"],
+      ["最长连续", int(best) + " 天", "本周期", "var(--c4)"],
       ["单日峰值", money(peak.value), peak.date, "var(--claude)"]
     ].map(function (t) {
       var tileScale = String(t[1]).length > 6 ? 3 : 4;
@@ -1290,11 +1277,11 @@ addEventListener("error", function (event) {
 
     var max = Math.max.apply(null, hours.concat([0.01]));
     var peakHour = hours.indexOf(Math.max.apply(null, hours));
-    $("hoursCap").textContent = "峰值 " + peakHour + ":00，按 " + used + " 个 5 小时窗口的实际跨度摊分";
+    $("hoursCap").textContent = "Claude · 峰值 " + peakHour + ":00";
 
     register(host, function (w) {
       var size = Math.min(w, 300), c = size / 2, rMax = c - 32, rMin = 22;
-      var s = svgOpen(w, size, "24 小时用量分布");
+      var s = svgOpen(w, size, "Claude 24 小时用量分布");
       var ox = (w - size) / 2 + c;
       [0.5, 1].forEach(function (f) {
         s += '<circle class="gridline" fill="none" cx="' + ox + '" cy="' + c + '" r="' + (rMin + (rMax - rMin) * f) + '"/>';
@@ -1344,13 +1331,12 @@ addEventListener("error", function (event) {
     var models = collect("models"), host = $("modelDonut");
     var unattributed = models.filter(function (x) { return x.item.kind === "unattributed"; });
     var namedCount = models.length - unattributed.length;
-    $("modelTotal").textContent = "共 " + namedCount + " 个模型" + (unattributed.length ? " + 未归属" : "");
-    $("modelCap").textContent = unattributed.length ? "含上游未展开或采集窗口差额" : "按持久化历史归集，与顶部合计一致";
-    if (!models.length) { host.innerHTML = '<p class="empty">该筛选下没有模型数据</p>'; $("modelLegend").innerHTML = ""; return; }
+    $("modelTotal").textContent = namedCount + " 个模型" + (unattributed.length ? " · 含未归属" : "");
+    if (!models.length) { host.innerHTML = '<p class="empty">当前筛选暂无模型数据</p>'; $("modelLegend").innerHTML = ""; return; }
     var slots = modelSlotMap();
     var total = sum(models.map(function (x) { return x.item.cost; })) || 1;
     var parts = models.slice(0, 5).map(function (x) {
-      return { name: x.item.kind === "unattributed" ? "其他未归属" : x.item.name, provider: x.p, value: n(x.item.cost), color: x.item.kind === "unattributed" ? "var(--c-rest)" : (slots[x.item.name] || "var(--c-rest)") };
+      return { name: x.item.kind === "unattributed" ? "未归属成本" : x.item.name, provider: x.p, value: n(x.item.cost), color: x.item.kind === "unattributed" ? "var(--c-rest)" : (slots[x.item.name] || "var(--c-rest)") };
     });
     var rest = models.slice(5);
     if (rest.length) {
@@ -1373,7 +1359,7 @@ addEventListener("error", function (event) {
       // inline figure, so mono per the type rule; pixel is reserved for display figures
       s += '<text x="' + (ox + c) + '" y="' + (c + 2) + '" text-anchor="middle" fill="var(--ink)" ' +
         'style="font:700 24px var(--mono);font-variant-numeric:tabular-nums">' + money(total, false) + "</text>";
-      s += '<text class="axis" x="' + (ox + c) + '" y="' + (c + 19) + '" text-anchor="middle">模型合计</text>';
+      s += '<text class="axis" x="' + (ox + c) + '" y="' + (c + 19) + '" text-anchor="middle">参考成本</text>';
       return s + "</svg>";
     });
     ro.observe(host);
@@ -1388,8 +1374,8 @@ addEventListener("error", function (event) {
   /* ────────────────────────── ⑦ 项目排行 · 条形 ── */
   function renderProjects() {
     var projects = collect("projects"), host = $("projectList");
-    $("projectTotal").textContent = projects.length > 8 ? "前 8 / 共 " + projects.length : "共 " + projects.length;
-    if (!projects.length) { host.innerHTML = '<p class="empty">该筛选下没有项目数据</p>'; return; }
+    $("projectTotal").textContent = projects.length > 8 ? "8 / " + projects.length + " 个项目" : projects.length + " 个项目";
+    if (!projects.length) { host.innerHTML = '<p class="empty">当前筛选暂无项目数据</p>'; return; }
     var max = Math.max.apply(null, projects.map(function (x) { return n(x.item.cost); }).concat([1]));
     host.innerHTML = projects.slice(0, 8).map(function (x) {
       var it = x.item, name = it.name || it.path || "未命名项目";
@@ -1419,7 +1405,7 @@ addEventListener("error", function (event) {
       block("模型明细", models.length, table(["模型", "提供商", "调用", "Tokens", "参考成本"], models.map(function (x) {
         var m = x.item, t = n(m.inputTokens) + n(m.outputTokens) + n(m.cacheReadTokens) + n(m.cacheWriteTokens);
           var tokenText = m.kind === "unattributed" || (m.tokensPartial && !t) ? "-" : (m.tokensPartial ? "≥" : "") + kmb(t);
-        return "<tr><td>" + esc(m.kind === "unattributed" ? "其他未归属" : m.name) + "</td><td>" + tag(x.p) + '</td><td class="num">' + (m.kind === "unattributed" ? "-" : int(m.calls)) +
+        return "<tr><td>" + esc(m.kind === "unattributed" ? "未归属成本" : m.name) + "</td><td>" + tag(x.p) + '</td><td class="num">' + (m.kind === "unattributed" ? "-" : int(m.calls)) +
           '</td><td class="num">' + tokenText + '</td><td class="num">' + money(m.cost) + "</td></tr>";
       })), innerWidth > 720) +
       block("高用量会话", sessions.length, table(["会话", "提供商", "日期", "项目", "调用", "参考成本"], sessions.map(function (x) {

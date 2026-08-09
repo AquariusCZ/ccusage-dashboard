@@ -12,7 +12,10 @@ foreach ($relative in @('src\Generate-ClaudeReport.ps1', 'src\ReportData.psm1', 
 $template = [IO.File]::ReadAllText((Join-Path $root 'src\template.html'))
 $installer = [IO.File]::ReadAllText((Join-Path $root 'install.ps1'))
 if (-not $installer.Contains("'ReportData.psm1'")) { throw 'The installer does not publish the reconciliation module.' }
-if (-not $template.Contains('id="modelCap"')) { throw 'The model reconciliation caption is missing.' }
+if (-not $template.Contains('id="modelDonut"')) { throw 'The model composition chart is missing.' }
+foreach ($marker in @('id="trendCap"', 'id="activityCap"', 'id="modelCap"', 'quota-src', 'quota-offline-note')) {
+  if ($template.Contains($marker)) { throw "Implementation copy leaked into the dashboard: $marker" }
+}
 if (-not $template.Contains('function cost(p) { var o = overview(p); return n(o.cost != null ? o.cost : o.netCost); }')) {
   throw 'The UI is not using gross API reference cost as its primary total.'
 }

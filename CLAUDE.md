@@ -32,6 +32,8 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 - Preserve the legacy `ClaudeUsage` runtime paths, `Generate-ClaudeReport.ps1` filename, and `ai-usage-ledger-theme` browser preference key unless a migration also covers install, upgrade, uninstall, and user-setting compatibility.
 - Preserve burn-after-read for normal launches and keep `-KeepFile` limited to debugging.
 - Use Chinese UI copy and verify desktop/mobile layout, focus visibility, dark mode, and reduced motion.
+- Keep visible copy focused on data, state, and actions. Put collection mechanics, field names,
+  and reconciliation details in documentation rather than dashboard captions.
 
 ## Quota, network, and concurrency
 
