@@ -11,7 +11,9 @@ foreach ($relative in @('src\Generate-ClaudeReport.ps1', 'src\ReportData.psm1', 
 
 $template = [IO.File]::ReadAllText((Join-Path $root 'src\template.html'))
 $installer = [IO.File]::ReadAllText((Join-Path $root 'install.ps1'))
+$uninstaller = [IO.File]::ReadAllText((Join-Path $root 'uninstall.ps1'))
 if (-not $installer.Contains("'ReportData.psm1'")) { throw 'The installer does not publish the reconciliation module.' }
+if (-not $uninstaller.Contains("'ReportData.psm1'")) { throw 'The uninstaller does not remove the reconciliation module mirror.' }
 if (-not $template.Contains('id="modelDonut"')) { throw 'The model composition chart is missing.' }
 foreach ($marker in @('id="trendCap"', 'id="activityCap"', 'id="modelCap"', 'quota-src', 'quota-offline-note')) {
   if ($template.Contains($marker)) { throw "Implementation copy leaked into the dashboard: $marker" }

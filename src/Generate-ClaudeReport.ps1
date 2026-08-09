@@ -203,7 +203,7 @@ function Get-ClaudeOAuthUsage {
     limits   = $limits
   }
 
-  # Percentages and reset stamps only - no credential material reaches this file.
+  # Quota state only - no credential material reaches this file.
   try {
     [IO.File]::WriteAllText($cachePath, ([ordered]@{
       cachedAt     = [DateTimeOffset]::Now.ToString('o')

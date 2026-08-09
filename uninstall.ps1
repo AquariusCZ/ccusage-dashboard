@@ -8,7 +8,7 @@ foreach ($name in @('AI Usage.lnk', 'AI Usage Ledger.lnk', 'Claude Usage Dashboa
 Remove-Item -LiteralPath (Join-Path $env:TEMP 'ClaudeUsage') -Recurse -Force
 
 if (Test-Path (Join-Path $dest '.git')) {
-  foreach ($name in @('Generate-ClaudeReport.ps1', 'template.html', 'dashboard.bat', 'dashboard.vbs', 'icon.ico')) {
+  foreach ($name in @('Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.html', 'dashboard.bat', 'dashboard.vbs', 'icon.ico')) {
     Remove-Item -LiteralPath (Join-Path $dest $name) -Force
   }
   Remove-Item -LiteralPath (Join-Path $dest 'fonts') -Recurse -Force

@@ -4,40 +4,39 @@
 
 *[中文说明](README.zh-CN.md)*
 
-Claude Code and OpenAI Codex already leave useful usage metadata on your PC. AI Usage
-turns those local records into a one-shot Windows dashboard, so you can see what you
-used, when you used it, and how the two tools compare without sending session content
-to another service.
+A local Windows dashboard for Claude Code and OpenAI Codex usage. It shows your real
+Claude quota, compares both tools, and estimates cost from public API prices without
+uploading session content.
 
-It also reads your real Claude plan quota. Cost figures use public API reference prices,
-which makes them useful for comparison and trend tracking, but they are not a subscription
-invoice or provider bill.
+Cost figures are for comparison and trend tracking. They are not subscription charges
+or provider bills.
 
-![AI Usage desktop dashboard](docs/dashboard.png)
+<table>
+  <tr>
+    <td width="72%"><img src="docs/dashboard.png" alt="AI Usage desktop dashboard"></td>
+    <td width="28%"><img src="docs/mobile.png" alt="AI Usage mobile dashboard"></td>
+  </tr>
+</table>
 
-<p align="center"><img src="docs/mobile.png" width="360" alt="AI Usage on a narrow viewport"></p>
+## What it shows
 
-## What you get
-
-- Claude's real 5-hour and 7-day quota windows, including per-model limits when the
-  account returns them.
-- Claude and Codex totals in one view, with filters for either provider.
+- Real Claude 5-hour and 7-day quota windows, including per-model limits when available.
+- Claude and Codex totals, shares, calls, sessions, tokens, and cache usage.
 - Last 7 days, last 30 days, and full-history views.
-- Smooth daily cost curves, a log-scaled activity calendar, streak counts, and an
-  hour-of-day profile.
-- Model composition whose costs reconcile exactly to the headline estimate, project
-  ranking, high-usage sessions, and detailed tables.
-- A bundled CJK pixel font, light and dark themes, responsive layouts, keyboard-accessible
-  charts, and reduced-motion support.
+- Daily trends, activity calendar, streaks, and Claude hour-of-day usage.
+- Model composition, project ranking, high-usage sessions, and detailed tables.
+- Light and dark themes, responsive layouts, keyboard navigation, and reduced motion.
 
-Codex quota windows appear when the provider returns `rate_limits`. Many custom providers
-do not return that field; the dashboard says so while keeping local usage and cost views
-available.
+Model costs always reconcile to the headline estimate. Any unresolved difference appears
+as **unattributed cost**, and incomplete token totals are marked as lower bounds.
 
-## Quick start
+Codex quota appears only when the local provider record includes `rate_limits`. Usage and
+cost views remain available without it.
 
-You need Windows 10 or 11 and Node.js LTS. The installer pins the audited CodeBurn and
-ccusage versions, installing or correcting either dependency when needed.
+## Install
+
+Requirements are Windows 10 or 11 and Node.js LTS. The command below also needs Git.
+Without Git, download the repository ZIP, extract it, and run `install.bat`.
 
 ```powershell
 git clone https://github.com/AquariusCZ/ccusage-dashboard.git
@@ -45,125 +44,83 @@ cd ccusage-dashboard
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-You can also double-click `install.bat`. The installer copies the runtime to
-`%LOCALAPPDATA%\ClaudeUsage` and creates an **AI Usage** shortcut on the desktop.
-CodeBurn and ccusage are installed as global npm packages and remain installed after
+You can also double-click `install.bat`. The installer pins the audited CodeBurn and
+ccusage versions, copies the runtime to `%LOCALAPPDATA%\ClaudeUsage`, and creates an
+**AI Usage** desktop shortcut. Open that shortcut whenever you want a fresh snapshot.
+CodeBurn and ccusage are installed as global npm packages and remain installed when
 AI Usage is removed. The installer does not change your persistent PowerShell execution
 policy.
 
-After that, open **AI Usage** from the desktop whenever you want a fresh snapshot.
+## Privacy
 
-## Privacy and network boundary
+- Claude Code and Codex session stores are read-only inputs.
+- Prompt text, tool arguments, provider URLs, authorization headers, and credentials are
+  excluded from the browser payload and logs.
+- Normal launches keep temporary report files for a short read window, then delete them
+  automatically.
+- The retained quota cache contains quota state and timestamps, never an OAuth token.
 
-The session stores used by Claude Code and Codex are read-only inputs. AI Usage removes
-prompt text, tool arguments, provider URLs, authorization headers, and `shellCommands`
-before it builds the browser payload. Tokens and credentials are never written into the
-snapshot or logs.
-
-A normal launch creates temporary `report.html`, `data.js`, and font files. The browser
-gets a short window to read them, then the generator deletes them. A small
-`%TEMP%\ClaudeUsage\quota-cache.json` remains between runs so a failed quota request can
-show the last known percentages and reset times; it contains no token and the uninstaller
-deletes it. `-KeepFile` exists only for debugging and writes each retained run into its
-own directory.
-
-Up to three runtime network paths remain, all documented deliberately. The third is
-inactive while CodeBurn uses its default USD display currency.
+The runtime has three documented network paths. The Frankfurter request is inactive while
+CodeBurn uses its default USD display currency.
 
 | Purpose | Destination | Data sent |
 |---|---|---|
-| Read the real Claude plan quota | Anthropic OAuth usage endpoint | The existing Claude Code OAuth token in the authorization header; no session content or usage aggregate |
-| Refresh public model prices when CodeBurn's 24-hour cache expires | GitHub raw content | An unauthenticated catalogue request; no credential, session content, or usage aggregate |
-| Refresh the selected non-USD display rate when CodeBurn's 24-hour cache expires | Frankfurter public API | The target ISO currency code only; no credential, session content, or usage aggregate |
+| Read the real Claude quota | Anthropic OAuth usage endpoint | Existing Claude Code OAuth token in the authorization header; no session content or usage aggregate |
+| Refresh public model prices | GitHub raw content | Public catalogue request; no credential or usage data |
+| Refresh a non-USD exchange rate | Frankfurter public API | Target ISO currency code only |
 
-The generator rejects unreviewed CodeBurn or ccusage versions, so a global package update
-cannot silently widen this boundary.
-
-The OAuth token is read-only. AI Usage does not refresh it, write it back, include it in
-errors, or add it to the generated report. A failed quota request never prevents the local
-dashboard from rendering.
+The OAuth token remains read-only and never enters a snapshot, log, or error message.
+Quota failures do not prevent the local dashboard from rendering.
 
 ## How it works
 
 1. The hidden launcher starts `Generate-ClaudeReport.ps1`.
-2. CodeBurn normalizes Claude and Codex session metadata and applies public API prices.
-3. The generator combines CodeBurn's durable status totals with currently readable model
-   details, preserving the headline total and exposing any unresolved remainder.
-4. ccusage supplies the active Claude window's burn rate, projection, and hour profile.
-5. The generator trims the result to the aggregates the interface actually renders.
-6. The browser loads the local payload, and normal launches clean up the temporary files.
+2. CodeBurn and ccusage aggregate local Claude and Codex metadata.
+3. The generator reconciles model costs, adds the real Claude quota, and writes a minimal
+   temporary snapshot.
+4. The browser opens the local dashboard; normal launches then remove the temporary files.
 
-CodeBurn is run one process at a time. Its report command is not concurrency-safe, and
-overlapping provider scans can silently mix model and project rows. A per-user Windows
-mutex serializes separate dashboard launches as well as the calls within one report.
+CodeBurn runs one process at a time because its report command is not concurrency-safe.
+A per-user Windows mutex protects both calls within one report and separate dashboard
+launches.
 
-CodeBurn 0.9.19 keeps the overview cost in a durable local cache, while detailed model
-tokens can disappear when old session files are no longer readable. AI Usage uses
-CodeBurn's public local status output to reconcile model costs to `overview.cost`; it
-does not inspect CodeBurn's private cache. Partial token counts are shown as lower bounds,
-and a truncated or unavailable status result becomes an explicit unattributed remainder.
-Status model costs are USD upstream, so AI Usage applies CodeBurn's reported exchange
-rate before merging them into a converted report. The default remains USD; if you select
-another CodeBurn display currency, the entire dashboard uses that ISO currency code.
+See [Architecture](docs/ARCHITECTURE.md) for the data flow, cost reconciliation, currency
+handling, network boundary, and design decisions.
 
-## Debug snapshot
+## Useful commands
 
-To keep a report without opening the browser, run:
+Generate and retain a debug snapshot.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\src\Generate-ClaudeReport.ps1 -NoLaunch -KeepFile
 ```
 
-The command prints the retained `report.html` path. Each run uses a separate
-`%TEMP%\ClaudeUsage\debug-<timestamp>-<pid>\` directory, so one debug snapshot cannot
-overwrite another.
+The command writes a separate `%TEMP%\ClaudeUsage\debug-<timestamp>-<pid>\` directory
+and does not delete it automatically. The snapshot contains local aggregates and project
+paths, so review it before sharing.
 
-## Data sources
+Run the local verification suite.
 
-- [CodeBurn](https://github.com/getagentseal/codeburn) normalizes Claude and Codex
-  sessions and applies public API reference prices.
-- [ccusage](https://github.com/ccusage/ccusage) supplies active-window burn data and the
-  hour-of-day profile.
-- Anthropic's OAuth usage endpoint supplies the Claude plan quota.
+```powershell
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\ReportData.Tests.ps1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\Static.Tests.ps1
+```
 
-## Project layout
-
-| Path | Role |
-|---|---|
-| `src/Generate-ClaudeReport.ps1` | Collects usage and quota data and writes the one-shot snapshot |
-| `src/ReportData.psm1` | Reconciles durable model costs with live model details and conservative fallbacks |
-| `src/template.html` | Local HTML, CSS, JavaScript, charts, filters, and themes |
-| `src/fonts/` | Bundled Ark and Fusion pixel webfonts with OFL-1.1 licenses |
-| `src/dashboard.vbs` | Starts the report without opening a console window |
-| `install.ps1` | Checks dependencies, installs the runtime, and creates the shortcut |
-| `tests/` | Deterministic merge tests, static checks, and retained-snapshot verification |
-| `.github/workflows/verify.yml` | Windows CI for the deterministic and static test suites |
-| `docs/ARCHITECTURE.md` | Data flow, privacy boundary, concurrency notes, and design decisions |
-
-The `%LOCALAPPDATA%\ClaudeUsage` runtime directory, the
-`Generate-ClaudeReport.ps1` filename, and the `ai-usage-ledger-theme` preference key are
-compatibility identifiers retained from the earlier Claude-only version.
-
-## Uninstall
+Uninstall the local runtime and shortcut.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 ```
 
-When the repository itself lives at `%LOCALAPPDATA%\ClaudeUsage`, the uninstaller removes
-only the installed mirror. The Git repository, `src/`, documentation, and history remain.
+## Data sources
 
-## Notes for contributors
+- [CodeBurn](https://github.com/getagentseal/codeburn) normalizes Claude and Codex usage
+  and applies public API reference prices.
+- [ccusage](https://github.com/ccusage/ccusage) supplies active-window burn data and the
+  Claude hour-of-day profile.
+- Anthropic's OAuth usage endpoint supplies the real Claude plan quota.
 
-- Treat `limits[]` as authoritative when deciding whether Claude is blocked. A per-model
-  limit can reach 100% while the headline windows still look healthy.
-- Keep CodeBurn and ccusage pinned to their audited versions until their runtime behavior
-  and network boundary have been checked again.
-- Preserve the cost invariant: every period/provider model sum equals `overview.cost`;
-  unknown cost is explicit and incomplete tokens are labelled as lower bounds.
-- Keep `README.md` and `README.zh-CN.md` aligned when behavior changes.
-- Render every screenshot in `docs/` from `tests/New-DemoSnapshot.ps1`. Real paths,
-  project names, and quota state are personal data.
+Screenshots use synthetic data generated by `tests/New-DemoSnapshot.ps1`.
 
 ## License
 
