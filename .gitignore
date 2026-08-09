@@ -9,6 +9,7 @@ ehthumbs.db
 
 # Installed runtime mirror when this repository lives in %LOCALAPPDATA%\ClaudeUsage
 /Generate-ClaudeReport.ps1
+/ReportData.psm1
 /template.html
 /dashboard.bat
 /dashboard.vbs

@@ -14,13 +14,14 @@ Desktop shortcut
        2. copy template.html and bundled pixel fonts to %TEMP%\ClaudeUsage
        3. open the browser immediately
        4. start ccusage blocks for Claude window metadata (may overlap)
-       5. run CodeBurn sequentially for every period x provider pair
-       6. keep only the aggregates the dashboard renders
-       7. read the latest locally available Codex rate-limit snapshot
-       8. atomically write data.js
-       9. in finally, delete raw scratch on every path and delete final browser files
+       5. run CodeBurn status then report sequentially for every period x provider pair
+       6. reconcile durable model costs with currently readable model details
+       7. keep only the aggregates the dashboard renders
+       8. read the latest locally available Codex rate-limit snapshot
+       9. atomically write data.js
+      10. in finally, delete raw scratch on every path and delete final browser files
           after the normal read grace period
-      10. release the mutex only after cleanup
+      11. release the mutex only after cleanup
 
 report.html polls data.js
   -> window.__DATA__
@@ -71,7 +72,7 @@ authenticated request. No session content, prompt text, or usage aggregate is se
 and a failure still leaves the local dashboard usable.
 
 The required CodeBurn 0.9.19 performs one additional upstream-controlled network
-operation: when its 24-hour cache is absent or stale, JSON report generation calls
+operation: when its 24-hour cache is absent or stale, its status/report commands call
 `loadPricing()` and GETs the public LiteLLM model-price catalogue from GitHub. The
 request is unauthenticated and carries no session content, credential, rendered
 payload, or usage aggregate. This was verified against the installed Windows package,
@@ -79,9 +80,62 @@ not inferred from its public interface. The installer pins this version and the 
 rejects other versions; a dependency upgrade must recheck this boundary before changing
 the pin. Any new app-owned upload remains a change to the product's premise.
 
-The installed ccusage 20.0.14 package was also inspected on Windows and exposes no
+Both CodeBurn invocations are local readers apart from that shared public catalogue
+refresh; status reconciliation does not introduce another destination or send usage
+aggregates anywhere. The installed ccusage 20.0.14 package was also inspected on Windows and exposes no
 explicit network request in this flow. Both the installer and generator pin that audited
 version; an unreviewed global upgrade is rejected before session data is read.
+
+CodeBurn has one conditional public network path: if the user configured a non-USD
+display currency and its 24-hour exchange-rate cache is absent or stale, `loadCurrency()`
+GETs `https://api.frankfurter.app/latest?from=USD&to=<code>`. Only the target ISO code is
+sent; no credential, session content, rendered payload, or usage aggregate is included.
+USD does not use this path. CodeBurn falls back to rate 1 when the fetch fails, and exposes
+the active `{ code, symbol, rate }` in menubar JSON; AI Usage consumes that public value.
+
+## Durable model-cost reconciliation
+
+The 2026-08-09 upstream inventory found a deliberate split in CodeBurn 0.9.19:
+
+- `report --format json` takes `overview.cost` from durable local aggregates, but builds
+  `models` from session files that are still readable now;
+- `status --format menubar-json` exposes durable `current.topModels` through a public
+  command, capped at 20 rows;
+- CodeBurn 0.9.19 is still the latest published package, and upstream `main` retains the
+  same split, so an upgrade does not solve the mismatch.
+
+AI Usage therefore reuses the upstream public status shape instead of parsing CodeBurn's
+private cache or reimplementing its pricing logic. For each period/provider pair it runs
+status first and report second, then merges durable cost/call totals into report model
+rows so names and currently readable token details remain available.
+
+Report costs are already converted to CodeBurn's active display currency, while menubar
+`current.cost` and `topModels` remain USD. The merge multiplies durable cost, savings, and
+estimated-cost fields by `status.currency.rate` and requires the status/report currency
+codes to agree. If no usable rate exists for a non-USD report, the live-report fallback
+still conserves the converted overview total. ccusage window costs are USD and are
+converted at render time with the same snapshot rate; when that rate is unavailable,
+those three optional window amounts show `-` instead of being mislabelled.
+
+The invariant is strict:
+
+```text
+sum(displayed model costs) == overview.cost
+```
+
+`overview.cost` is the gross API reference-price estimate. `overview.netCost` reflects
+CodeBurn optimisation semantics and is not used as the dashboard's reference-price
+headline. If status is missing, ahead of the report, or truncated, live model rows remain
+visible and a neutral `unattributed` row conserves the unresolved remainder. Historical
+model token totals can be incomplete after source logs disappear: nonzero partial values
+are labelled with `>=` in the UI, while rows with no readable token detail show `-`.
+If live rows themselves exceed the reference total beyond rounding tolerance, their model
+allocation is contradictory: AI Usage drops that allocation and exposes the full reference
+total as unattributed instead of scaling or silently clipping named models.
+
+`costReconciliation` records `referenceCost`, `statusCost`, `modelSource`,
+`modelSourceCost`, `unattributedCost`, and `modelTokensPartial` for verification and
+future migrations. It contains aggregates only.
 
 ## CodeBurn is not concurrency-safe
 
@@ -105,10 +159,11 @@ serializes separate launcher processes until their shared temporary files are cl
 The upstream inventory found no CodeBurn locking primitive usable on Windows; the
 built-in mutex was platform-verified before adoption. Each child process has a hard
 timeout; Windows `taskkill /T /F` terminates the npm wrapper and its Node descendants,
-and their process IDs are checked before the mutex can be released. This costs roughly 9s instead
-of 3s for six report calls, which the loader covers. Do not reintroduce parallelism for
-these calls. ccusage is a different tool over the same read-only files and may still
-overlap.
+and their process IDs are checked before the mutex can be released. Status reconciliation
+makes twelve serial CodeBurn calls for the three periods and two providers. A full-history
+Windows run measured roughly 23s on the audited machine; the loader covers that interval.
+Do not reintroduce parallelism for these calls. ccusage is a different tool over the same
+read-only files and may still overlap.
 
 ## Data contract
 
@@ -116,6 +171,8 @@ overlap.
 
 - `periods`: the period keys produced this run, currently `week`, `30days`, `all`
 - `reports[periodKey].claude` / `reports[periodKey].codex`: trimmed CodeBurn reports
+  whose `models` cost sum equals `overview.cost`; each also carries aggregate-only
+  `costReconciliation` metadata described above
 - `limits.claudeQuota`: `{ ok, reason, fiveHour, sevenDay, limits[] }` from the
   OAuth usage endpoint. `ok:false` carries a classified `reason`
   (`no_credentials`, `malformed_credentials`, `token_expired`, `token_rejected_401`,
@@ -129,7 +186,11 @@ overlap.
   it; frequently all-null on custom providers, which the UI states explicitly
 - `generatedAt`, `period` (the default selection), `currency`, and source version
 
-Each report keeps only `overview`, `daily`, `models`, `projects`, and `topSessions`.
+`currency` is `{ code, symbol, rate }`. `code` is the report display currency, `rate` is
+the public USD-to-code rate CodeBurn used when available, and the UI prefixes non-USD
+figures with the ISO code so the hand-drawn bitmap totals remain unambiguous.
+
+Each report keeps only `currency`, `overview`, `daily`, `models`, `projects`, and `topSessions`.
 Every other CodeBurn section is dropped; `shellCommands` is called out deliberately
 because it is the bulkiest section and the closest thing in the payload to command
 content.
@@ -138,9 +199,9 @@ CodeBurn scopes `models` and `projects` per period, so a period the browser can
 switch to has to be generated here - it cannot be re-derived from another period.
 
 The default period is 30 days. Cost is always labelled as an API reference-price
-estimate because subscription and custom-provider billing can differ. The model
-donut totals only cost CodeBurn attributes to a named model, which can sit
-slightly below the overview total; the section says so.
+estimate because subscription and custom-provider billing can differ. The model donut
+must equal the overview total; any cost CodeBurn cannot assign to a returned model is an
+explicit neutral remainder rather than a hidden gap.
 
 ## Design boundaries
 
@@ -256,10 +317,16 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 
 ## Verification
 
-- Parse `src/Generate-ClaudeReport.ps1` with the PowerShell AST parser.
+- Run `tests/ReportData.Tests.ps1` for durable/live merge, gross-vs-net selection,
+  truncation, missing-status, and ahead-status fallbacks.
+- Run `tests/Static.Tests.ps1` to parse the PowerShell scripts and module and syntax-check
+  the dashboard JavaScript with Node.
+- Run `tests/New-DemoSnapshot.ps1` and verify its `data.js`; this deterministic fixture is
+  also the only permitted source for the committed README screenshots.
 - Generate a real snapshot with `-NoLaunch -KeepFile`.
-- Parse `data.js`; confirm each period's `claude` and `codex` model name sets do
-  not overlap, which is the tell for the CodeBurn concurrency bug above.
+- Run `tests/Verify-Snapshot.ps1` against `data.js`; confirm each period/provider model
+  sum equals `overview.cost`, reconciliation metadata is present, sensitive markers are
+  absent, and Claude/Codex model name sets do not overlap.
 - Render at desktop and mobile widths; check console errors and horizontal
   overflow (`document.documentElement.scrollWidth` must equal `clientWidth`).
 - Exercise every period and provider combination, the chart/table toggle, and the

@@ -1,5 +1,7 @@
 # AI Usage
 
+[![Verify](https://github.com/AquariusCZ/ccusage-dashboard/actions/workflows/verify.yml/badge.svg)](https://github.com/AquariusCZ/ccusage-dashboard/actions/workflows/verify.yml)
+
 *[中文说明](README.zh-CN.md)*
 
 Claude Code and OpenAI Codex already leave useful usage metadata on your PC. AI Usage
@@ -23,7 +25,8 @@ invoice or provider bill.
 - Last 7 days, last 30 days, and full-history views.
 - Smooth daily cost curves, a log-scaled activity calendar, streak counts, and an
   hour-of-day profile.
-- Model composition, project ranking, high-usage sessions, and detailed tables.
+- Model composition whose costs reconcile exactly to the headline estimate, project
+  ranking, high-usage sessions, and detailed tables.
 - A bundled CJK pixel font, light and dark themes, responsive layouts, keyboard-accessible
   charts, and reduced-motion support.
 
@@ -64,12 +67,14 @@ show the last known percentages and reset times; it contains no token and the un
 deletes it. `-KeepFile` exists only for debugging and writes each retained run into its
 own directory.
 
-Two runtime network paths remain, both documented deliberately.
+Up to three runtime network paths remain, all documented deliberately. The third is
+inactive while CodeBurn uses its default USD display currency.
 
 | Purpose | Destination | Data sent |
 |---|---|---|
 | Read the real Claude plan quota | Anthropic OAuth usage endpoint | The existing Claude Code OAuth token in the authorization header; no session content or usage aggregate |
 | Refresh public model prices when CodeBurn's 24-hour cache expires | GitHub raw content | An unauthenticated catalogue request; no credential, session content, or usage aggregate |
+| Refresh the selected non-USD display rate when CodeBurn's 24-hour cache expires | Frankfurter public API | The target ISO currency code only; no credential, session content, or usage aggregate |
 
 The generator rejects unreviewed CodeBurn or ccusage versions, so a global package update
 cannot silently widen this boundary.
@@ -82,13 +87,24 @@ dashboard from rendering.
 
 1. The hidden launcher starts `Generate-ClaudeReport.ps1`.
 2. CodeBurn normalizes Claude and Codex session metadata and applies public API prices.
-3. ccusage supplies the active Claude window's burn rate, projection, and hour profile.
-4. The generator trims the result to the aggregates the interface actually renders.
-5. The browser loads the local payload, and normal launches clean up the temporary files.
+3. The generator combines CodeBurn's durable status totals with currently readable model
+   details, preserving the headline total and exposing any unresolved remainder.
+4. ccusage supplies the active Claude window's burn rate, projection, and hour profile.
+5. The generator trims the result to the aggregates the interface actually renders.
+6. The browser loads the local payload, and normal launches clean up the temporary files.
 
 CodeBurn is run one process at a time. Its report command is not concurrency-safe, and
 overlapping provider scans can silently mix model and project rows. A per-user Windows
 mutex serializes separate dashboard launches as well as the calls within one report.
+
+CodeBurn 0.9.19 keeps the overview cost in a durable local cache, while detailed model
+tokens can disappear when old session files are no longer readable. AI Usage uses
+CodeBurn's public local status output to reconcile model costs to `overview.cost`; it
+does not inspect CodeBurn's private cache. Partial token counts are shown as lower bounds,
+and a truncated or unavailable status result becomes an explicit unattributed remainder.
+Status model costs are USD upstream, so AI Usage applies CodeBurn's reported exchange
+rate before merging them into a converted report. The default remains USD; if you select
+another CodeBurn display currency, the entire dashboard uses that ISO currency code.
 
 ## Debug snapshot
 
@@ -115,10 +131,13 @@ overwrite another.
 | Path | Role |
 |---|---|
 | `src/Generate-ClaudeReport.ps1` | Collects usage and quota data and writes the one-shot snapshot |
+| `src/ReportData.psm1` | Reconciles durable model costs with live model details and conservative fallbacks |
 | `src/template.html` | Local HTML, CSS, JavaScript, charts, filters, and themes |
 | `src/fonts/` | Bundled Ark and Fusion pixel webfonts with OFL-1.1 licenses |
 | `src/dashboard.vbs` | Starts the report without opening a console window |
 | `install.ps1` | Checks dependencies, installs the runtime, and creates the shortcut |
+| `tests/` | Deterministic merge tests, static checks, and retained-snapshot verification |
+| `.github/workflows/verify.yml` | Windows CI for the deterministic and static test suites |
 | `docs/ARCHITECTURE.md` | Data flow, privacy boundary, concurrency notes, and design decisions |
 
 The `%LOCALAPPDATA%\ClaudeUsage` runtime directory, the
@@ -140,9 +159,11 @@ only the installed mirror. The Git repository, `src/`, documentation, and histor
   limit can reach 100% while the headline windows still look healthy.
 - Keep CodeBurn and ccusage pinned to their audited versions until their runtime behavior
   and network boundary have been checked again.
+- Preserve the cost invariant: every period/provider model sum equals `overview.cost`;
+  unknown cost is explicit and incomplete tokens are labelled as lower bounds.
 - Keep `README.md` and `README.zh-CN.md` aligned when behavior changes.
-- Render every screenshot in `docs/` from synthetic data. Real paths, project names, and
-  quota state are personal data.
+- Render every screenshot in `docs/` from `tests/New-DemoSnapshot.ps1`. Real paths,
+  project names, and quota state are personal data.
 
 ## License
 

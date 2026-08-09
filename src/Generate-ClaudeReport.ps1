@@ -14,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 $AppDir = $PSScriptRoot
 $Template = Join-Path $AppDir 'template.html'
 $FontDir = Join-Path $AppDir 'fonts'
+$ReportDataModule = Join-Path $AppDir 'ReportData.psm1'
 $RequiredCodeBurnVersion = '0.9.19'
 $RequiredCCUsageVersion = '20.0.14'
 $RuntimeRoot = Join-Path $env:TEMP 'ClaudeUsage'
@@ -31,6 +32,7 @@ $FontNames = @(
   'fusion-pixel-12px-monospaced-zh_hans.woff2'
 )
 $OutFonts = @($FontNames | ForEach-Object { Join-Path $OutDir $_ })
+Import-Module $ReportDataModule -Force
 
 function Resolve-CommandPath([string[]]$Names) {
   foreach ($name in $Names) {
@@ -279,6 +281,24 @@ function Wait-ChildProcess([Diagnostics.Process]$Process, [int]$TimeoutMilliseco
   return $null
 }
 
+function Invoke-CodeBurnJson([string[]]$Arguments, [string]$Output, [string]$Label) {
+  try { if (Test-Path $Output) { [IO.File]::Delete($Output) } } catch {}
+  $run = $null
+  try {
+    $run = Start-Process -FilePath $CodeBurn `
+      -ArgumentList $Arguments `
+      -RedirectStandardOutput $Output -WindowStyle Hidden -PassThru
+    $exitCode = Wait-ChildProcess $run 120000
+    if ($null -eq $exitCode) { throw "CodeBurn timed out while building $Label." }
+    if ($exitCode -ne 0) { throw ("CodeBurn failed for {0} with exit code {1}." -f $Label, $exitCode) }
+  } finally {
+    if ($run) {
+      try { if (-not $run.HasExited) { $null = Stop-ProcessTree $run } } catch {}
+      try { $run.Dispose() } catch {}
+    }
+  }
+}
+
 $RunMutex = $null
 $RunMutexHeld = $false
 $RunCompleted = $false
@@ -351,29 +371,27 @@ try {
   # providers' models and projects while its overview stays correctly scoped.
   # Verified 2026-08-08 - parallel gave codex/30days 10 models summing $7,585.72,
   # sequential gave the correct 3 models summing $1,263.73. Keep these serial.
+  #
+  # Upstream inventory, 2026-08-09: `report --format json` takes overview totals
+  # from CodeBurn's durable daily cache but still builds models from surviving
+  # session files. `status --format menubar-json --scope local` already exposes
+  # the durable model rollup (up to 20 rows). Run status immediately before the
+  # report, then merge that public output into the report contract below.
   foreach ($periodKey in $PeriodKeys) {
     foreach ($provider in @('claude', 'codex')) {
-      $output = Join-Path $OutDir ("_{0}-{1}.json" -f $periodKey, $provider)
-      $scratch["$periodKey/$provider"] = $output
-      try { if (Test-Path $output) { [IO.File]::Delete($output) } } catch {}
-      $run = $null
+      $statusOutput = Join-Path $OutDir ("_{0}-{1}-status.json" -f $periodKey, $provider)
+      $reportOutput = Join-Path $OutDir ("_{0}-{1}-report.json" -f $periodKey, $provider)
+      $scratch["$periodKey/$provider/status"] = $statusOutput
+      $scratch["$periodKey/$provider/report"] = $reportOutput
       try {
-        $run = Start-Process -FilePath $CodeBurn `
-          -ArgumentList @('report', '--period', $periodKey, '--provider', $provider, '--format', 'json') `
-          -RedirectStandardOutput $output -WindowStyle Hidden -PassThru
-        $exitCode = Wait-ChildProcess $run 120000
-        if ($null -eq $exitCode) {
-          throw 'CodeBurn timed out while building a report.'
-        }
-        if ($exitCode -ne 0) {
-          throw ("CodeBurn failed for {0}/{1} with exit code {2}." -f $periodKey, $provider, $exitCode)
-        }
-      } finally {
-        if ($run) {
-          try { if (-not $run.HasExited) { $null = Stop-ProcessTree $run } } catch {}
-          try { $run.Dispose() } catch {}
-        }
-      }
+        Invoke-CodeBurnJson `
+          @('status', '--format', 'menubar-json', '--scope', 'local', '--provider', $provider,
+            '--period', $periodKey, '--no-optimize', '--no-timeline') `
+          $statusOutput "$periodKey/$provider durable models"
+      } catch {}
+      Invoke-CodeBurnJson `
+        @('report', '--period', $periodKey, '--provider', $provider, '--format', 'json') `
+        $reportOutput "$periodKey/$provider report"
     }
   }
 
@@ -392,7 +410,7 @@ try {
   # Keep only the aggregates the dashboard renders. Notably drops shellCommands,
   # which is both the bulkiest section and the closest thing to command content.
   $KeepFields = @(
-    'overview', 'daily', 'models', 'projects', 'topSessions'
+    'currency', 'overview', 'daily', 'models', 'projects', 'topSessions'
   )
   function Select-ReportFields($Report) {
     if (-not $Report) { return $null }
@@ -400,16 +418,38 @@ try {
     foreach ($field in $KeepFields) {
       if ($Report.PSObject.Properties.Name -contains $field) { $slim[$field] = $Report.$field }
     }
-    return $slim
+    return [pscustomobject]$slim
+  }
+
+  function Select-StatusCurrent($Status) {
+    if ($Status -and $Status.PSObject.Properties.Name -contains 'current') { return $Status.current }
+    return $null
+  }
+
+  function Select-StatusCurrency($Status) {
+    if ($Status -and $Status.PSObject.Properties.Name -contains 'currency') { return $Status.currency }
+    return $null
   }
 
   $reports = [ordered]@{}
   foreach ($periodKey in $PeriodKeys) {
+    $claudeReport = Select-ReportFields (Read-JsonFile $scratch["$periodKey/claude/report"])
+    $codexReport = Select-ReportFields (Read-JsonFile $scratch["$periodKey/codex/report"])
+    $claudeStatus = Read-JsonFile $scratch["$periodKey/claude/status"]
+    $codexStatus = Read-JsonFile $scratch["$periodKey/codex/status"]
     $reports[$periodKey] = [ordered]@{
-      claude = Select-ReportFields (Read-JsonFile $scratch["$periodKey/claude"])
-      codex  = Select-ReportFields (Read-JsonFile $scratch["$periodKey/codex"])
+      claude = Merge-CodeBurnDurableModels -Report $claudeReport -StatusCurrent (Select-StatusCurrent $claudeStatus) -StatusCurrency (Select-StatusCurrency $claudeStatus)
+      codex  = Merge-CodeBurnDurableModels -Report $codexReport -StatusCurrent (Select-StatusCurrent $codexStatus) -StatusCurrency (Select-StatusCurrency $codexStatus)
     }
   }
+
+  $reportCurrencies = @($PeriodKeys | ForEach-Object { @($reports[$_].claude.currency, $reports[$_].codex.currency) })
+  $statusCurrencies = @($PeriodKeys | ForEach-Object {
+    foreach ($provider in @('claude', 'codex')) {
+      Select-StatusCurrency (Read-JsonFile $scratch["$_/$provider/status"])
+    }
+  })
+  $displayCurrency = Resolve-DisplayCurrency -ReportCurrencies $reportCurrencies -StatusCurrencies $statusCurrencies
 
   $claudeBlocks = if ($blocksUsable) { Read-JsonFile $blocksOutput } else { $null }
   $codexLimits = Get-LatestCodexRateLimit
@@ -418,7 +458,7 @@ try {
   $payload = [ordered]@{
     generatedAt = [DateTimeOffset]::Now.ToString('o')
     period = $Period
-    currency = 'USD'
+    currency = $displayCurrency
     pricingNote = 'API reference price estimate; subscription plans and custom providers may bill differently.'
     source = [ordered]@{
       name = 'CodeBurn'

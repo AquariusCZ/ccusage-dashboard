@@ -1,5 +1,7 @@
 # AI Usage
 
+[![验证](https://github.com/AquariusCZ/ccusage-dashboard/actions/workflows/verify.yml/badge.svg)](https://github.com/AquariusCZ/ccusage-dashboard/actions/workflows/verify.yml)
+
 *[English](README.md)*
 
 Claude Code 和 OpenAI Codex 已经在电脑里留下了足够多的用量元数据。我做这个工具，
@@ -19,7 +21,7 @@ AI Usage 会把这些本地记录整理成一张一次性 Windows 面板，也�
 - Claude 与 Codex 的合计和各自占比，也可以单独筛选一家。
 - 近七天、近三十天和全部历史三个周期。
 - 平滑的每日成本曲线、对数色阶活跃日历、连续活跃天数和按小时分布。
-- 模型构成、项目排行、高用量会话与明细表格。
+- 模型成本与顶部预估严格对齐的模型构成、项目排行、高用量会话与明细表格。
 - 内置中日韩像素字体、明暗主题、移动端布局、键盘可访问图表和减少动态效果支持。
 
 Codex 额度只有在服务商返回 `rate_limits` 时才能显示。许多自定义服务商不会下发这个字段，
@@ -51,12 +53,14 @@ Claude Code 和 Codex 的会话存储只会被读取。生成浏览器载荷以�
 额度请求失败时可显示上一次的百分比和重置时间。它不含令牌，卸载器会一并删除。
 `-KeepFile` 只用于调试，每次保留的运行都会写进独立目录。
 
-运行时有两条网络路径，项目把它们明确写在这里。
+运行时最多有三条网络路径，项目把它们明确写在这里。CodeBurn 使用默认 USD 显示币种时，
+第三条路径不会启用。
 
 | 用途 | 目的地 | 发送内容 |
 |---|---|---|
 | 读取真实的 Claude 套餐额度 | Anthropic OAuth 用量端点 | Claude Code 已有的 OAuth 令牌只放在鉴权头中，不发送会话内容或用量汇总 |
 | CodeBurn 的二十四小时价格缓存过期时刷新公开模型价格 | GitHub 原始文件 | 未鉴权的价格目录请求，不携带凭据、会话内容或用量汇总 |
+| CodeBurn 选择非 USD 币种且二十四小时汇率缓存过期时刷新汇率 | Frankfurter 公开 API | 只发送目标 ISO 币种代码，不携带凭据、会话内容或用量汇总 |
 
 生成器会拒绝未经复核的 CodeBurn 或 ccusage 版本，全局包升级不会悄悄扩大这条边界。
 
@@ -67,12 +71,22 @@ OAuth 令牌始终只读。AI Usage 不刷新、不回写，也不会把它放�
 
 1. 隐藏启动器运行 `Generate-ClaudeReport.ps1`。
 2. CodeBurn 统一解析 Claude 与 Codex 的会话元数据，并套用公开 API 参考价。
-3. ccusage 提供当前 Claude 窗口的燃烧率、预计花费和按小时分布。
-4. 生成器只保留界面真正会使用的汇总字段。
-5. 浏览器读取本地载荷，正常启动随后清理临时文件。
+3. 生成器把 CodeBurn 的持久状态总额与当前仍可读取的模型明细合并，保留顶部总额，
+   无法归属的差额会明确列出。
+4. ccusage 提供当前 Claude 窗口的燃烧率、预计花费和按小时分布。
+5. 生成器只保留界面真正会使用的汇总字段。
+6. 浏览器读取本地载荷，正常启动随后清理临时文件。
 
 CodeBurn 每次只运行一个进程。它的报告命令不支持并发，重叠扫描可能悄悄混入另一家
 服务商的模型和项目记录。项目使用 Windows 用户级互斥锁，同时约束单份报告和多个启动进程。
+
+CodeBurn 0.9.19 会持久保存概览成本，但旧会话文件无法继续读取后，模型级 Token 明细可能
+不再完整。AI Usage 使用 CodeBurn 公开的本地状态输出，把模型成本核对到 `overview.cost`，
+不会读取它的私有缓存。Token 不完整时按下限显示；状态结果缺失或被截断时，差额会列为
+“其他未归属”，不会让模型合计悄悄低于顶部预估。
+上游状态里的模型成本以 USD 保存，因此合并到已换算的 report 以前，AI Usage 会应用
+CodeBurn 返回的汇率。默认仍是 USD；用户选择其他 CodeBurn 显示币种后，整个面板统一显示
+该 ISO 币种代码。
 
 ## 保留调试快照
 
@@ -96,10 +110,13 @@ powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\src\Generate-ClaudeR
 | 路径 | 作用 |
 |---|---|
 | `src/Generate-ClaudeReport.ps1` | 采集用量和额度数据，写出一次性快照 |
+| `src/ReportData.psm1` | 合并持久模型成本、当前模型明细与保守降级结果 |
 | `src/template.html` | 本地 HTML、CSS、JavaScript、图表、筛选和主题 |
 | `src/fonts/` | 内置方舟与缝合像素 Web 字体及 OFL-1.1 许可证 |
 | `src/dashboard.vbs` | 无控制台窗口的启动器 |
 | `install.ps1` | 检查依赖、安装运行文件并创建桌面快捷方式 |
+| `tests/` | 确定性合并测试、静态检查与保留快照核验 |
+| `.github/workflows/verify.yml` | 在 Windows CI 中运行确定性测试与静态检查 |
 | `docs/ARCHITECTURE.md` | 数据流、隐私边界、并发约束和设计决策 |
 
 `%LOCALAPPDATA%\ClaudeUsage` 运行目录、`Generate-ClaudeReport.ps1` 文件名和
@@ -119,8 +136,11 @@ Git 仓库、`src/`、文档和提交历史都会保留。
 - 判断 Claude 是否被限流时，以 `limits[]` 为准。按模型额度可能已经达到百分之百，
   两个主要窗口仍然看起来正常。
 - CodeBurn 与 ccusage 保持在已经审计的版本。升级以前要重新检查运行行为和网络边界。
+- 保持成本不变量：每个周期、每家服务商的模型成本之和必须等于 `overview.cost`；
+  未知成本要明确列出，不完整 Token 要标成下限。
 - 功能变化以后同步维护 `README.md` 与 `README.zh-CN.md`。
-- `docs/` 里的截图只使用合成数据。真实路径、项目名称和额度状态都属于个人信息。
+- `docs/` 里的截图只使用 `tests/New-DemoSnapshot.ps1` 生成的合成数据。真实路径、
+  项目名称和额度状态都属于个人信息。
 
 ## 许可
 

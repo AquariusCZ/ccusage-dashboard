@@ -55,7 +55,7 @@ foreach ($tool in @(
 
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item (Join-Path $srcDir '*') -Destination $dest -Recurse -Force
-foreach ($name in @('Generate-ClaudeReport.ps1', 'template.html', 'dashboard.bat', 'dashboard.vbs', 'icon.ico')) {
+foreach ($name in @('Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.html', 'dashboard.bat', 'dashboard.vbs', 'icon.ico')) {
   Unblock-File -LiteralPath (Join-Path $dest $name) -ErrorAction SilentlyContinue
 }
 Write-Host "  [ok] installed to $dest" -ForegroundColor Green

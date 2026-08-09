@@ -15,6 +15,10 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 ## Commands
 
 - Generate a debug snapshot: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\src\Generate-ClaudeReport.ps1 -NoLaunch -KeepFile`
+- Run deterministic data tests: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\ReportData.Tests.ps1`
+- Run static checks: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\Static.Tests.ps1`
+- Verify a retained snapshot: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\Verify-Snapshot.ps1 -DataPath <debug-dir>\data.js`
+- Generate the screenshot-safe demo: `powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\New-DemoSnapshot.ps1 -OutputDirectory <demo-dir>`
 - Install locally: `powershell -ExecutionPolicy Bypass -File .\install.ps1`
 - Open the installed app: `wscript.exe "$env:LOCALAPPDATA\ClaudeUsage\dashboard.vbs"`
 
@@ -38,6 +42,16 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   24-hour cache expires. Version `0.9.19` is the audited and required runtime; upgrades
   require re-auditing this boundary. It must never receive or upload credentials or
   rendered payloads.
+- When the user has selected a non-USD CodeBurn display currency, CodeBurn may refresh
+  its public Frankfurter exchange-rate cache. Convert durable status USD amounts with
+  the reported rate before merging, and keep CodeBurn plus ccusage costs in one currency.
+- CodeBurn 0.9.19's report overview is durable while its model rows are limited to
+  currently readable sessions. Reconcile model costs through CodeBurn's public local
+  `status --format menubar-json` output; never read or parse CodeBurn's private cache.
+- The API reference-price headline is `overview.cost`, not `overview.netCost`. For every
+  period and provider, displayed model costs must sum to that headline. Represent any
+  unresolved remainder explicitly as unattributed cost, and mark incomplete per-model
+  token counts as lower bounds instead of presenting them as complete totals.
 - Run CodeBurn **one process at a time across launcher processes**. It is not
   concurrency-safe and overlapping runs silently mix providers' models and projects.
   See `docs/ARCHITECTURE.md`.
@@ -58,5 +72,6 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 ## Publishing
 
 - Screenshots in `docs/` must be rendered from synthetic demo data, never from a real
-  session store. Real project paths and account quota state are personal data.
+  session store. Use `tests/New-DemoSnapshot.ps1`; real project paths and account quota
+  state are personal data.
 - Keep `README.md` (English) and `README.zh-CN.md` (Chinese) in sync when behaviour changes.

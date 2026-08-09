@@ -1,0 +1,30 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test report reconciliation
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\ReportData.Tests.ps1
+      - name: Check scripts and dashboard syntax
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Static.Tests.ps1
+      - name: Verify synthetic snapshot contract
+        shell: powershell
+        run: |
+          $demo = Join-Path $env:RUNNER_TEMP 'ai-usage-demo'
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\New-DemoSnapshot.ps1 -OutputDirectory $demo
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Verify-Snapshot.ps1 -DataPath (Join-Path $demo 'data.js')
