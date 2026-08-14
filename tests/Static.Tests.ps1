@@ -9,6 +9,14 @@ foreach ($relative in @('src\Generate-ClaudeReport.ps1', 'src\ReportData.psm1', 
   if ($errors.Count) { throw "$relative has PowerShell parse errors: $($errors[0].Message)" }
 }
 
+# Windows PowerShell reads a BOM-less script in the system ANSI code page, so a
+# non-ASCII literal in a .ps1 becomes mojibake by the time it reaches a snapshot.
+# All visible copy lives in template.html, which is served as UTF-8 HTML.
+foreach ($relative in @('src\Generate-ClaudeReport.ps1', 'src\ReportData.psm1', 'tests\New-DemoSnapshot.ps1', 'tests\ReportData.Tests.ps1', 'tests\Static.Tests.ps1', 'tests\Verify-Snapshot.ps1')) {
+  $bytes = [IO.File]::ReadAllBytes((Join-Path $root $relative))
+  if (@($bytes | Where-Object { $_ -gt 127 }).Count) { throw "$relative contains non-ASCII bytes; visible copy belongs in template.html" }
+}
+
 $template = [IO.File]::ReadAllText((Join-Path $root 'src\template.html'))
 $installer = [IO.File]::ReadAllText((Join-Path $root 'install.ps1'))
 $uninstaller = [IO.File]::ReadAllText((Join-Path $root 'uninstall.ps1'))

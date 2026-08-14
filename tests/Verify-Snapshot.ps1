@@ -28,9 +28,11 @@ foreach ($period in @($data.periods)) {
 function Assert-NoSensitiveFields($Value, [string]$Path = '$') {
   if ($null -eq $Value) { return }
   if ($Value -is [string]) {
-    if ($Value -match '(?i)\bBearer\s+[A-Za-z0-9._-]{12,}' -or $Value -match '(?i)sk-ant-[A-Za-z0-9_-]{8,}') {
+    if ($Value -match '(?i)\bBearer\s+[A-Za-z0-9._-]{12,}' -or $Value -match '(?i)\bsk-[A-Za-z0-9_-]{16,}') {
       throw "Credential-like value found at $Path"
     }
+    # The quota calls read a provider endpoint; none of it belongs in a snapshot.
+    if ($Value -match '(?i)https?://') { throw "Provider endpoint found at $Path" }
     return
   }
   if ($Value -is [Collections.IEnumerable] -and $Value -isnot [Management.Automation.PSCustomObject]) {

@@ -18,10 +18,11 @@ Desktop shortcut
        6. reconcile durable model costs with currently readable model details
        7. keep only the aggregates the dashboard renders
        8. read the latest locally available Codex rate-limit snapshot
-       9. atomically write data.js
-      10. in finally, delete raw scratch on every path and delete final browser files
+       9. replay the CC Switch usage script of the current Codex provider
+      10. atomically write data.js
+      11. in finally, delete raw scratch on every path and delete final browser files
           after the normal read grace period
-      11. release the mutex only after cleanup
+      12. release the mutex only after cleanup
 
 report.html polls data.js
   -> window.__DATA__
@@ -67,9 +68,16 @@ Red lines, mirrored from the reference implementation in the AI Resume project:
 ### Network boundary
 
 The OAuth request goes to Anthropic's own API with the user's own credential to
-read the user's own quota - the same call Claude Code makes. It is the app's only
-authenticated request. No session content, prompt text, or usage aggregate is sent,
-and a failure still leaves the local dashboard usable.
+read the user's own quota - the same call Claude Code makes. No session content,
+prompt text, or usage aggregate is sent, and a failure still leaves the local
+dashboard usable.
+
+The app makes exactly two authenticated requests, both of them quota reads against
+a provider the user has already configured, and both of them replaying a call that
+tool already makes on its own: this one, and the Codex relay usage call described
+below. Neither sends anything but the credential that authenticates it. Any third
+authenticated destination, and any app-owned upload, remains a change to the
+product's premise.
 
 The required CodeBurn 0.9.19 performs one additional upstream-controlled network
 operation: when its 24-hour cache is absent or stale, its status/report commands call
@@ -92,6 +100,55 @@ GETs `https://api.frankfurter.app/latest?from=USD&to=<code>`. Only the target IS
 sent; no credential, session content, rendered payload, or usage aggregate is included.
 USD does not use this path. CodeBurn falls back to rate 1 when the fetch fails, and exposes
 the active `{ code, symbol, rate }` in menubar JSON; AI Usage consumes that public value.
+
+## Codex quota comes from the provider, not from the session record
+
+`limits.codex` is scraped from the newest session transcript that carries a
+`rate_limits` payload. Only the official OpenAI endpoint ever emits one, so a
+relay-backed Codex provider leaves that card permanently empty however much quota
+is left. The relay knows the answer; the session record never sees it.
+
+CC Switch already solved this. Every provider row in `%USERPROFILE%\.cc-switch\cc-switch.db`
+may carry a `usage_script` in `providers.meta`: one declared GET plus a JavaScript
+extractor, polled every `autoQueryInterval` minutes, rendered as a balance. Nothing
+about the result is written to disk, so the request has to be replayed rather than
+read back.
+
+The 2026-08-13 upstream inventory found no CLI, export, or local API for that
+database, so it is opened read-only through the `winsqlite3.dll` that Windows already
+ships - no new dependency, and no private cache is parsed. Only the current row is
+read: `select name, meta, settings_config from providers where app_type='codex' and is_current=1`.
+Switching providers in CC Switch therefore switches this card with it.
+
+The declaration is reused; the extractor is not. `Get-CodexUsageRequest` reads the
+endpoint, method, headers, and timeout, and resolves `{{baseUrl}}` from the
+provider's TOML `model_providers.<model_provider>.base_url` and `{{apiKey}}` from its
+`auth.OPENAI_API_KEY`. `ConvertTo-CodexQuota` then does its own extraction, because
+the upstream extractor is JavaScript and because the card needs the whole
+`subscription` block rather than the single balance CC Switch renders.
+
+Red lines, mirroring the Claude quota call:
+
+1. the API key is read-only, and never reaches the payload, a log, or an exception
+   message - the failure path maps a status code and discards the exception text,
+   which can echo the Authorization header back;
+2. only `GET` and `HEAD` are replayed; a usage script that mutates is refused rather
+   than trusted;
+3. the endpoint must be `https`, and every placeholder must resolve or the call
+   fails closed rather than sending a literal `{{...}}`;
+4. a missing database, a busy database, a disabled script, and every transport
+   failure degrade to a stated reason, never throw.
+
+**Subscription windows are shared across keys; usage figures are not.** One
+subscription can back several API keys. The response splits accordingly: `usage`,
+`daily_usage`, and `model_stats` count the calling key alone, while `subscription`
+counts the whole plan. The card reads only the subscription block, so it stays
+correct when the same plan is used through more than one endpoint. `weekly_window_start`
+is the only anchor a relay reports, so the reset is derived as start + 7 days; a
+window whose limit is `0` is unmetered and renders usage without a meter.
+
+Relay amounts carry their own `unit`. Only `USD` shares the snapshot's conversion
+rate; any other unit is rendered verbatim rather than converted.
 
 ## Durable model-cost reconciliation
 
@@ -182,8 +239,20 @@ read-only files and may still overlap.
 - `limits.claudeBlocks`: optional ccusage block data, including `startTime`,
   `burnRate`, and `projection` for the active window - still the only source of
   burn rate and projected spend
+- `limits.codexQuota`: `{ ok, reason, provider, planName, mode, isValid, unit,
+  remaining, expiresAt, windows[] }` replayed from the current CC Switch provider's
+  usage script, where each window is `{ kind, limit, used, percent, startsAt, resetsAt }`
+  and `percent` is null for an unmetered window. `ok:false` carries a classified
+  `reason` (`no_ccswitch`, `sqlite_unavailable`, `ccswitch_unreadable`,
+  `no_current_provider`, `usage_script_missing`, `usage_script_disabled`,
+  `usage_script_unreadable`, `provider_config_unreadable`, `no_endpoint`,
+  `no_base_url`, `no_api_key`, `unsupported_method`, `insecure_endpoint`,
+  `unresolved_placeholder`, `key_rejected_401`, `key_rejected_403`, `rate_limited`,
+  `failed_local`, `malformed_response`, `http_<status>`) and the UI states it in
+  plain Chinese. Neither the API key nor the provider endpoint is present in this file.
 - `limits.codex`: latest rate-limit metadata when the configured provider exposes
-  it; frequently all-null on custom providers, which the UI states explicitly
+  it; only the official OpenAI endpoint emits it, so it is the fallback source and
+  `limits.codexQuota` takes precedence when both are present
 - `generatedAt`, `period` (the default selection), `currency`, and source version
 
 `currency` is `{ code, symbol, rate }`. `code` is the report display currency, `rate` is
@@ -210,7 +279,9 @@ explicit neutral remainder rather than a hidden gap.
 - The browser receives a single static snapshot; there is no server-side application state.
 - `data.js` is written through a temporary name and atomic move to prevent partial reads.
 - The normal launcher preserves burn-after-read behavior. `-KeepFile` is for debugging only.
-- Codex rate-limit fields may be absent with custom providers; the UI displays an explicit unavailable state.
+- Codex rate-limit fields are absent on relay providers; the card then reads the relay's own
+  quota, and states an explicit unavailable reason when neither source answers.
+- The CC Switch database is opened read-only and never written; its private caches are not parsed.
 
 ## The desktop icon cache
 
@@ -242,8 +313,9 @@ When the repository itself is checked out at `%LOCALAPPDATA%\ClaudeUsage`, root-
 Normal launches retain the legacy `%TEMP%\ClaudeUsage\report.html` path while the
 named mutex covers its complete lifetime. `-KeepFile` and `-NoLaunch` are debugging
 modes: every run receives an independent `debug-<timestamp>-<pid>` directory so a later
-debug run cannot overwrite a retained snapshot. The quota cache alone remains shared at
-the runtime root.
+debug run cannot overwrite a retained snapshot. The two quota caches alone remain shared
+at the runtime root: `quota-cache.json` and `codex-quota-cache.json`. Both hold quota
+state only, with a 120-second fresh window and a 3600-second labelled-stale window.
 
 ## Compatibility identifiers
 

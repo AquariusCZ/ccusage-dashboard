@@ -110,4 +110,84 @@ $codexOnlyCurrency = Resolve-DisplayCurrency `
 Assert-Close $codexOnlyCurrency.rate 7.2 'display currency may use a valid status rate from either provider'
 Assert-True ($codexOnlyCurrency.code -eq 'CNY') 'display currency must match every report'
 
+# Codex relay quota, replayed from a CC Switch usage script
+function New-UsageScriptMeta([string]$Url, [string]$Method, [bool]$Enabled, [string]$HeaderValue) {
+  $code = '({ request: { url: "' + $Url + '", method: "' + $Method + '", headers: { "Authorization": "' + $HeaderValue + '" } },' +
+    ' extractor: function(response) { return { remaining: response?.remaining, unit: response?.unit ?? "USD" }; } })'
+  return (@{ usage_script = @{ enabled = $Enabled; language = 'javascript'; timeout = 10; code = $code } } | ConvertTo-Json -Depth 6 -Compress)
+}
+
+function New-ProviderConfig([string]$BaseUrl, [string]$ApiKey) {
+  $toml = "model_provider = `"custom`"`nmodel = `"gpt-5.5`"`n`n[model_providers.custom]`nname = `"Relay`"`nbase_url = `"$BaseUrl`"`nwire_api = `"responses`"`n"
+  $auth = if ($ApiKey) { @{ OPENAI_API_KEY = $ApiKey } } else { @{} }
+  return (@{ auth = $auth; config = $toml } | ConvertTo-Json -Depth 6 -Compress)
+}
+
+$standardMeta = New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $true 'Bearer {{apiKey}}'
+$standardConfig = New-ProviderConfig 'https://relay.example.com' 'sk-relay-test-key'
+
+$request = Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson $standardConfig
+Assert-True ($request.ok -eq $true) 'a standard CC Switch usage script must produce a request'
+Assert-True ($request.url -eq 'https://relay.example.com/v1/usage') 'the baseUrl placeholder must resolve against the provider TOML'
+Assert-True ($request.method -eq 'GET') 'the declared method must be preserved'
+Assert-True ($request.headers['Authorization'] -eq 'Bearer sk-relay-test-key') 'the apiKey placeholder must resolve inside headers'
+Assert-True ($request.headers['User-Agent'] -eq 'AI-Usage/1.0') 'a User-Agent must be supplied when the script omits one'
+Assert-True ($request.timeoutSeconds -eq 10) 'the script timeout must carry through'
+
+$trailingSlash = Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson (New-ProviderConfig 'https://relay.example.com/' 'sk-relay-test-key')
+Assert-True ($trailingSlash.url -eq 'https://relay.example.com/v1/usage') 'a trailing slash on base_url must not double up'
+
+$ownAgent = Get-CodexUsageRequest `
+  -MetaJson (@{ usage_script = @{ enabled = $true; timeout = 10; code = '({ request: { url: "{{baseUrl}}/v1/usage", method: "GET", headers: { "User-Agent": "cc-switch/1.0" } } })' } } | ConvertTo-Json -Depth 6 -Compress) `
+  -SettingsConfigJson $standardConfig
+Assert-True ($ownAgent.headers['User-Agent'] -eq 'cc-switch/1.0') 'a script that declares its own User-Agent must keep it'
+
+Assert-True ((Get-CodexUsageRequest -MetaJson '{}' -SettingsConfigJson $standardConfig).reason -eq 'usage_script_missing') 'a provider without a usage script must say so'
+Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $false 'Bearer {{apiKey}}') -SettingsConfigJson $standardConfig).reason -eq 'usage_script_disabled') 'a disabled usage script must not be replayed'
+Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'POST' $true 'Bearer {{apiKey}}') -SettingsConfigJson $standardConfig).reason -eq 'unsupported_method') 'a mutating usage script must be refused, not trusted'
+Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson (New-ProviderConfig 'http://relay.example.com' 'sk-relay-test-key')).reason -eq 'insecure_endpoint') 'a plaintext endpoint must be refused'
+Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson (New-ProviderConfig '' 'sk-relay-test-key')).reason -eq 'no_base_url') 'a provider without base_url must degrade with a reason'
+Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson (New-ProviderConfig 'https://relay.example.com' '')).reason -eq 'no_api_key') 'a provider without a key must degrade with a reason'
+Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $true 'Bearer {{sessionToken}}') -SettingsConfigJson $standardConfig).reason -eq 'unresolved_placeholder') 'an unsupported placeholder must fail closed rather than be sent literally'
+Assert-True ((Get-CodexUsageRequest -MetaJson 'not json' -SettingsConfigJson $standardConfig).reason -eq 'usage_script_unreadable') 'unreadable provider metadata must degrade with a reason'
+
+$usage = [pscustomobject]@{
+  isValid = $true
+  mode = 'unrestricted'
+  planName = 'Weekly 600 Plan'
+  remaining = 245.67
+  unit = 'USD'
+  subscription = [pscustomobject]@{
+    daily_limit_usd = 0; daily_usage_usd = 274.05
+    weekly_limit_usd = 600; weekly_usage_usd = 354.33; weekly_window_start = '2026-08-13T11:56:30+08:00'
+    monthly_limit_usd = 0; monthly_usage_usd = 354.33
+    expires_at = '2026-08-28T08:40:42+08:00'
+  }
+}
+$codexQuota = ConvertTo-CodexQuota -Response $usage -ProviderName 'Relay'
+Assert-True ($codexQuota.ok -eq $true) 'a relay usage response must produce quota state'
+Assert-Close $codexQuota.remaining 245.67 'the relay balance must survive extraction'
+Assert-True ($codexQuota.unit -eq 'USD') 'the relay unit must be normalised'
+Assert-True ($codexQuota.provider -eq 'Relay') 'the card must know which provider answered'
+$weekly = @($codexQuota.windows | Where-Object { $_.kind -eq 'weekly' })[0]
+Assert-Close $weekly.percent 59.055 'the weekly meter must be usage over limit'
+Assert-True (([DateTimeOffset]$weekly.resetsAt) -eq ([DateTimeOffset]'2026-08-20T11:56:30+08:00')) 'a rolling weekly window resets seven days after it starts'
+$daily = @($codexQuota.windows | Where-Object { $_.kind -eq 'daily' })[0]
+Assert-True ($null -eq $daily.percent) 'a zero limit is unmetered and must not render a meter'
+Assert-Close $daily.used 274.05 'an unmetered window still reports its usage'
+
+$fallbackShape = ConvertTo-CodexQuota -Response ([pscustomobject]@{
+  is_active = $false
+  quota = [pscustomobject]@{ remaining = 12.5; unit = 'cny' }
+}) -ProviderName $null
+Assert-Close $fallbackShape.remaining 12.5 'the quota.remaining fallback must match CC Switch extraction'
+Assert-True ($fallbackShape.unit -eq 'CNY') 'the quota.unit fallback must match CC Switch extraction'
+Assert-True ($fallbackShape.isValid -eq $false) 'is_active must win over the permissive default'
+Assert-True ($fallbackShape.windows.Count -eq 0) 'a response without a subscription block must not invent windows'
+
+$balanceOnly = ConvertTo-CodexQuota -Response ([pscustomobject]@{ balance = 7 }) -ProviderName 'Relay'
+Assert-Close $balanceOnly.remaining 7 'the balance fallback must match CC Switch extraction'
+Assert-True ($balanceOnly.isValid -eq $true) 'a response that says nothing about validity is assumed valid'
+Assert-True ((ConvertTo-CodexQuota -Response $null).reason -eq 'malformed_response') 'an empty response must degrade with a reason'
+
 Write-Output 'ReportData.Tests.ps1: PASS'

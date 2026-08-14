@@ -25,7 +25,10 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 ## Rules
 
 - `CLAUDE.md` is the only project rule source. Do not add `AGENTS.md` or duplicate rule files.
-- Treat Claude and Codex session stores as read-only inputs.
+- Treat Claude and Codex session stores, and the CC Switch database, as read-only inputs.
+- Keep runtime and test PowerShell files pure ASCII. Windows PowerShell reads a BOM-less
+  script in the system ANSI code page, so a non-ASCII literal reaches the snapshot as
+  mojibake. All visible copy belongs in `template.html`, which is served as UTF-8.
 - Never display or commit prompt text, tool arguments, API keys, provider URLs, or authorization headers.
 - Label all cost as an API reference-price estimate, not actual subscription or provider billing.
 - Keep canonical runtime files in `src/`; root-level copies are an ignored installed mirror.
@@ -37,9 +40,19 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 
 ## Quota, network, and concurrency
 
-- The OAuth usage call is the app's only authenticated network request. Keep the token
-  read-only, out of the payload, out of logs, and out of exception text. Any failure
-  degrades with a stated reason; it never throws and never blanks the dashboard.
+- The app makes exactly two authenticated network requests, both quota reads against a
+  provider the user already configured: Claude's OAuth usage endpoint, and the Codex
+  relay usage call replayed from CC Switch. Keep every credential read-only, out of the
+  payload, out of logs, and out of exception text. Any failure degrades with a stated
+  reason; it never throws and never blanks the dashboard. A third authenticated
+  destination is a change to the product's premise, not an implementation detail.
+- Codex quota on a relay provider comes from CC Switch's `usage_script`, read read-only
+  from `.cc-switch\cc-switch.db` through the Windows-supplied `winsqlite3.dll`. Reuse the
+  script's declared request only; never evaluate its JavaScript extractor, never replay a
+  method other than GET or HEAD, never send an unresolved placeholder, and never parse CC
+  Switch's private caches. Official Codex `rate_limits` stay the fallback source.
+- Read a relay's subscription windows, not its per-key usage: one plan can back several
+  keys, and only `subscription` counts the whole plan.
 - CodeBurn may refresh its public LiteLLM price catalogue from GitHub when its local
   24-hour cache expires. Version `0.9.19` is the audited and required runtime; upgrades
   require re-auditing this boundary. It must never receive or upload credentials or

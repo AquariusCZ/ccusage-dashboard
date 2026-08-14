@@ -226,7 +226,8 @@
   .meter-top { display: flex; align-items: flex-end; gap: .5rem; flex-wrap: wrap; }
   .meter-label { color: var(--ink-2); font-size: .75rem; font-weight: 600; }
   .meter-pct { color: var(--sev, var(--good)); font: 700 1.5rem/1 var(--mono); font-variant-numeric: tabular-nums; }
-  .meter-note { margin-inline-start: auto; color: var(--muted); font-size: .75rem; white-space: nowrap; }
+  /* A relay names its own plan, so the note has to shrink rather than overflow. */
+  .meter-note { margin-inline-start: auto; color: var(--muted); font-size: .75rem; white-space: nowrap; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
   .blocks { display: flex; gap: 2px; }
   .blocks i { flex: 1; block-size: 12px; border-radius: 1px; background: var(--off); transform-origin: bottom; animation: block-pop .32s cubic-bezier(.2,.8,.2,1) backwards; }
   .meter-foot { display: flex; gap: .5rem; color: var(--muted); font-size: .75rem; }
@@ -923,6 +924,32 @@ addEventListener("error", function (event) {
     return "Claude 额度暂不可用";
   }
 
+  function codexQuotaReason(code) {
+    var map = {
+      no_ccswitch: "未找到 CC Switch 数据",
+      sqlite_unavailable: "无法读取 CC Switch 数据",
+      ccswitch_unreadable: "CC Switch 数据暂时无法读取",
+      no_current_provider: "CC Switch 未选中 Codex 服务商",
+      usage_script_missing: "当前服务商未配置额度查询",
+      usage_script_disabled: "当前服务商已关闭额度查询",
+      usage_script_unreadable: "额度查询配置异常",
+      provider_config_unreadable: "服务商配置异常",
+      no_endpoint: "额度查询未指定地址",
+      no_base_url: "服务商未配置接口地址",
+      no_api_key: "服务商未配置密钥",
+      unsupported_method: "额度查询方式不受支持",
+      insecure_endpoint: "额度查询地址不是 HTTPS",
+      unresolved_placeholder: "额度查询配置不完整",
+      rate_limited: "额度查询频繁，请稍后重试",
+      failed_local: "暂时无法查询 Codex 额度",
+      malformed_response: "Codex 额度数据异常"
+    };
+    if (map[code]) return map[code];
+    if (code && code.indexOf("key_rejected") === 0) return "服务商拒绝了额度查询";
+    if (code && code.indexOf("http_") === 0) return "服务商额度接口异常";
+    return "Codex 额度暂不可用";
+  }
+
   function renderQuota() {
     var host = $("quota"), out = [];
     var q = (data.limits && data.limits.claudeQuota) || {};
@@ -979,17 +1006,61 @@ addEventListener("error", function (event) {
 
     if (filter !== "claude") {
       var cx = (data.limits && data.limits.codex) || {};
-      var body;
-      if (cx.primary && cx.primary.used_percent != null) {
+      var cq = (data.limits && data.limits.codexQuota) || {};
+      var body, populated = false;
+
+      if (cq.ok) {
+        // A relay reports its allowance in its own unit; only USD shares the
+        // snapshot's conversion rate.
+        var relayMoney = function (v) {
+          if (v == null) return "-";
+          if (String(cq.unit || "USD").toUpperCase() === "USD") {
+            var converted = convertUsd(v);
+            return converted == null ? "-" : money(converted);
+          }
+          return String(cq.unit).toUpperCase() + " " +
+            new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n(v));
+        };
+        var WINDOW_LABEL = { weekly: "周额度", daily: "日额度", monthly: "月额度" };
+        var windows = cq.windows || [];
+        var rows = "", note = cq.planName || null;
+        windows.forEach(function (w) {
+          if (w.percent == null) return;                    // a zero limit means unmetered
+          rows += meterRow(WINDOW_LABEL[w.kind] || w.kind, n(w.percent), w.resetsAt, note);
+          note = null;                                      // the plan name belongs to the first meter only
+        });
+
+        // The metered window carries the figure the provider itself headlines;
+        // its daily bucket is cut on the provider's own clock, so it is left to
+        // the local daily chart instead.
+        var metered = windows.filter(function (w) { return w.percent != null; })[0];
+        var stats = '<div class="prov-stats"' + (rows ? ' style="border-block-start:1px solid var(--line);padding-block-start:.65rem"' : "") + ">" +
+          "<div><span>" + (metered ? esc((WINDOW_LABEL[metered.kind] || "").replace("额度", "") + "已用") : "已用") + "</span><b>" +
+            esc(metered ? relayMoney(metered.used) + " / " + relayMoney(metered.limit) : "-") + "</b></div>" +
+          "<div><span>剩余额度</span><b>" + esc(relayMoney(cq.remaining)) + "</b></div>" +
+          "<div><span>订阅到期</span><b>" + esc(cq.expiresAt ? dayClock(cq.expiresAt) : "-") + "</b></div></div>";
+
+        body = (cq.isValid === false
+          ? '<p class="alarm"><svg aria-hidden="true"><use href="#i-alert"/></svg>服务商已停用该密钥，相关请求会被拒绝</p>'
+          : "") +
+          (cq.stale
+            ? '<p class="stale"><svg aria-hidden="true"><use href="#i-alert"/></svg>' +
+              esc(codexQuotaReason(cq.staleReason)) + "，当前显示 " + esc(clock(cq.cachedAt)) + " 的缓存</p>"
+            : "") +
+          rows + stats;
+        populated = true;
+      } else if (cx.primary && cx.primary.used_percent != null) {
+        // Official Codex still issues rate_limits through the session record.
         body = meterRow("主限额", n(cx.primary.used_percent), cx.primary.resets_at, null) +
           (cx.secondary && cx.secondary.used_percent != null ? meterRow("次限额", n(cx.secondary.used_percent), cx.secondary.resets_at, null) : "");
+        populated = true;
       } else {
         body = '<div class="quota-offline" role="status">' +
           '<span class="quota-port" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' +
-          '<span class="quota-offline-copy"><b>暂无额度数据</b><span>当前记录未包含</span></span>' +
+          '<span class="quota-offline-copy"><b>暂无额度数据</b><span>' + esc(codexQuotaReason(cq.reason)) + "</span></span>" +
           '<span class="quota-local-ok">本地统计正常</span></div>';
       }
-      out.push('<article class="card quota' + (cx.primary ? '' : ' quota-unavailable') + '" style="--p:var(--codex)">' +
+      out.push('<article class="card quota' + (populated ? "" : " quota-unavailable") + '" style="--p:var(--codex)">' +
         '<div class="quota-head"><span class="dot"></span><h3>Codex 额度</h3></div>' + body + "</article>");
     }
 

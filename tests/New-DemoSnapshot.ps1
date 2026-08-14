@@ -184,6 +184,21 @@ $payload = [ordered]@{
       [ordered]@{ startTime = '2026-08-07T10:00:00-07:00'; endTime = '2026-08-07T15:00:00-07:00'; actualEndTime = '2026-08-07T14:50:00-07:00'; costUSD = 38.2; isActive = $false; isGap = $false },
       [ordered]@{ startTime = '2026-08-09T07:00:00-07:00'; endTime = '2026-08-09T12:00:00-07:00'; actualEndTime = '2026-08-09T09:30:00-07:00'; costUSD = 12.5; isActive = $true; isGap = $false; burnRate = [ordered]@{ costPerHour = 2.4 }; projection = [ordered]@{ totalCost = 18.8 } }
     ) }
+    codexQuota = [ordered]@{
+      ok = $true
+      reason = $null
+      provider = 'Demo Relay'
+      planName = 'Weekly 500 Plan'
+      mode = 'unrestricted'
+      isValid = $true
+      unit = 'USD'
+      remaining = 231.60
+      expiresAt = '2026-09-05T09:00:00-07:00'
+      windows = @(
+        [ordered]@{ kind = 'weekly'; limit = 500; used = 268.40; percent = 53.68; startsAt = '2026-08-06T09:00:00-07:00'; resetsAt = '2026-08-13T09:00:00-07:00' },
+        [ordered]@{ kind = 'daily'; limit = 0; used = 96.20; percent = $null; startsAt = $null; resetsAt = $null }
+      )
+    }
     codex = [ordered]@{
       primary = [ordered]@{ used_percent = 44; resets_at = '2026-08-09T13:00:00-07:00' }
       secondary = [ordered]@{ used_percent = 18; resets_at = '2026-08-16T00:00:00-07:00' }

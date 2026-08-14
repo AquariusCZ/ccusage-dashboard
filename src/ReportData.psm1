@@ -11,9 +11,25 @@ function ConvertTo-FiniteDouble($Value) {
   }
 }
 
+# Strict mode cannot read `.PSObject.Properties.Name` on a record with no
+# properties at all, which an empty JSON object parses to, so the members are
+# walked instead of projected.
+function Test-RecordProperty($Record, [string]$Name) {
+  if (-not $Record) { return $false }
+  foreach ($property in $Record.PSObject.Properties) {
+    if ($property.Name -eq $Name) { return $true }
+  }
+  return $false
+}
+
 function Get-RecordNumber($Record, [string]$Name) {
-  if (-not $Record -or $Record.PSObject.Properties.Name -notcontains $Name) { return 0.0 }
+  if (-not (Test-RecordProperty $Record $Name)) { return 0.0 }
   return ConvertTo-FiniteDouble $Record.$Name
+}
+
+function Get-RecordValue($Record, [string]$Name) {
+  if (-not (Test-RecordProperty $Record $Name)) { return $null }
+  return $Record.$Name
 }
 
 function Copy-Record($Record) {
@@ -265,4 +281,214 @@ function Merge-CodeBurnDurableModels {
   return $Report
 }
 
-Export-ModuleMember -Function Merge-CodeBurnDurableModels, Resolve-DisplayCurrency
+<#
+  Codex quota for third-party relays, rebuilt from CC Switch's own provider record.
+
+  Upstream inventory, 2026-08-13: OpenAI's `rate_limits` only reach a session
+  transcript when Codex talks to the official endpoint. A relay-backed provider
+  never emits them, so `limits.codex` stays empty no matter how much quota is
+  actually left. CC Switch already solved this: each provider may carry a
+  `usage_script` in `providers.meta` that declares one GET and an extractor, and
+  CC Switch polls it every `autoQueryInterval` minutes. Nothing about the result
+  is persisted, so the request has to be replayed rather than read back.
+
+  This reuses CC Switch's *declaration* - endpoint, method, headers, timeout -
+  and does its own extraction, because the extractor is JavaScript and because
+  the dashboard needs the whole subscription block, not just the balance CC
+  Switch renders.
+
+  Red lines, same as the Claude quota call:
+    1. the API key is read-only, and never reaches the payload, a log, or an
+       exception message;
+    2. only GET and HEAD are replayed - a usage script that mutates is refused
+       rather than trusted;
+    3. the endpoint must be https, and every placeholder must resolve;
+    4. any failure degrades with a stated reason and never throws.
+#>
+function Get-CodexUsageRequest {
+  [CmdletBinding()]
+  param(
+    [string]$MetaJson,
+    [string]$SettingsConfigJson
+  )
+
+  function Fail([string]$Reason) { return [pscustomobject][ordered]@{ ok = $false; reason = $Reason } }
+
+  $script = $null
+  try {
+    if (-not [string]::IsNullOrWhiteSpace($MetaJson)) {
+      $script = Get-RecordValue ($MetaJson | ConvertFrom-Json) 'usage_script'
+    }
+  } catch {
+    return Fail 'usage_script_unreadable'
+  }
+  if (-not $script) { return Fail 'usage_script_missing' }
+  if ((Get-RecordValue $script 'enabled') -ne $true) { return Fail 'usage_script_disabled' }
+
+  $code = [string](Get-RecordValue $script 'code')
+  if ([string]::IsNullOrWhiteSpace($code)) { return Fail 'usage_script_missing' }
+
+  # Only the declarative request half is read. The extractor is JavaScript and is
+  # deliberately not evaluated.
+  $requestStart = $code.IndexOf('request')
+  if ($requestStart -lt 0) { return Fail 'no_endpoint' }
+  $requestEnd = $code.IndexOf('extractor', $requestStart)
+  $requestBlock = if ($requestEnd -gt $requestStart) { $code.Substring($requestStart, $requestEnd - $requestStart) } else { $code.Substring($requestStart) }
+
+  $urlMatch = [regex]::Match($requestBlock, 'url\s*:\s*["'']([^"'']+)["'']')
+  if (-not $urlMatch.Success) { return Fail 'no_endpoint' }
+  $url = $urlMatch.Groups[1].Value.Trim()
+
+  $method = 'GET'
+  $methodMatch = [regex]::Match($requestBlock, 'method\s*:\s*["'']([^"'']+)["'']')
+  if ($methodMatch.Success) { $method = $methodMatch.Groups[1].Value.Trim().ToUpperInvariant() }
+  if ($method -notin @('GET', 'HEAD')) { return Fail 'unsupported_method' }
+
+  # Brace matching is not an option here: a `{{apiKey}}` placeholder closes with
+  # the same character the header object does. Header names are the only quoted
+  # keys in the block, so the pairs are read directly, minus the reserved names a
+  # differently-written script might quote.
+  $headers = @{}
+  $headersStart = $requestBlock.IndexOf('headers')
+  if ($headersStart -ge 0) {
+    $headerBlock = $requestBlock.Substring($headersStart)
+    foreach ($pair in [regex]::Matches($headerBlock, '["'']([^"'']+)["'']\s*:\s*["'']([^"'']*)["'']')) {
+      $name = $pair.Groups[1].Value
+      if ($name -in @('url', 'method', 'timeout')) { continue }
+      $headers[$name] = $pair.Groups[2].Value
+    }
+  }
+
+  $config = $null
+  try {
+    if (-not [string]::IsNullOrWhiteSpace($SettingsConfigJson)) { $config = $SettingsConfigJson | ConvertFrom-Json }
+  } catch {
+    return Fail 'provider_config_unreadable'
+  }
+
+  $apiKey = [string](Get-RecordValue (Get-RecordValue $config 'auth') 'OPENAI_API_KEY')
+  $toml = [string](Get-RecordValue $config 'config')
+
+  $baseUrl = ''
+  if (-not [string]::IsNullOrWhiteSpace($toml)) {
+    $providerKey = ''
+    $providerMatch = [regex]::Match($toml, '(?m)^\s*model_provider\s*=\s*["'']([^"'']+)["'']')
+    if ($providerMatch.Success) { $providerKey = $providerMatch.Groups[1].Value }
+    if ($providerKey) {
+      $section = [regex]::Match($toml, '(?s)\[model_providers\.' + [regex]::Escape($providerKey) + '\](.*?)(?=\r?\n\[|\z)')
+      if ($section.Success) {
+        $baseMatch = [regex]::Match($section.Groups[1].Value, 'base_url\s*=\s*["'']([^"'']+)["'']')
+        if ($baseMatch.Success) { $baseUrl = $baseMatch.Groups[1].Value }
+      }
+    }
+    if (-not $baseUrl) {
+      $anyBase = [regex]::Match($toml, '(?s)\[model_providers\.[^\]]+\].*?base_url\s*=\s*["'']([^"'']+)["'']')
+      if ($anyBase.Success) { $baseUrl = $anyBase.Groups[1].Value }
+    }
+  }
+  $baseUrl = $baseUrl.Trim().TrimEnd('/')
+
+  if ($url.Contains('{{baseUrl}}') -and -not $baseUrl) { return Fail 'no_base_url' }
+  $needsKey = $url.Contains('{{apiKey}}') -or (@($headers.Values) -join "`n").Contains('{{apiKey}}')
+  if ($needsKey -and -not $apiKey) { return Fail 'no_api_key' }
+
+  function Expand-Placeholder([string]$Value) {
+    return $Value.Replace('{{baseUrl}}', $baseUrl).Replace('{{apiKey}}', $apiKey)
+  }
+
+  $url = Expand-Placeholder $url
+  $resolved = @{}
+  foreach ($name in @($headers.Keys)) { $resolved[$name] = Expand-Placeholder ([string]$headers[$name]) }
+  # A relay WAF can answer 403 to a request with no User-Agent at all.
+  if (-not ($resolved.Keys | Where-Object { $_ -ieq 'User-Agent' })) { $resolved['User-Agent'] = 'AI-Usage/1.0' }
+
+  if ($url -match '\{\{[^}]*\}\}' -or (@($resolved.Values) -join "`n") -match '\{\{[^}]*\}\}') {
+    return Fail 'unresolved_placeholder'
+  }
+  if ($url -notmatch '^https://') { return Fail 'insecure_endpoint' }
+
+  $timeout = Get-RecordNumber $script 'timeout'
+  if ($timeout -le 0 -or $timeout -gt 60) { $timeout = 10 }
+
+  return [pscustomobject][ordered]@{
+    ok             = $true
+    reason         = $null
+    url            = $url
+    method         = $method
+    headers        = $resolved
+    timeoutSeconds = [int]$timeout
+  }
+}
+
+<#
+  Turns a relay usage response into card state. Mirrors CC Switch's extractor
+  fallbacks (`remaining ?? quota.remaining ?? balance`) and adds the subscription
+  windows CC Switch collects but does not render.
+
+  `weekly_window_start` is the only anchor a relay reports; the reset is derived
+  as start + 7 days, which is what a rolling weekly allowance means. Windows with
+  a zero limit are unlimited and produce a usage figure but no meter.
+#>
+function ConvertTo-CodexQuota {
+  [CmdletBinding()]
+  param(
+    $Response,
+    [string]$ProviderName
+  )
+
+  if (-not $Response) { return [pscustomobject][ordered]@{ ok = $false; reason = 'malformed_response' } }
+
+  $quota = Get-RecordValue $Response 'quota'
+  $remaining = Get-RecordValue $Response 'remaining'
+  if ($null -eq $remaining) { $remaining = Get-RecordValue $quota 'remaining' }
+  if ($null -eq $remaining) { $remaining = Get-RecordValue $Response 'balance' }
+
+  $unit = [string](Get-RecordValue $Response 'unit')
+  if (-not $unit) { $unit = [string](Get-RecordValue $quota 'unit') }
+  if (-not $unit) { $unit = 'USD' }
+
+  $isValid = Get-RecordValue $Response 'is_active'
+  if ($null -eq $isValid) { $isValid = Get-RecordValue $Response 'isValid' }
+  if ($null -eq $isValid) { $isValid = $true }
+
+  $subscription = Get-RecordValue $Response 'subscription'
+  $windows = New-Object Collections.Generic.List[object]
+  $specs = @(
+    @{ kind = 'weekly'; limit = 'weekly_limit_usd'; used = 'weekly_usage_usd'; start = 'weekly_window_start'; days = 7 },
+    @{ kind = 'daily'; limit = 'daily_limit_usd'; used = 'daily_usage_usd'; start = 'daily_window_start'; days = 1 },
+    @{ kind = 'monthly'; limit = 'monthly_limit_usd'; used = 'monthly_usage_usd'; start = 'monthly_window_start'; days = 0 }
+  )
+  foreach ($spec in $specs) {
+    if (-not (Test-RecordProperty $subscription $spec.used)) { continue }
+    $limit = Get-RecordNumber $subscription $spec.limit
+    $used = Get-RecordNumber $subscription $spec.used
+    $startsAt = [string](Get-RecordValue $subscription $spec.start)
+    $resetsAt = $null
+    if ($startsAt -and $spec.days -gt 0) {
+      try { $resetsAt = ([DateTimeOffset]::Parse($startsAt)).AddDays($spec.days).ToString('o') } catch { $resetsAt = $null }
+    }
+    $windows.Add([pscustomobject][ordered]@{
+      kind     = $spec.kind
+      limit    = $limit
+      used     = $used
+      percent  = if ($limit -gt 0) { [Math]::Min(100.0, $used / $limit * 100.0) } else { $null }
+      startsAt = if ($startsAt) { $startsAt } else { $null }
+      resetsAt = $resetsAt
+    })
+  }
+
+  return [pscustomobject][ordered]@{
+    ok         = $true
+    reason     = $null
+    provider   = if ([string]::IsNullOrWhiteSpace($ProviderName)) { $null } else { $ProviderName }
+    planName   = [string](Get-RecordValue $Response 'planName')
+    mode       = [string](Get-RecordValue $Response 'mode')
+    isValid    = [bool]$isValid
+    unit       = $unit.ToUpperInvariant()
+    remaining  = if ($null -eq $remaining) { $null } else { ConvertTo-FiniteDouble $remaining }
+    expiresAt  = [string](Get-RecordValue $subscription 'expires_at')
+    windows    = $windows.ToArray()
+  }
+}
+
+Export-ModuleMember -Function Merge-CodeBurnDurableModels, Resolve-DisplayCurrency, Get-CodexUsageRequest, ConvertTo-CodexQuota

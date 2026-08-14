@@ -25,6 +25,7 @@ $OutDir = if ($RetainedRun) {
   $RuntimeRoot
 }
 $QuotaCachePath = Join-Path $RuntimeRoot 'quota-cache.json'
+$CodexQuotaCachePath = Join-Path $RuntimeRoot 'codex-quota-cache.json'
 $OutHtml = Join-Path $OutDir 'report.html'
 $OutData = Join-Path $OutDir 'data.js'
 $FontNames = @(
@@ -226,6 +227,164 @@ function Get-LatestCodexRateLimit {
     if ($limits) { return $limits }
   }
   return $null
+}
+
+<#
+  Reads the Codex provider CC Switch currently has selected.
+
+  Upstream inventory, 2026-08-13: CC Switch keeps its providers in a SQLite file
+  and offers no CLI, no export, and no local API to read it back. Windows ships
+  `winsqlite3.dll`, so a read-only open needs no new dependency. The database is
+  opened read-only and left alone; CC Switch holds no long transaction over the
+  providers table, and a busy timeout covers its periodic writes elsewhere.
+#>
+function Read-CcSwitchCodexProvider {
+  $dbPath = Join-Path $env:USERPROFILE '.cc-switch\cc-switch.db'
+  if (-not (Test-Path $dbPath)) { return [pscustomobject]@{ ok = $false; reason = 'no_ccswitch' } }
+
+  try {
+    if (-not ('AiUsage.WinSqlite' -as [type])) {
+      Add-Type -Namespace AiUsage -Name WinSqlite -MemberDefinition @'
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_open_v2", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Open(byte[] filename, out IntPtr db, int flags, IntPtr vfs);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_busy_timeout", CallingConvention = CallingConvention.Cdecl)]
+public static extern int BusyTimeout(IntPtr db, int ms);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_prepare_v2", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Prepare(IntPtr db, byte[] sql, int nbyte, out IntPtr stmt, IntPtr tail);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_step", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Step(IntPtr stmt);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_column_bytes", CallingConvention = CallingConvention.Cdecl)]
+public static extern int ColumnBytes(IntPtr stmt, int col);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_column_blob", CallingConvention = CallingConvention.Cdecl)]
+public static extern IntPtr ColumnBlob(IntPtr stmt, int col);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_finalize", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Close(IntPtr stmt);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_close_v2", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Release(IntPtr db);
+'@
+    }
+  } catch {
+    return [pscustomobject]@{ ok = $false; reason = 'sqlite_unavailable' }
+  }
+
+  $utf8 = New-Object Text.UTF8Encoding($false)
+  $db = [IntPtr]::Zero
+  $statement = [IntPtr]::Zero
+  try {
+    if ([AiUsage.WinSqlite]::Open(($utf8.GetBytes($dbPath) + [byte]0), [ref]$db, 1, [IntPtr]::Zero) -ne 0) {
+      return [pscustomobject]@{ ok = $false; reason = 'ccswitch_unreadable' }
+    }
+    [void][AiUsage.WinSqlite]::BusyTimeout($db, 3000)
+    $sql = "select name, meta, settings_config from providers where app_type='codex' and is_current=1 limit 1"
+    if ([AiUsage.WinSqlite]::Prepare($db, ($utf8.GetBytes($sql) + [byte]0), -1, [ref]$statement, [IntPtr]::Zero) -ne 0) {
+      return [pscustomobject]@{ ok = $false; reason = 'ccswitch_unreadable' }
+    }
+    if ([AiUsage.WinSqlite]::Step($statement) -ne 100) {
+      return [pscustomobject]@{ ok = $false; reason = 'no_current_provider' }
+    }
+
+    $columns = @()
+    for ($index = 0; $index -lt 3; $index++) {
+      $length = [AiUsage.WinSqlite]::ColumnBytes($statement, $index)
+      if ($length -le 0) { $columns += ''; continue }
+      $buffer = New-Object byte[] $length
+      [Runtime.InteropServices.Marshal]::Copy([AiUsage.WinSqlite]::ColumnBlob($statement, $index), $buffer, 0, $length)
+      $columns += [Text.Encoding]::UTF8.GetString($buffer)
+    }
+    return [pscustomobject]@{
+      ok             = $true
+      reason         = $null
+      name           = $columns[0]
+      meta           = $columns[1]
+      settingsConfig = $columns[2]
+    }
+  } catch {
+    return [pscustomobject]@{ ok = $false; reason = 'ccswitch_unreadable' }
+  } finally {
+    if ($statement -ne [IntPtr]::Zero) { [void][AiUsage.WinSqlite]::Close($statement) }
+    if ($db -ne [IntPtr]::Zero) { [void][AiUsage.WinSqlite]::Release($db) }
+  }
+}
+
+<#
+  Real Codex quota for a relay-backed provider, replayed from CC Switch's own
+  usage-script declaration. See ReportData.psm1 for why this exists and for the
+  rules the replay follows.
+#>
+function Get-CodexProviderQuota {
+  # Same shape as the Claude quota cache: relaunches are frequent, the endpoint
+  # is somebody else's, and a stale-but-labelled card beats an empty one.
+  $cachePath = $CodexQuotaCachePath
+  $FreshSeconds = 120
+  $StaleSeconds = 3600
+  $cached = $null
+  try {
+    if (Test-Path $cachePath) {
+      $raw = [IO.File]::ReadAllText($cachePath) | ConvertFrom-Json
+      $age = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$raw.cachedAtUnix)
+      if ($age -ge 0 -and $age -lt $StaleSeconds) { $cached = $raw }
+      if ($cached -and $age -lt $FreshSeconds) {
+        $hit = $cached.payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        Add-Member -InputObject $hit -NotePropertyName 'cachedAt' -NotePropertyValue $cached.cachedAt -Force
+        return $hit
+      }
+    }
+  } catch { $cached = $null }
+
+  function Use-CachedCodexQuota([string]$Reason) {
+    if (-not $cached) { return [ordered]@{ ok = $false; reason = $Reason } }
+    $hit = $cached.payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    Add-Member -InputObject $hit -NotePropertyName 'cachedAt' -NotePropertyValue $cached.cachedAt -Force
+    Add-Member -InputObject $hit -NotePropertyName 'stale' -NotePropertyValue $true -Force
+    Add-Member -InputObject $hit -NotePropertyName 'staleReason' -NotePropertyValue $Reason -Force
+    return $hit
+  }
+
+  $provider = Read-CcSwitchCodexProvider
+  if (-not $provider.ok) { return Use-CachedCodexQuota $provider.reason }
+
+  $request = $null
+  try {
+    $request = Get-CodexUsageRequest -MetaJson $provider.meta -SettingsConfigJson $provider.settingsConfig
+  } catch {
+    return Use-CachedCodexQuota 'usage_script_unreadable'
+  } finally {
+    $provider.settingsConfig = $null
+  }
+  if (-not $request.ok) { return Use-CachedCodexQuota $request.reason }
+
+  $response = $null
+  try {
+    $response = Invoke-RestMethod -Uri $request.url -Headers $request.headers `
+      -Method $request.method -TimeoutSec $request.timeoutSeconds
+  } catch {
+    # Deliberately does not surface the exception text: a failed request can echo
+    # the Authorization header back in its message.
+    $status = $null
+    try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+    $reason = if ($status -in @(401, 403)) { "key_rejected_$status" }
+              elseif ($status -eq 429) { 'rate_limited' }
+              elseif ($status) { "http_$status" }
+              else { 'failed_local' }
+    return Use-CachedCodexQuota $reason
+  } finally {
+    $request = $null
+  }
+  if (-not $response) { return Use-CachedCodexQuota 'malformed_response' }
+
+  $payload = ConvertTo-CodexQuota -Response $response -ProviderName $provider.name
+  if (-not $payload.ok) { return Use-CachedCodexQuota $payload.reason }
+
+  # Quota state only - no endpoint and no credential material reaches this file.
+  try {
+    [IO.File]::WriteAllText($cachePath, ([ordered]@{
+      cachedAt     = [DateTimeOffset]::Now.ToString('o')
+      cachedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+      payload      = $payload
+    } | ConvertTo-Json -Depth 20 -Compress), (New-Object Text.UTF8Encoding($false)))
+  } catch {}
+
+  return $payload
 }
 
 function Get-DescendantProcessIds([int]$RootProcessId) {
@@ -454,6 +613,7 @@ try {
   $claudeBlocks = if ($blocksUsable) { Read-JsonFile $blocksOutput } else { $null }
   $codexLimits = Get-LatestCodexRateLimit
   $claudeQuota = Get-ClaudeOAuthUsage
+  $codexQuota = Get-CodexProviderQuota
 
   $payload = [ordered]@{
     generatedAt = [DateTimeOffset]::Now.ToString('o')
@@ -469,6 +629,7 @@ try {
     limits = [ordered]@{
       claudeQuota = $claudeQuota
       claudeBlocks = $claudeBlocks
+      codexQuota = $codexQuota
       codex = $codexLimits
     }
     appDir = $AppDir
