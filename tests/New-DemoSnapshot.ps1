@@ -2,9 +2,17 @@ param(
   [string]$OutputDirectory,
   [string]$CurrencyCode = 'USD',
   [double]$CurrencyRate = 1.0,
-  [string]$CurrencySymbol
+  [string]$CurrencySymbol,
+  [DateTimeOffset]$AsOf = [DateTimeOffset]::Now
 )
 $ErrorActionPreference = 'Stop'
+
+# Quota meters count down against the reader's clock, so a snapshot pinned to a fixed
+# past date renders every window as "about to reset" and the screenshots lose the one
+# thing the meters are for. Everything time-shaped is anchored to $AsOf instead; pass
+# -AsOf to pin a run. The aggregate figures stay fixed and synthetic either way.
+function At([double]$Hours) { return $AsOf.AddHours($Hours).ToString('o') }
+function OnDay([int]$Days) { return $AsOf.AddDays($Days).ToString('yyyy-MM-dd') }
 
 $CurrencyCode = $CurrencyCode.ToUpperInvariant()
 if ($CurrencyRate -le 0) { throw 'CurrencyRate must be positive.' }
@@ -23,7 +31,7 @@ foreach ($font in @('ark-pixel-12px-monospaced-zh_cn.woff2', 'fusion-pixel-12px-
 }
 
 function New-DailyRows([int]$Days, [double]$Total, [int]$Seed) {
-  $end = [DateTime]::ParseExact('2026-08-09', 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+  $end = $AsOf.Date
   $weights = @()
   for ($index = 0; $index -lt $Days; $index++) {
     $wave = 1.2 + [Math]::Sin(($index + $Seed) * 0.63) + [Math]::Cos(($index + $Seed) * 0.27) * 0.55
@@ -128,8 +136,8 @@ function New-DemoReport([string]$Provider, [string]$PeriodKey, [int]$Days, [doub
     models = $models
     projects = $projects
     topSessions = @(
-      [pscustomobject][ordered]@{ sessionId = "demo-$Provider-01"; project = $projects[0].name; date = '2026-08-08'; cost = [Math]::Round($Total * 0.13, 6); savings = 0; calls = [Math]::Round($Calls * 0.08) },
-      [pscustomobject][ordered]@{ sessionId = "demo-$Provider-02"; project = $projects[1].name; date = '2026-08-05'; cost = [Math]::Round($Total * 0.09, 6); savings = 0; calls = [Math]::Round($Calls * 0.06) }
+      [pscustomobject][ordered]@{ sessionId = "demo-$Provider-01"; project = $projects[0].name; date = (OnDay -1); cost = [Math]::Round($Total * 0.13, 6); savings = 0; calls = [Math]::Round($Calls * 0.08) },
+      [pscustomobject][ordered]@{ sessionId = "demo-$Provider-02"; project = $projects[1].name; date = (OnDay -4); cost = [Math]::Round($Total * 0.09, 6); savings = 0; calls = [Math]::Round($Calls * 0.06) }
     )
     costReconciliation = [pscustomobject][ordered]@{
       referenceCost = $Total
@@ -158,7 +166,7 @@ foreach ($entry in $periods.GetEnumerator()) {
 }
 
 $payload = [ordered]@{
-  generatedAt = '2026-08-09T09:30:00-07:00'
+  generatedAt = $AsOf.ToString('o')
   period = '30days'
   currency = [ordered]@{ code = $CurrencyCode; rate = $CurrencyRate; symbol = $CurrencySymbol }
   pricingNote = 'Synthetic API reference price estimate.'
@@ -168,21 +176,21 @@ $payload = [ordered]@{
   limits = [ordered]@{
     claudeQuota = [ordered]@{
       ok = $true
-      fiveHour = [ordered]@{ utilization = 38; resetsAt = '2026-08-09T12:00:00-07:00' }
-      sevenDay = [ordered]@{ utilization = 64; resetsAt = '2026-08-12T07:00:00-07:00' }
+      fiveHour = [ordered]@{ utilization = 38; resetsAt = (At 2.75) }
+      sevenDay = [ordered]@{ utilization = 64; resetsAt = (At 78) }
       limits = @(
-        [ordered]@{ kind = 'session'; percent = 38; resetsAt = '2026-08-09T12:00:00-07:00' },
-        [ordered]@{ kind = 'weekly_all'; percent = 64; resetsAt = '2026-08-12T07:00:00-07:00' },
-        [ordered]@{ kind = 'weekly_scoped'; percent = 72; resetsAt = '2026-08-12T07:00:00-07:00'; model = 'Fable 5'; isActive = $true }
+        [ordered]@{ kind = 'session'; percent = 38; resetsAt = (At 2.75) },
+        [ordered]@{ kind = 'weekly_all'; percent = 64; resetsAt = (At 78) },
+        [ordered]@{ kind = 'weekly_scoped'; percent = 72; resetsAt = (At 78); model = 'Fable 5'; isActive = $true }
       )
     }
     claudeBlocks = [ordered]@{ blocks = @(
-      [ordered]@{ startTime = '2026-07-15T08:00:00-07:00'; endTime = '2026-07-15T13:00:00-07:00'; actualEndTime = '2026-07-15T12:10:00-07:00'; costUSD = 18.4; isActive = $false; isGap = $false },
-      [ordered]@{ startTime = '2026-07-22T13:00:00-07:00'; endTime = '2026-07-22T18:00:00-07:00'; actualEndTime = '2026-07-22T17:40:00-07:00'; costUSD = 24.1; isActive = $false; isGap = $false },
-      [ordered]@{ startTime = '2026-07-29T09:00:00-07:00'; endTime = '2026-07-29T14:00:00-07:00'; actualEndTime = '2026-07-29T13:25:00-07:00'; costUSD = 31.8; isActive = $false; isGap = $false },
-      [ordered]@{ startTime = '2026-08-03T18:00:00-07:00'; endTime = '2026-08-03T23:00:00-07:00'; actualEndTime = '2026-08-03T22:30:00-07:00'; costUSD = 26.6; isActive = $false; isGap = $false },
-      [ordered]@{ startTime = '2026-08-07T10:00:00-07:00'; endTime = '2026-08-07T15:00:00-07:00'; actualEndTime = '2026-08-07T14:50:00-07:00'; costUSD = 38.2; isActive = $false; isGap = $false },
-      [ordered]@{ startTime = '2026-08-09T07:00:00-07:00'; endTime = '2026-08-09T12:00:00-07:00'; actualEndTime = '2026-08-09T09:30:00-07:00'; costUSD = 12.5; isActive = $true; isGap = $false; burnRate = [ordered]@{ costPerHour = 2.4 }; projection = [ordered]@{ totalCost = 18.8 } }
+      [ordered]@{ startTime = (At -600); endTime = (At -595); actualEndTime = (At -595.9); costUSD = 18.4; isActive = $false; isGap = $false },
+      [ordered]@{ startTime = (At -430); endTime = (At -425); actualEndTime = (At -425.3); costUSD = 24.1; isActive = $false; isGap = $false },
+      [ordered]@{ startTime = (At -260); endTime = (At -255); actualEndTime = (At -255.6); costUSD = 31.8; isActive = $false; isGap = $false },
+      [ordered]@{ startTime = (At -140); endTime = (At -135); actualEndTime = (At -135.5); costUSD = 26.6; isActive = $false; isGap = $false },
+      [ordered]@{ startTime = (At -50); endTime = (At -45); actualEndTime = (At -45.2); costUSD = 38.2; isActive = $false; isGap = $false },
+      [ordered]@{ startTime = (At -2.25); endTime = (At 2.75); actualEndTime = (At 0); costUSD = 12.5; isActive = $true; isGap = $false; burnRate = [ordered]@{ costPerHour = 2.4 }; projection = [ordered]@{ totalCost = 18.8 } }
     ) }
     codexQuota = [ordered]@{
       ok = $true
@@ -193,15 +201,15 @@ $payload = [ordered]@{
       isValid = $true
       unit = 'USD'
       remaining = 231.60
-      expiresAt = '2026-09-05T09:00:00-07:00'
+      expiresAt = (At 528)
       windows = @(
-        [ordered]@{ kind = 'weekly'; limit = 500; used = 268.40; percent = 53.68; startsAt = '2026-08-06T09:00:00-07:00'; resetsAt = '2026-08-13T09:00:00-07:00' },
+        [ordered]@{ kind = 'weekly'; limit = 500; used = 268.40; percent = 53.68; startsAt = (At -74); resetsAt = (At 94) },
         [ordered]@{ kind = 'daily'; limit = 0; used = 96.20; percent = $null; startsAt = $null; resetsAt = $null }
       )
     }
     codex = [ordered]@{
-      primary = [ordered]@{ used_percent = 44; resets_at = '2026-08-09T13:00:00-07:00' }
-      secondary = [ordered]@{ used_percent = 18; resets_at = '2026-08-16T00:00:00-07:00' }
+      primary = [ordered]@{ used_percent = 44; resets_at = (At 1.75) }
+      secondary = [ordered]@{ used_percent = 18; resets_at = (At 156) }
     }
   }
   appDir = 'C:\Demo\AIUsage'

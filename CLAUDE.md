@@ -26,9 +26,11 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 
 - `CLAUDE.md` is the only project rule source. Do not add `AGENTS.md` or duplicate rule files.
 - Treat Claude and Codex session stores, and the CC Switch database, as read-only inputs.
-- Keep runtime and test PowerShell files pure ASCII. Windows PowerShell reads a BOM-less
-  script in the system ANSI code page, so a non-ASCII literal reaches the snapshot as
-  mojibake. All visible copy belongs in `template.html`, which is served as UTF-8.
+- Keep every PowerShell file pure ASCII. Windows PowerShell reads a BOM-less script in the
+  system ANSI code page, so a non-ASCII literal is mojibake before it can reach a snapshot
+  or match a file on disk. All visible copy belongs in `template.html`, which is served as
+  UTF-8; a value that must stay non-ASCII, such as the legacy Chinese shortcut name, is
+  built from its code points.
 - Never display or commit prompt text, tool arguments, API keys, provider URLs, or authorization headers.
 - Label all cost as an API reference-price estimate, not actual subscription or provider billing.
 - Keep canonical runtime files in `src/`; root-level copies are an ignored installed mirror.
@@ -88,5 +90,13 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 
 - Screenshots in `docs/` must be rendered from synthetic demo data, never from a real
   session store. Use `tests/New-DemoSnapshot.ps1`; real project paths and account quota
-  state are personal data.
+  state are personal data. Keep `dashboard.png` at 1280x1000 and `mobile.png` at 520x1200,
+  and re-render both whenever a card visible in them changes.
+- The demo anchors every timestamp to generation time, so quota meters always show a live
+  countdown; pass `-AsOf` to pin a run. Fixed past dates render every window as "about to
+  reset" and the meters stop showing anything.
+- Capture screenshots through the DevTools Protocol with real time elapsing. Chromium's
+  `--screenshot` with `--virtual-time-budget` does not advance CSS animation time, which
+  leaves the sparkline stroke stuck at `stroke-dashoffset: 1` and silently publishes a
+  chart with no line.
 - Keep `README.md` (English) and `README.zh-CN.md` (Chinese) in sync when behaviour changes.

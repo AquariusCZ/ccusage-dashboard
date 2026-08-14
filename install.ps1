@@ -61,7 +61,13 @@ foreach ($name in @('Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.ht
 Write-Host "  [ok] installed to $dest" -ForegroundColor Green
 
 $desktop = [Environment]::GetFolderPath('Desktop')
-foreach ($oldName in @('Claude用量仪表盘.lnk', 'Claude Usage Dashboard.lnk', 'AI Usage Ledger.lnk')) {
+
+# The oldest shortcut name is Chinese. Windows PowerShell reads a BOM-less script
+# in the system ANSI code page, so the literal would arrive as mojibake and never
+# match the file on disk; the code points survive that reading intact.
+$legacyChineseShortcut = 'Claude' + (-join [char[]](0x7528, 0x91CF, 0x4EEA, 0x8868, 0x76D8)) + '.lnk'
+
+foreach ($oldName in @($legacyChineseShortcut, 'Claude Usage Dashboard.lnk', 'AI Usage Ledger.lnk')) {
   $oldShortcut = Join-Path $desktop $oldName
   if (Test-Path $oldShortcut) { Remove-Item -LiteralPath $oldShortcut -Force }
 }
