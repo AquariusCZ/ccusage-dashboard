@@ -168,9 +168,15 @@ exit 45
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0npm-cli.ps1" %*
 exit /b %errorlevel%
 '@
+  $nodeWrapper = @'
+@echo off
+echo v22.13.0
+exit /b 0
+'@
   Write-Ascii (Join-Path $binDir 'tool-version.ps1') $toolVersion
   Write-Ascii (Join-Path $binDir 'npm-cli.ps1') $fakeNpm
   Write-Ascii $scenario.NpmCommand $npmWrapper
+  Write-Ascii (Join-Path $binDir 'node.cmd') $nodeWrapper
   return $scenario
 }
 
@@ -184,6 +190,11 @@ function Set-ScenarioEnvironment([pscustomobject]$Scenario) {
   $env:AI_USAGE_INSTALL_TEST_NPM_LOG = $Scenario.NpmLog
   $env:AI_USAGE_INSTALL_TEST_VERSION_COUNT_DIR = $Scenario.VersionCountDir
   $env:AI_USAGE_NPM_PATH_TOKEN = 'expanded-path-must-not-be-used'
+  $resolvedNode = Get-Command node -ErrorAction Stop
+  if ([IO.Path]::GetFullPath($resolvedNode.Source) -cne
+      [IO.Path]::GetFullPath((Join-Path $Scenario.BinDir 'node.cmd'))) {
+    throw 'The installer integration scenario did not isolate Node.js inside its sandbox.'
+  }
   Remove-Item Env:AI_USAGE_INSTALL_TEST_GATE_SPEC -ErrorAction SilentlyContinue
   Remove-Item Env:AI_USAGE_INSTALL_TEST_GATE_READY -ErrorAction SilentlyContinue
   Remove-Item Env:AI_USAGE_INSTALL_TEST_GATE_RELEASE -ErrorAction SilentlyContinue

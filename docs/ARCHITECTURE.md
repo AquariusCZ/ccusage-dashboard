@@ -795,7 +795,8 @@ than a fixed `foreignObject`, which silently clipped wider totals.
   and forward recovery, literal-percent npm paths, two concurrent complete installers, residue
   cleanup, an unrelated long-lived npm-like process during ordinary publication rollback, icon
   ownership, stderr backpressure, and corrupt manifest repair without touching real
-  installation/npm state.
+  installation/npm state. Every scenario resolves a fixed Node shim from the same sandbox, so an
+  elevated Windows CI runner cannot fall through to a machine-global executable.
 - Run `tests/Uninstaller.Integration.Tests.ps1` against an isolated destination and desktop. It
   covers install-lock serialization, gate publication failure, the late-launch gate after process
   drain, Global-then-Local waiting, partial managed deletion with a retained failed marker, direct
