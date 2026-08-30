@@ -22,9 +22,24 @@ jobs:
       - name: Check scripts and dashboard syntax
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Static.Tests.ps1
+      - name: Test progressive generator orchestration
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Generator.Integration.Tests.ps1
+      - name: Test installer child-process containment
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\InstallJob.Tests.ps1
+      - name: Test installer transaction rollback
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Installer.Integration.Tests.ps1
+      - name: Test uninstaller ownership boundaries
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Uninstaller.Integration.Tests.ps1
       - name: Verify synthetic snapshot contract
         shell: powershell
         run: |
           $demo = Join-Path $env:RUNNER_TEMP 'ai-usage-demo'
           powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\New-DemoSnapshot.ps1 -OutputDirectory $demo
           powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Verify-Snapshot.ps1 -DataPath (Join-Path $demo 'data.js')
+      - name: Smoke test progressive browser updates
+        shell: powershell
+        run: node .\tests\BrowserSmoke.mjs

@@ -494,7 +494,7 @@
       <span class="brand-badge"><svg aria-hidden="true"><use href="#i-mark"/></svg></span>
       <div>
         <h1><span class="wordmark" id="wordmark"></span><span class="sr-only">AI Usage</span></h1>
-        <p id="stamp">等待数据</p>
+        <p id="stamp" role="status" aria-live="polite" aria-atomic="true">等待数据</p>
       </div>
     </div>
     <div class="topbar-actions">
@@ -602,7 +602,8 @@ addEventListener("error", function (event) {
 (function () {
   "use strict";
 
-  var data = null, filter = "all", period = "30days", charts = [];
+  var data = null, filter = "all", period = "30days", charts = [], terminalFailure = false;
+  var lastRunId = null, lastRevision = -1, lastRevisionAt = Date.now(), desiredPeriod = null;
   var PERIOD_LABEL = { today: "今天", week: "近 7 天", "30days": "近 30 天", month: "本月", all: "全部", lifetime: "全部" };
 
   function $(id) { return document.getElementById(id); }
@@ -618,10 +619,38 @@ addEventListener("error", function (event) {
     bootIndex = (bootIndex + 1) % bootMessages.length;
     $("bootMessage").textContent = bootMessages[bootIndex];
   }, 1700);
+  window.__fail__ = function () {
+    var failure = window.__GENERATION_FAILURE__ || {};
+    if (["initial_generation_failed", "partial_generation_failed"].indexOf(failure.reason) < 0 ||
+        ["startup", "default_usage", "remaining_usage", "local_limits", "claude_quota", "codex_quota", "final_publish"].indexOf(failure.stage) < 0 ||
+        typeof failure.runId !== "string" || !failure.runId || failure.runId.length > 128 ||
+        typeof failure.generatedAt !== "string" || !isFinite(Date.parse(failure.generatedAt))) return;
+    if (data && String(failure.runId || "") !== String(data.runId || "")) return;
+    if (!data && failure.reason !== "initial_generation_failed") return;
+    terminalFailure = true;
+    clearInterval(bootTimer);
+    if (data) {
+      var stamp = $("stamp");
+      if (!stamp.textContent.includes("数据生成失败")) {
+        stamp.textContent = stamp.textContent.replace(" · 更新中", " · 数据生成失败，请重新启动");
+      }
+    } else {
+      $("bootMessage").textContent = "数据生成失败，请重新启动";
+    }
+  };
 
   /* ─────────────────────────────────────────── utils ── */
   function n(v) { return Number(v) || 0; }
   function sum(a) { return a.reduce(function (s, v) { return s + n(v); }, 0); }
+  function list(v) {
+    return Array.isArray(v) ? v.filter(function (item) { return item && typeof item === "object"; }) : [];
+  }
+  function validDate(v) {
+    if (typeof v !== "string" || v.length !== 10 || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    var parsed = new Date(v + "T00:00:00");
+    return !isNaN(parsed.getTime()) && parsed.getFullYear() === Number(v.slice(0, 4)) &&
+      parsed.getMonth() + 1 === Number(v.slice(5, 7)) && parsed.getDate() === Number(v.slice(8, 10));
+  }
   function esc(v) {
     return String(v == null ? "" : v).replace(/[&<>"]/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
@@ -784,6 +813,10 @@ addEventListener("error", function (event) {
     var slot = data && data.reports && data.reports[key || period];
     return (slot && slot[p]) || {};
   }
+  function claudeBlocks() {
+    var value = data && data.limits && data.limits.claudeBlocks;
+    return list(Array.isArray(value) ? value : value && value.blocks);
+  }
   function overview(p) { return report(p).overview || { tokens: {} }; }
   function cost(p) { var o = overview(p); return n(o.cost != null ? o.cost : o.netCost); }
   function tokens(p) { return (report(p).overview && report(p).overview.tokens) || {}; }
@@ -802,10 +835,14 @@ addEventListener("error", function (event) {
         text stays 10px instead of shrinking with a scaled viewBox ── */
   function register(host, draw) { charts.push({ host: host, draw: draw }); paint(host, draw); }
   function paint(host, draw) {
+    var active = document.activeElement;
+    var focusedIndex = active && host.contains(active)
+      ? Array.from(host.querySelectorAll("[data-tip]")).indexOf(active) : -1;
     var w = Math.max(180, Math.round(host.clientWidth || 0));
     if (!w) return;
     host.innerHTML = draw(w);
     wireHover(host);
+    if (focusedIndex >= 0) focusChartItem(host, focusedIndex);
   }
   function repaintAll() { charts.forEach(function (c) { paint(c.host, c.draw); }); }
   var ro = new ResizeObserver(function (entries) {
@@ -912,6 +949,8 @@ addEventListener("error", function (event) {
 
   function quotaReason(code) {
     var map = {
+      loading: "正在获取 Claude 额度",
+      not_collected: "本次报告未完成额度查询",
       no_credentials: "Claude 未登录",
       malformed_credentials: "Claude 登录信息异常，请重新登录",
       token_expired: "Claude 登录已过期，请重新登录",
@@ -926,6 +965,8 @@ addEventListener("error", function (event) {
 
   function codexQuotaReason(code) {
     var map = {
+      loading: "正在获取 Codex 额度",
+      not_collected: "本次报告未完成额度查询",
       no_ccswitch: "未找到 CC Switch 数据",
       sqlite_unavailable: "无法读取 CC Switch 数据",
       ccswitch_unreadable: "CC Switch 数据暂时无法读取",
@@ -937,11 +978,16 @@ addEventListener("error", function (event) {
       no_endpoint: "额度查询未指定地址",
       no_base_url: "服务商未配置接口地址",
       no_api_key: "服务商未配置密钥",
+      credential_in_url: "额度查询拒绝在地址中携带密钥",
+      credential_scope_mismatch: "额度查询凭据与服务商地址不匹配",
+      unsupported_header: "额度查询请求头不受支持",
       unsupported_method: "额度查询方式不受支持",
       insecure_endpoint: "额度查询地址不是 HTTPS",
       unresolved_placeholder: "额度查询配置不完整",
       rate_limited: "额度查询频繁，请稍后重试",
       failed_local: "暂时无法查询 Codex 额度",
+      request_timed_out: "Codex 额度查询超时",
+      response_too_large: "Codex 额度响应过大",
       malformed_response: "Codex 额度数据异常"
     };
     if (map[code]) return map[code];
@@ -958,7 +1004,7 @@ addEventListener("error", function (event) {
       var rows = "", alarm = "";
       if (q.ok) {
         var byKind = {};
-        (q.limits || []).forEach(function (l) { byKind[l.kind] = l; });
+        list(q.limits).forEach(function (l) { byKind[l.kind] = l; });
         var session = byKind.session, weekly = byKind.weekly_all, scoped = byKind.weekly_scoped;
 
         if (q.fiveHour && q.fiveHour.utilization != null) {
@@ -986,8 +1032,7 @@ addEventListener("error", function (event) {
       }
 
       // ccusage still supplies burn rate and projected spend, which the quota endpoint does not
-      var blocks = data.limits && data.limits.claudeBlocks && data.limits.claudeBlocks.blocks;
-      var live = (blocks || []).filter(function (b) { return b.isActive && !b.isGap; })[0];
+      var live = claudeBlocks().filter(function (b) { return b.isActive && !b.isGap; })[0];
       var extra = "";
       if (live) {
         var liveCost = convertUsd(live.costUSD);
@@ -1022,7 +1067,7 @@ addEventListener("error", function (event) {
             new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n(v));
         };
         var WINDOW_LABEL = { weekly: "周额度", daily: "日额度", monthly: "月额度" };
-        var windows = cq.windows || [];
+        var windows = list(cq.windows);
         var rows = "", note = cq.planName || null;
         windows.forEach(function (w) {
           if (w.percent == null) return;                    // a zero limit means unmetered
@@ -1055,9 +1100,11 @@ addEventListener("error", function (event) {
           (cx.secondary && cx.secondary.used_percent != null ? meterRow("次限额", n(cx.secondary.used_percent), cx.secondary.resets_at, null) : "");
         populated = true;
       } else {
+        var quotaLoading = cq.reason === "loading" && data.complete === false;
         body = '<div class="quota-offline" role="status">' +
           '<span class="quota-port" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' +
-          '<span class="quota-offline-copy"><b>暂无额度数据</b><span>' + esc(codexQuotaReason(cq.reason)) + "</span></span>" +
+          '<span class="quota-offline-copy"><b>' + (quotaLoading ? "正在获取额度" : "暂无额度数据") +
+          "</b><span>" + (quotaLoading ? "本地用量统计已就绪" : esc(codexQuotaReason(cq.reason))) + "</span></span>" +
           '<span class="quota-local-ok">本地统计正常</span></div>';
       }
       out.push('<article class="card quota' + (populated ? "" : " quota-unavailable") + '" style="--p:var(--codex)">' +
@@ -1071,7 +1118,8 @@ addEventListener("error", function (event) {
   function dailyRows(key) {
     var map = {};
     ["claude", "codex"].forEach(function (p) {
-      (report(p, key).daily || []).forEach(function (d) {
+      list(report(p, key).daily).forEach(function (d) {
+        if (!validDate(d.date)) return;
         if (!map[d.date]) map[d.date] = { date: d.date, claude: 0, codex: 0 };
         map[d.date][p] = n(d.cost);
       });
@@ -1212,7 +1260,7 @@ addEventListener("error", function (event) {
       }
       rows.forEach(function (r, i) {
         if (tickIndexes.indexOf(i) >= 0) {
-          s += '<text class="axis" x="' + Math.min(w - mr, Math.max(ml + 14, x(i))) + '" y="' + (h - 7) + '" text-anchor="middle">' + r.date.slice(5) + "</text>";
+          s += '<text class="axis" x="' + Math.min(w - mr, Math.max(ml + 14, x(i))) + '" y="' + (h - 7) + '" text-anchor="middle">' + esc(r.date.slice(5)) + "</text>";
         }
         s += '<rect class="hit" x="' + (x(i) - step / 2).toFixed(1) + '" y="' + mt + '" width="' + step.toFixed(1) + '" height="' + ph + '" data-tip="' +
           esc(r.date) + "&#10;" + sel.map(function (p) { return pname(p) + " " + money(r[p]); }).join("&#10;") +
@@ -1226,7 +1274,7 @@ addEventListener("error", function (event) {
       sel.map(function (p) { return '<th translate="no">' + pname(p) + "</th>"; }).join("") +
       (sel.length > 1 ? "<th>合计</th>" : "") + "</tr></thead><tbody>" +
       rows.map(function (r, i) {
-        return "<tr><td>" + r.date + "</td>" + sel.map(function (p) { return '<td class="num">' + money(r[p]) + "</td>"; }).join("") +
+        return "<tr><td>" + esc(r.date) + "</td>" + sel.map(function (p) { return '<td class="num">' + money(r[p]) + "</td>"; }).join("") +
           (sel.length > 1 ? '<td class="num">' + money(totals[i]) + "</td>" : "") + "</tr>";
       }).join("") + "</tbody></table>";
   }
@@ -1249,6 +1297,13 @@ addEventListener("error", function (event) {
     for (var d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
       var key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
       days.push({ date: key, value: n(byDate[key]), dow: d.getDay() });
+    }
+    if (!days.length) {
+      host.innerHTML = '<p class="empty">当前周期暂无每日数据</p>';
+      host.classList.remove("heat-scroll");
+      $("activityTiles").innerHTML = ""; $("heatLegend").innerHTML = ""; $("heatRange").textContent = "";
+      $("hoursWrap").classList.add("hide");
+      return;
     }
     var active = days.filter(function (x) { return x.value > 0; });
     var peak = days.reduce(function (a, b) { return b.value > a.value ? b : a; }, days[0]);
@@ -1323,7 +1378,7 @@ addEventListener("error", function (event) {
 
   function renderHours(rows) {
     var wrap = $("hoursWrap"), host = $("hoursChart");
-    var blocks = data.limits && data.limits.claudeBlocks && data.limits.claudeBlocks.blocks;
+    var blocks = claudeBlocks();
     if (filter === "codex" || !blocks || !blocks.length || convertUsd(1) == null) { wrap.classList.add("hide"); return; }
 
     var from = new Date(rows[0].date + "T00:00:00").getTime();
@@ -1382,7 +1437,7 @@ addEventListener("error", function (event) {
     // never repaints the survivors
     var all = {};
     ["claude", "codex"].forEach(function (p) {
-      (report(p).models || []).forEach(function (m) {
+      list(report(p).models).forEach(function (m) {
         if (m.kind === "unattributed") return;
         all[m.name] = (all[m.name] || 0) + n(m.cost);
       });
@@ -1394,7 +1449,7 @@ addEventListener("error", function (event) {
   }
   function collect(key) {
     var out = [];
-    shown().forEach(function (p) { (report(p)[key] || []).forEach(function (item) { out.push({ p: p, item: item }); }); });
+    shown().forEach(function (p) { list(report(p)[key]).forEach(function (item) { out.push({ p: p, item: item }); }); });
     return out.sort(function (a, b) { return n(b.item.cost) - n(a.item.cost); });
   }
 
@@ -1492,28 +1547,95 @@ addEventListener("error", function (event) {
       })), false);
   }
 
-  function render() {
+  function captureDetailsState() {
+    var active = document.activeElement;
+    var items = Array.from($("details").querySelectorAll(":scope > details"));
+    return {
+      open: items.map(function (item) { return item.open; }),
+      focused: items.findIndex(function (item) { return item.contains(active); })
+    };
+  }
+  function restoreDetailsState(state) {
+    if (!state) return;
+    var items = Array.from($("details").querySelectorAll(":scope > details"));
+    items.forEach(function (item, index) {
+      if (index < state.open.length) item.open = state.open[index];
+    });
+    if (state.focused >= 0 && items[state.focused]) {
+      var summary = items[state.focused].querySelector("summary");
+      if (summary) summary.focus({ preventScroll: true });
+    }
+  }
+  function captureChartFocus() {
+    var active = document.activeElement;
+    if (!active || !active.matches || !active.matches("[data-tip]")) return null;
+    var chart = charts.filter(function (candidate) { return candidate.host.contains(active); })[0];
+    if (!chart || !chart.host.id) return null;
+    return {
+      hostId: chart.host.id,
+      index: Array.from(chart.host.querySelectorAll("[data-tip]")).indexOf(active)
+    };
+  }
+  function focusChartItem(host, index) {
+    var items = Array.from(host.querySelectorAll("[data-tip]"));
+    if (!items.length) return;
+    items.forEach(function (item) { item.setAttribute("tabindex", "-1"); });
+    var target = items[Math.min(index, items.length - 1)];
+    target.setAttribute("tabindex", "0");
+    target.focus({ preventScroll: true });
+  }
+  function restoreChartFocus(state) {
+    if (!state || state.index < 0) return;
+    var host = $(state.hostId);
+    if (!host) return;
+    focusChartItem(host, state.index);
+  }
+  function renderUsage(preserveDetails) {
+    var detailState = preserveDetails ? captureDetailsState() : null;
+    var chartFocus = captureChartFocus();
+    $("tip").style.opacity = "0";
     charts.length = 0; ro.disconnect();
-    renderQuota(); renderHero(); renderSplit(); renderTrend();
+    renderHero(); renderSplit(); renderTrend();
     renderActivity(); renderModels(); renderProjects(); renderDetails();
+    restoreDetailsState(detailState);
+    restoreChartFocus(chartFocus);
+  }
+  function render() {
+    renderQuota();
+    renderUsage(true);
   }
 
   /* ─────────────────────────────────── wiring ── */
   function syncPressed(nodes, isOn) { nodes.forEach(function (b) { b.setAttribute("aria-pressed", String(isOn(b))); }); }
+  function renderStamp() {
+    if (!data) return;
+    $("stamp").textContent = "生成于 " + stampAt(data.generatedAt) + " · " + (PERIOD_LABEL[period] || period) +
+      (data.generationError ? " · 部分更新失败，请重新启动" : data.complete === false ? " · 更新中" : " · 更新完成");
+  }
 
   function buildPeriodSeg() {
+    var focusedPeriod = document.activeElement && document.activeElement.dataset
+      ? document.activeElement.dataset.period : null;
     var keys = (data.periods && data.periods.length ? data.periods : [data.period]).slice();
+    if (desiredPeriod && keys.indexOf(desiredPeriod) >= 0) period = desiredPeriod;
     if (keys.indexOf(period) < 0) period = keys.indexOf(data.period) >= 0 ? data.period : keys[0];
     $("periodSeg").innerHTML = keys.map(function (k) {
       return '<button type="button" data-period="' + esc(k) + '" aria-pressed="' + (k === period) + '">' + esc(PERIOD_LABEL[k] || k) + "</button>";
     }).join("");
     $("periodSeg").querySelectorAll("[data-period]").forEach(function (b) {
       b.addEventListener("click", function () {
+        desiredPeriod = b.dataset.period;
         period = b.dataset.period;
         syncPressed(Array.from($("periodSeg").querySelectorAll("[data-period]")), function (x) { return x === b; });
-        syncUrl(); render();
+        syncUrl(); renderStamp(); render();
       });
     });
+    if (focusedPeriod) {
+      var replacement = Array.from($("periodSeg").querySelectorAll("[data-period]")).filter(function (b) {
+        return b.dataset.period === focusedPeriod;
+      })[0];
+      if (replacement) replacement.focus({ preventScroll: true });
+    }
   }
   function syncUrl() {
     var url = new URL(location.href);
@@ -1570,7 +1692,8 @@ addEventListener("error", function (event) {
 
   var q = new URLSearchParams(location.search);
   if (["all", "claude", "codex"].indexOf(q.get("provider")) >= 0) filter = q.get("provider");
-  if (q.get("period")) period = q.get("period");
+  desiredPeriod = q.get("period") || null;
+  if (desiredPeriod) period = desiredPeriod;
   syncPressed(Array.from(document.querySelectorAll("[data-filter]")), function (b) { return b.dataset.filter === filter; });
   $("wordmark").innerHTML = pixel("AI USAGE", 3, "currentColor");
 
@@ -1581,32 +1704,89 @@ addEventListener("error", function (event) {
 
   /* ─────────────────────────── data intake ── */
   window.__render__ = function () {
-    data = window.__DATA__ || {};
-    if (data.period && !q.get("period")) period = data.period;
-    buildPeriodSeg();
-    $("stamp").textContent = "生成于 " + stampAt(data.generatedAt) + " · " + (PERIOD_LABEL[period] || period);
+    var incoming = window.__DATA__ || {};
+    var runId = String(incoming.runId || "legacy");
+    var revision = Number(incoming.revision);
+    if (!isFinite(revision)) revision = 0;
+    if (runId === lastRunId && revision <= lastRevision) return;
+    var runChanged = lastRunId != null && runId !== lastRunId;
+    var firstRender = !data;
+    var previousData = runChanged ? null : data;
+    var previousPeriod = period;
+    var previousReport = previousData && previousData.reports ? previousData.reports[previousPeriod] : null;
+    var previousLimits = previousData ? previousData.limits : null;
+    var previousCurrency = previousData ? previousData.currency : null;
+    var previousPeriods = previousData && previousData.periods ? previousData.periods.join("|") : "";
+    data = incoming;
+    lastRunId = runId;
+    lastRevision = revision;
+    lastRevisionAt = Date.now();
+    if ((firstRender || runChanged) && data.period && !desiredPeriod) period = data.period;
+    var nextPeriods = data.periods ? data.periods.join("|") : "";
+    if (firstRender || previousPeriods !== nextPeriods) buildPeriodSeg();
+    renderStamp();
     $("source").textContent = (data.source && data.source.name ? data.source.name : "本地统计") + (data.source && data.source.version ? " " + data.source.version : "");
     $("location").textContent = data.appDir || "";
-    render();
-    clearInterval(bootTimer);
-    $("app").classList.add("show");
-    $("loader").classList.add("done");
-    setTimeout(function () { $("loader").style.display = "none"; }, 340);
+    if (firstRender) {
+      render();
+      clearInterval(bootTimer);
+      $("app").classList.add("show");
+      $("loader").classList.add("done");
+      setTimeout(function () { $("loader").style.display = "none"; }, 340);
+    } else {
+      var currencyChanged = JSON.stringify(previousCurrency) !== JSON.stringify(data.currency);
+      if (currencyChanged || JSON.stringify(previousLimits) !== JSON.stringify(data.limits)) renderQuota();
+      var nextReport = data.reports ? data.reports[period] : null;
+      if (currencyChanged || previousPeriod !== period || JSON.stringify(previousReport) !== JSON.stringify(nextReport)) {
+        renderUsage(true);
+      }
+    }
   };
 
-  var attempts = 0;
-  (function load() {
+  var attempts = 0, bootStartedAt = Date.now();
+  function continuePolling() {
+    if (terminalFailure) return;
+    var waitStartedAt = data ? lastRevisionAt : bootStartedAt;
+    if (Date.now() - waitStartedAt < 600000) {
+      setTimeout(load, 500);
+    } else if (data) {
+      $("stamp").textContent = $("stamp").textContent.replace(" · 更新中", " · 更新未完成，请重新启动");
+    } else {
+      $("bootMessage").textContent = "数据生成超时，请重新启动";
+    }
+  }
+  function probeFailure() {
+    if (terminalFailure) return;
+    var failureScript = document.createElement("script");
+    failureScript.src = "failure.js?t=" + Date.now();
+    failureScript.onload = function () {
+      failureScript.remove();
+      continuePolling();
+    };
+    failureScript.onerror = function () {
+      failureScript.remove();
+      continuePolling();
+    };
+    document.body.appendChild(failureScript);
+  }
+  function load() {
     var script = document.createElement("script");
     script.src = "data.js?t=" + Date.now();
-    script.onload = function () { script.remove(); };
+    script.onload = function () {
+      script.remove();
+      attempts = 0;
+      if (terminalFailure) return;
+      if (!data || data.complete === false) probeFailure();
+    };
     script.onerror = function () {
       script.remove();
+      if (terminalFailure) return;
       attempts += 1;
-      if (attempts < 300) setTimeout(load, 500);
-      else $("bootMessage").textContent = "数据生成超时，请重新启动";
+      probeFailure();
     };
     document.body.appendChild(script);
-  })();
+  }
+  load();
 })();
 </script>
 </body>

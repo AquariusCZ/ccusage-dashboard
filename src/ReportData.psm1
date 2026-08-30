@@ -11,6 +11,32 @@ function ConvertTo-FiniteDouble($Value) {
   }
 }
 
+function Assert-FiniteArithmeticResult([double]$Value, [string]$Operation) {
+  if ([double]::IsNaN($Value) -or [double]::IsInfinity($Value)) {
+    throw "Non-finite arithmetic result while $Operation."
+  }
+  return $Value
+}
+
+function Test-FiniteNumberValue($Value, [bool]$AllowNegative = $true) {
+  if ($null -eq $Value) { return $false }
+  $numericType = [Type]::GetTypeCode($Value.GetType()) -in @(
+    [TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::UInt16, [TypeCode]::UInt32,
+    [TypeCode]::UInt64, [TypeCode]::Int16, [TypeCode]::Int32, [TypeCode]::Int64,
+    [TypeCode]::Decimal, [TypeCode]::Double, [TypeCode]::Single
+  )
+  if (-not $numericType) { return $false }
+  $number = [double]$Value
+  if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) { return $false }
+  return $AllowNegative -or $number -ge 0
+}
+
+function Test-BoundedTextValue($Value, [int]$MaxLength, [bool]$AllowEmpty = $true) {
+  if (-not ($Value -is [string]) -or $Value.Length -gt $MaxLength -or
+      $Value -match '[\x00-\x1f\x7f]') { return $false }
+  return $AllowEmpty -or -not [string]::IsNullOrWhiteSpace($Value)
+}
+
 # Strict mode cannot read `.PSObject.Properties.Name` on a record with no
 # properties at all, which an empty JSON object parses to, so the members are
 # walked instead of projected.
@@ -106,6 +132,7 @@ function Resolve-DisplayCurrency {
 }
 
 function New-UnattributedModel([double]$Cost) {
+  $Cost = Assert-FiniteArithmeticResult $Cost 'building unattributed model cost'
   return [pscustomobject][ordered]@{
     name             = 'unattributed'
     calls            = 0
@@ -123,6 +150,9 @@ function New-UnattributedModel([double]$Cost) {
 }
 
 function Apply-ModelCostResidual($Rows, [double]$Residual, [double]$Tolerance) {
+  if (-not (Test-FiniteNumberValue $Residual) -or -not (Test-FiniteNumberValue $Tolerance $false)) {
+    return $false
+  }
   if ([Math]::Abs($Residual) -le 0.000000001) { return $true }
   if ($Residual -gt $Tolerance -or $Rows.Count -eq 0) {
     if ($Residual -lt 0) { return $false }
@@ -140,7 +170,7 @@ function Apply-ModelCostResidual($Rows, [double]$Residual, [double]$Tolerance) {
     }
   }
   $adjusted = $largestCost + $Residual
-  if ($adjusted -lt -0.000000001) { return $false }
+  if (-not (Test-FiniteNumberValue $adjusted) -or $adjusted -lt -0.000000001) { return $false }
   $Rows[$largestIndex].cost = [Math]::Max(0.0, $adjusted)
   return $true
 }
@@ -148,7 +178,9 @@ function Apply-ModelCostResidual($Rows, [double]$Residual, [double]$Tolerance) {
 function Get-UnattributedCost($Rows) {
   $total = 0.0
   foreach ($row in $Rows) {
-    if ($row -and $row.kind -eq 'unattributed') { $total += Get-RecordNumber $row 'cost' }
+    if ($row -and $row.kind -eq 'unattributed') {
+      $total = Assert-FiniteArithmeticResult ($total + (Get-RecordNumber $row 'cost')) 'summing unattributed model cost'
+    }
   }
   return $total
 }
@@ -164,7 +196,19 @@ function ConvertTo-LiveFallbackModels($Report, [double]$ReferenceCost, [double]$
     $row['tokensPartial'] = $false
     $copy = [pscustomobject]$row
     $rows.Add($copy)
-    $sum += Get-RecordNumber $copy 'cost'
+    $candidateSum = $sum + (Get-RecordNumber $copy 'cost')
+    if (-not (Test-FiniteNumberValue $candidateSum $false)) {
+      $rows.Clear()
+      if ($ReferenceCost -gt 0) { $rows.Add((New-UnattributedModel $ReferenceCost)) }
+      return [pscustomobject][ordered]@{
+        rows             = $rows.ToArray()
+        source           = 'unattributed_fallback'
+        sourceCost       = 0.0
+        unattributedCost = [Math]::Max(0.0, $ReferenceCost)
+        tokensPartial    = $true
+      }
+    }
+    $sum = $candidateSum
   }
 
   $gap = $ReferenceCost - $sum
@@ -211,16 +255,20 @@ function Merge-CodeBurnDurableModels {
   $reportCurrency = if ($Report.PSObject.Properties.Name -contains 'currency') { [string]$Report.currency } else { 'USD' }
   $statusRate = Get-StatusCurrencyRate $StatusCurrency $reportCurrency
   $statusCost = (Get-RecordNumber $StatusCurrent 'cost') * $statusRate
+  $statusCostValid = Test-FiniteNumberValue $statusCost $false
+  if (-not $statusCostValid) { $statusCost = 0.0 }
   $result = $null
   $statusModels = @()
   if ($StatusCurrent -and $StatusCurrent.PSObject.Properties.Name -contains 'topModels') {
     $statusModels = @($StatusCurrent.topModels)
   }
-  $useDurable = $statusRate -gt 0 -and $statusModels.Count -gt 0 -and $statusCost -le ($referenceCost + $Tolerance)
+  $useDurable = $statusCostValid -and $statusRate -gt 0 -and $statusModels.Count -gt 0 -and
+    ($statusCost -le $referenceCost -or ($statusCost - $referenceCost) -le $Tolerance)
 
   if ($useDurable) {
     $rows = New-Object Collections.Generic.List[object]
     $durableSum = 0.0
+    $durableValid = $true
     $anyPartialTokens = $false
     foreach ($model in $statusModels) {
       if (-not $model) { continue }
@@ -228,15 +276,24 @@ function Merge-CodeBurnDurableModels {
       $live = if ($key -and $liveByKey.ContainsKey($key)) { $liveByKey[$key] } else { $null }
       $row = Copy-Record $live
       $durableCost = (Get-RecordNumber $model 'cost') * $statusRate
+      $durableSavings = (Get-RecordNumber $model 'savingsUSD') * $statusRate
+      $durableEstimatedCost = (Get-RecordNumber $model 'estimatedCostUSD') * $statusRate
+      if (-not (Test-FiniteNumberValue $durableCost $false) -or
+          -not (Test-FiniteNumberValue $durableSavings $false) -or
+          -not (Test-FiniteNumberValue $durableEstimatedCost $false)) {
+        $durableValid = $false
+        break
+      }
       $liveCost = Get-RecordNumber $live 'cost'
       $durableCalls = Get-RecordNumber $model 'calls'
       $liveCalls = Get-RecordNumber $live 'calls'
-      $tokensPartial = (-not $live) -or ([Math]::Abs($durableCost - $liveCost) -gt $Tolerance) -or ($durableCalls -ne $liveCalls)
+      $costDifference = $durableCost - $liveCost
+      $tokensPartial = (-not $live) -or ([Math]::Abs($costDifference) -gt $Tolerance) -or ($durableCalls -ne $liveCalls)
       $row['name'] = if ($live) { [string]$live.name } else { Get-FallbackModelDisplayName ([string]$model.name) }
       $row['calls'] = [int64]$durableCalls
       $row['cost'] = $durableCost
-      $row['savings'] = (Get-RecordNumber $model 'savingsUSD') * $statusRate
-      $row['estimatedCost'] = (Get-RecordNumber $model 'estimatedCostUSD') * $statusRate
+      $row['savings'] = $durableSavings
+      $row['estimatedCost'] = $durableEstimatedCost
       foreach ($tokenField in @('inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens')) {
         if (-not $row.Contains($tokenField)) { $row[$tokenField] = 0 }
       }
@@ -245,11 +302,17 @@ function Merge-CodeBurnDurableModels {
       $row['tokensPartial'] = $tokensPartial
       $copy = [pscustomobject]$row
       $rows.Add($copy)
-      $durableSum += $durableCost
+      $candidateSum = $durableSum + $durableCost
+      if (-not (Test-FiniteNumberValue $candidateSum $false)) {
+        $durableValid = $false
+        break
+      }
+      $durableSum = $candidateSum
       $anyPartialTokens = $anyPartialTokens -or $tokensPartial
     }
 
-    if ($durableSum -le ($referenceCost + $Tolerance)) {
+    if ($durableValid -and
+        ($durableSum -le $referenceCost -or ($durableSum - $referenceCost) -le $Tolerance)) {
       $gap = $referenceCost - $durableSum
       if (Apply-ModelCostResidual $rows $gap $Tolerance) {
         $unattributed = Get-UnattributedCost $rows
@@ -279,6 +342,53 @@ function Merge-CodeBurnDurableModels {
     modelTokensPartial = $result.tokensPartial
   }) -Force
   return $Report
+}
+
+function Get-CodexBaseUrlFromToml([string]$Toml) {
+  if ([string]::IsNullOrWhiteSpace($Toml)) { return '' }
+  $lines = @([regex]::Split($Toml, '\r?\n'))
+  $providerKey = ''
+  $providerPattern = '^[\t ]*model_provider[\t ]*=[\t ]*(["''])([^"'']+)\1[\t ]*(?:#.*)?$'
+  foreach ($line in $lines) {
+    if ($line.TrimStart().StartsWith('#')) { continue }
+    if ($line -match '^[\t ]*\[') { break }
+    $match = [regex]::Match($line, $providerPattern)
+    if ($match.Success) {
+      if ($providerKey) { return '' }
+      $providerKey = $match.Groups[2].Value
+    } elseif ($line -match '^[\t ]*model_provider[\t ]*=') {
+      return ''
+    }
+  }
+  if ($providerKey -notmatch '\A[A-Za-z0-9_-]+\z') { return '' }
+
+  $selectedSectionSeen = $false
+  $inSelectedSection = $false
+  $baseUrl = ''
+  $sectionPattern = '^[\t ]*\[model_providers\.([A-Za-z0-9_-]+)\][\t ]*(?:#.*)?$'
+  $basePattern = '^[\t ]*base_url[\t ]*=[\t ]*(["''])([^"'']+)\1[\t ]*(?:#.*)?$'
+  foreach ($line in $lines) {
+    if ($line.TrimStart().StartsWith('#')) { continue }
+    if ($line -match '^[\t ]*\[') {
+      $section = [regex]::Match($line, $sectionPattern)
+      $inSelectedSection = $section.Success -and
+        $section.Groups[1].Value.Equals($providerKey, [StringComparison]::Ordinal)
+      if ($inSelectedSection) {
+        if ($selectedSectionSeen) { return '' }
+        $selectedSectionSeen = $true
+      }
+      continue
+    }
+    if (-not $inSelectedSection) { continue }
+    $baseMatch = [regex]::Match($line, $basePattern)
+    if ($baseMatch.Success) {
+      if ($baseUrl) { return '' }
+      $baseUrl = $baseMatch.Groups[2].Value
+    } elseif ($line -match '^[\t ]*base_url[\t ]*=') {
+      return ''
+    }
+  }
+  return $baseUrl
 }
 
 <#
@@ -349,13 +459,26 @@ function Get-CodexUsageRequest {
   # keys in the block, so the pairs are read directly, minus the reserved names a
   # differently-written script might quote.
   $headers = @{}
+  # Upstream CC Switch 3.20.1 templates use Authorization, User-Agent,
+  # Content-Type, and New-Api-User. The remaining names are ordinary,
+  # non-routing request metadata or common API-key forms.
+  # An allowlist is deliberate: HttpClient accepts proxy and rewrite headers that
+  # can move a same-origin credential beyond the provider selected by the user.
+  $allowedHeaderNames = @(
+    'Accept', 'Accept-Encoding', 'Accept-Language', 'Api-Key', 'Authorization',
+    'Cache-Control', 'Content-Type', 'New-Api-User', 'Pragma', 'User-Agent', 'X-API-Key'
+  )
   $headersStart = $requestBlock.IndexOf('headers')
   if ($headersStart -ge 0) {
     $headerBlock = $requestBlock.Substring($headersStart)
     foreach ($pair in [regex]::Matches($headerBlock, '["'']([^"'']+)["'']\s*:\s*["'']([^"'']*)["'']')) {
       $name = $pair.Groups[1].Value
       if ($name -in @('url', 'method', 'timeout')) { continue }
-      $headers[$name] = $pair.Groups[2].Value
+      $value = $pair.Groups[2].Value
+      if ($allowedHeaderNames -inotcontains $name -or $value -match '[\x00-\x1F\x7F]') {
+        return Fail 'unsupported_header'
+      }
+      $headers[$name] = $value
     }
   }
 
@@ -369,28 +492,17 @@ function Get-CodexUsageRequest {
   $apiKey = [string](Get-RecordValue (Get-RecordValue $config 'auth') 'OPENAI_API_KEY')
   $toml = [string](Get-RecordValue $config 'config')
 
-  $baseUrl = ''
-  if (-not [string]::IsNullOrWhiteSpace($toml)) {
-    $providerKey = ''
-    $providerMatch = [regex]::Match($toml, '(?m)^\s*model_provider\s*=\s*["'']([^"'']+)["'']')
-    if ($providerMatch.Success) { $providerKey = $providerMatch.Groups[1].Value }
-    if ($providerKey) {
-      $section = [regex]::Match($toml, '(?s)\[model_providers\.' + [regex]::Escape($providerKey) + '\](.*?)(?=\r?\n\[|\z)')
-      if ($section.Success) {
-        $baseMatch = [regex]::Match($section.Groups[1].Value, 'base_url\s*=\s*["'']([^"'']+)["'']')
-        if ($baseMatch.Success) { $baseUrl = $baseMatch.Groups[1].Value }
-      }
-    }
-    if (-not $baseUrl) {
-      $anyBase = [regex]::Match($toml, '(?s)\[model_providers\.[^\]]+\].*?base_url\s*=\s*["'']([^"'']+)["'']')
-      if ($anyBase.Success) { $baseUrl = $anyBase.Groups[1].Value }
-    }
-  }
+  $baseUrl = Get-CodexBaseUrlFromToml $toml
   $baseUrl = $baseUrl.Trim().TrimEnd('/')
 
+  $declaredUrl = $url
   if ($url.Contains('{{baseUrl}}') -and -not $baseUrl) { return Fail 'no_base_url' }
-  $needsKey = $url.Contains('{{apiKey}}') -or (@($headers.Values) -join "`n").Contains('{{apiKey}}')
+  if ($url.Contains('{{apiKey}}')) { return Fail 'credential_in_url' }
+  $needsKey = (@($headers.Values) -join "`n").Contains('{{apiKey}}')
   if ($needsKey -and -not $apiKey) { return Fail 'no_api_key' }
+  if ($needsKey -and -not $declaredUrl.Contains('{{baseUrl}}')) {
+    return Fail 'credential_scope_mismatch'
+  }
 
   function Expand-Placeholder([string]$Value) {
     return $Value.Replace('{{baseUrl}}', $baseUrl).Replace('{{apiKey}}', $apiKey)
@@ -398,17 +510,42 @@ function Get-CodexUsageRequest {
 
   $url = Expand-Placeholder $url
   $resolved = @{}
-  foreach ($name in @($headers.Keys)) { $resolved[$name] = Expand-Placeholder ([string]$headers[$name]) }
+  foreach ($name in @($headers.Keys)) {
+    $value = Expand-Placeholder ([string]$headers[$name])
+    if ($value -match '[\x00-\x1F\x7F]') { return Fail 'unsupported_header' }
+    $resolved[$name] = $value
+  }
   # A relay WAF can answer 403 to a request with no User-Agent at all.
   if (-not ($resolved.Keys | Where-Object { $_ -ieq 'User-Agent' })) { $resolved['User-Agent'] = 'AI-Usage/1.0' }
 
   if ($url -match '\{\{[^}]*\}\}' -or (@($resolved.Values) -join "`n") -match '\{\{[^}]*\}\}') {
     return Fail 'unresolved_placeholder'
   }
-  if ($url -notmatch '^https://') { return Fail 'insecure_endpoint' }
+  $endpointUri = $null
+  if (-not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$endpointUri) -or
+      $endpointUri.Scheme -ine 'https') {
+    return Fail 'insecure_endpoint'
+  }
+  if ($needsKey) {
+    $providerUri = $null
+    if (-not [Uri]::TryCreate($baseUrl, [UriKind]::Absolute, [ref]$providerUri) -or
+        $providerUri.Scheme -ine 'https' -or
+        -not $endpointUri.Scheme.Equals($providerUri.Scheme, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $endpointUri.DnsSafeHost.Equals($providerUri.DnsSafeHost, [StringComparison]::OrdinalIgnoreCase) -or
+        $endpointUri.Port -ne $providerUri.Port) {
+      return Fail 'credential_scope_mismatch'
+    }
+  }
 
-  $timeout = Get-RecordNumber $script 'timeout'
-  if ($timeout -le 0 -or $timeout -gt 60) { $timeout = 10 }
+  $timeout = 10
+  $timeoutValue = Get-RecordValue $script 'timeout'
+  if (Test-FiniteNumberValue $timeoutValue $false) {
+    $timeoutCandidate = [double]$timeoutValue
+    if ($timeoutCandidate -ge 1 -and $timeoutCandidate -le 60 -and
+        [Math]::Floor($timeoutCandidate) -eq $timeoutCandidate) {
+      $timeout = [int]$timeoutCandidate
+    }
+  }
 
   return [pscustomobject][ordered]@{
     ok             = $true
@@ -416,7 +553,7 @@ function Get-CodexUsageRequest {
     url            = $url
     method         = $method
     headers        = $resolved
-    timeoutSeconds = [int]$timeout
+    timeoutSeconds = $timeout
   }
 }
 
@@ -436,23 +573,33 @@ function ConvertTo-CodexQuota {
     [string]$ProviderName
   )
 
-  if (-not $Response) { return [pscustomobject][ordered]@{ ok = $false; reason = 'malformed_response' } }
+  function Fail { return [pscustomobject][ordered]@{ ok = $false; reason = 'malformed_response' } }
+  if (-not ($Response -is [pscustomobject])) { return Fail }
+  if (-not [string]::IsNullOrWhiteSpace($ProviderName) -and
+      -not (Test-BoundedTextValue $ProviderName 1024 $false)) { return Fail }
 
   $quota = Get-RecordValue $Response 'quota'
+  if ($null -ne $quota -and -not ($quota -is [pscustomobject])) { return Fail }
   $remaining = Get-RecordValue $Response 'remaining'
   if ($null -eq $remaining) { $remaining = Get-RecordValue $quota 'remaining' }
   if ($null -eq $remaining) { $remaining = Get-RecordValue $Response 'balance' }
+  if ($null -ne $remaining -and -not (Test-FiniteNumberValue $remaining)) { return Fail }
 
-  $unit = [string](Get-RecordValue $Response 'unit')
-  if (-not $unit) { $unit = [string](Get-RecordValue $quota 'unit') }
-  if (-not $unit) { $unit = 'USD' }
+  $unit = Get-RecordValue $Response 'unit'
+  if ($null -eq $unit) { $unit = Get-RecordValue $quota 'unit' }
+  if ($null -eq $unit) { $unit = 'USD' }
+  if (-not ($unit -is [string]) -or [string]::IsNullOrWhiteSpace($unit) -or
+      $unit.Length -gt 16 -or $unit -match '[\x00-\x1f\x7f]') { return Fail }
 
   $isValid = Get-RecordValue $Response 'is_active'
   if ($null -eq $isValid) { $isValid = Get-RecordValue $Response 'isValid' }
   if ($null -eq $isValid) { $isValid = $true }
+  if (-not ($isValid -is [bool])) { return Fail }
 
   $subscription = Get-RecordValue $Response 'subscription'
+  if ($null -ne $subscription -and -not ($subscription -is [pscustomobject])) { return Fail }
   $windows = New-Object Collections.Generic.List[object]
+  $hasQuotaState = $null -ne $remaining
   $specs = @(
     @{ kind = 'weekly'; limit = 'weekly_limit_usd'; used = 'weekly_usage_usd'; start = 'weekly_window_start'; days = 7 },
     @{ kind = 'daily'; limit = 'daily_limit_usd'; used = 'daily_usage_usd'; start = 'daily_window_start'; days = 1 },
@@ -460,12 +607,26 @@ function ConvertTo-CodexQuota {
   )
   foreach ($spec in $specs) {
     if (-not (Test-RecordProperty $subscription $spec.used)) { continue }
-    $limit = Get-RecordNumber $subscription $spec.limit
-    $used = Get-RecordNumber $subscription $spec.used
-    $startsAt = [string](Get-RecordValue $subscription $spec.start)
+    $usedValue = Get-RecordValue $subscription $spec.used
+    if (-not (Test-FiniteNumberValue $usedValue $false)) { return Fail }
+    $limitValue = Get-RecordValue $subscription $spec.limit
+    if ($null -ne $limitValue -and -not (Test-FiniteNumberValue $limitValue $false)) { return Fail }
+    $limit = if ($null -eq $limitValue) { 0.0 } else { [double]$limitValue }
+    $used = [double]$usedValue
+    $startsAt = Get-RecordValue $subscription $spec.start
+    if ($null -ne $startsAt -and -not (Test-BoundedTextValue $startsAt 128)) { return Fail }
+    if (-not [string]::IsNullOrWhiteSpace($startsAt)) {
+      try { $startsAt = ([DateTimeOffset]::Parse($startsAt)).ToString('o') } catch { return Fail }
+    } else {
+      $startsAt = $null
+    }
     $resetsAt = $null
     if ($startsAt -and $spec.days -gt 0) {
-      try { $resetsAt = ([DateTimeOffset]::Parse($startsAt)).AddDays($spec.days).ToString('o') } catch { $resetsAt = $null }
+      try {
+        $resetsAt = ([DateTimeOffset]::Parse($startsAt)).AddDays($spec.days).ToString('o')
+      } catch {
+        return Fail
+      }
     }
     $windows.Add([pscustomobject][ordered]@{
       kind     = $spec.kind
@@ -475,6 +636,21 @@ function ConvertTo-CodexQuota {
       startsAt = if ($startsAt) { $startsAt } else { $null }
       resetsAt = $resetsAt
     })
+    $hasQuotaState = $true
+  }
+
+  if (-not $hasQuotaState) { return Fail }
+  $expiresAt = Get-RecordValue $subscription 'expires_at'
+  if ($null -ne $expiresAt -and -not (Test-BoundedTextValue $expiresAt 128)) { return Fail }
+  if (-not [string]::IsNullOrWhiteSpace($expiresAt)) {
+    try { $expiresAt = ([DateTimeOffset]::Parse($expiresAt)).ToString('o') } catch { return Fail }
+  } else {
+    $expiresAt = $null
+  }
+  foreach ($textField in @('planName', 'mode')) {
+    $textValue = Get-RecordValue $Response $textField
+    $maxLength = if ($textField -eq 'mode') { 128 } else { 1024 }
+    if ($null -ne $textValue -and -not (Test-BoundedTextValue $textValue $maxLength)) { return Fail }
   }
 
   return [pscustomobject][ordered]@{
@@ -483,10 +659,10 @@ function ConvertTo-CodexQuota {
     provider   = if ([string]::IsNullOrWhiteSpace($ProviderName)) { $null } else { $ProviderName }
     planName   = [string](Get-RecordValue $Response 'planName')
     mode       = [string](Get-RecordValue $Response 'mode')
-    isValid    = [bool]$isValid
+    isValid    = $isValid
     unit       = $unit.ToUpperInvariant()
-    remaining  = if ($null -eq $remaining) { $null } else { ConvertTo-FiniteDouble $remaining }
-    expiresAt  = [string](Get-RecordValue $subscription 'expires_at')
+    remaining  = if ($null -eq $remaining) { $null } else { [double]$remaining }
+    expiresAt  = if ($null -eq $expiresAt) { $null } else { $expiresAt }
     windows    = $windows.ToArray()
   }
 }

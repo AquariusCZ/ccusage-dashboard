@@ -118,7 +118,6 @@ function New-DemoReport([string]$Provider, [string]$PeriodKey, [int]$Days, [doub
     currency = $CurrencyCode
     overview = [pscustomobject][ordered]@{
       cost = $Total
-      proxiedCost = 0
       netCost = $Total
       savings = [Math]::Round($Total * 0.08, 6)
       estimatedCost = 0
@@ -167,15 +166,20 @@ foreach ($entry in $periods.GetEnumerator()) {
 
 $payload = [ordered]@{
   generatedAt = $AsOf.ToString('o')
+  runId = 'synthetic-demo'
+  revision = 1
+  complete = $true
+  generationError = $null
   period = '30days'
   currency = [ordered]@{ code = $CurrencyCode; rate = $CurrencyRate; symbol = $CurrencySymbol }
   pricingNote = 'Synthetic API reference price estimate.'
   source = [ordered]@{ name = 'CodeBurn'; version = '0.9.19' }
-  periods = @('week', '30days', 'all')
+  periods = @('30days', 'week', 'all')
   reports = $reports
   limits = [ordered]@{
     claudeQuota = [ordered]@{
       ok = $true
+      reason = $null
       fiveHour = [ordered]@{ utilization = 38; resetsAt = (At 2.75) }
       sevenDay = [ordered]@{ utilization = 64; resetsAt = (At 78) }
       limits = @(

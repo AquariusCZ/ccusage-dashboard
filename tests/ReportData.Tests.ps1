@@ -104,17 +104,71 @@ Assert-Close ([double](($cnyMerged.models | Measure-Object -Property cost -Sum).
 Assert-Close $cnyMerged.models[0].savings 14.4 'durable USD savings must use the same report currency rate'
 Assert-Close $cnyMerged.costReconciliation.statusCost 720 'status metadata must use the report currency'
 
+$overflowLive = Merge-CodeBurnDurableModels `
+  -Report (New-Report ([double]::MaxValue) ([double]::MaxValue) @(
+    (Model 'Overflow A' ([double]::MaxValue) 1 1),
+    (Model 'Overflow B' ([double]::MaxValue) 1 1)
+  )) `
+  -StatusCurrent $null
+Assert-True ($overflowLive.costReconciliation.modelSource -eq 'unattributed_fallback') 'an overflowing live sum must degrade to one unattributed total'
+Assert-True ($overflowLive.models.Count -eq 1 -and $overflowLive.models[0].kind -eq 'unattributed') 'overflowing live rows must not reach the render DTO'
+Assert-True (-not (($overflowLive | ConvertTo-Json -Depth 20 -Compress) -match 'NaN|Infinity')) 'live overflow fallback must remain valid JSON'
+
+$overflowStatus = Merge-CodeBurnDurableModels `
+  -Report (New-Report 100 100 @((Model 'Opus 4.8' 100 1 1))) `
+  -StatusCurrent ([pscustomobject]@{
+    cost = [double]::MaxValue
+    topModels = @([pscustomobject]@{ name = 'claude-opus-4-8'; cost = [double]::MaxValue; calls = 1 })
+  }) `
+  -StatusCurrency ([pscustomobject]@{ code = 'USD'; rate = 2; symbol = '$' })
+Assert-True ($overflowStatus.costReconciliation.modelSource -eq 'live_report_fallback') 'overflowing optional status conversion must fall back to the live report'
+Assert-Close $overflowStatus.costReconciliation.statusCost 0 'overflowing optional status metadata must be replaced with a finite neutral value'
+Assert-True (-not (($overflowStatus | ConvertTo-Json -Depth 20 -Compress) -match 'NaN|Infinity')) 'status overflow fallback must remain valid JSON'
+
+$overflowDurableSum = Merge-CodeBurnDurableModels `
+  -Report (New-Report ([double]::MaxValue) ([double]::MaxValue) @((Model 'Overflow A' ([double]::MaxValue) 1 1))) `
+  -StatusCurrent ([pscustomobject]@{
+    cost = [double]::MaxValue
+    topModels = @(
+      [pscustomobject]@{ name = 'overflow-a'; cost = [double]::MaxValue; calls = 1 },
+      [pscustomobject]@{ name = 'overflow-b'; cost = [double]::MaxValue; calls = 1 }
+    )
+  })
+Assert-True ($overflowDurableSum.costReconciliation.modelSource -eq 'live_report_fallback') 'an overflowing durable model sum must fall back to finite live rows'
+Assert-True (-not (($overflowDurableSum | ConvertTo-Json -Depth 20 -Compress) -match 'NaN|Infinity')) 'durable overflow fallback must remain valid JSON'
+
 $codexOnlyCurrency = Resolve-DisplayCurrency `
   -ReportCurrencies @('CNY', 'CNY') `
   -StatusCurrencies @($null, [pscustomobject]@{ code = 'CNY'; rate = 7.2; symbol = 'CNY' })
 Assert-Close $codexOnlyCurrency.rate 7.2 'display currency may use a valid status rate from either provider'
 Assert-True ($codexOnlyCurrency.code -eq 'CNY') 'display currency must match every report'
 
+$overflowingModelSum = Merge-CodeBurnDurableModels `
+  -Report (New-Report ([double]::MaxValue) ([double]::MaxValue) @(
+    (Model 'Model A' ([double]::MaxValue) 1 0),
+    (Model 'Model B' ([double]::MaxValue) 1 0)
+  )) `
+  -StatusCurrent $null
+Assert-True (-not [double]::IsInfinity([double]$overflowingModelSum.costReconciliation.modelSourceCost)) 'finite model costs must not publish Infinity after summation overflow'
+Assert-True ($overflowingModelSum.costReconciliation.modelSource -eq 'unattributed_fallback') 'summation overflow must degrade to finite unattributed cost'
+
+$overflowingRate = Merge-CodeBurnDurableModels `
+  -Report (New-Report ([double]::MaxValue) ([double]::MaxValue) @()) `
+  -StatusCurrent ([pscustomobject]@{ cost = [double]::MaxValue; topModels = @() }) `
+  -StatusCurrency ([pscustomobject]@{ code = 'USD'; rate = 2; symbol = '$' })
+Assert-True (-not [double]::IsInfinity([double]$overflowingRate.costReconciliation.statusCost)) 'finite status cost and rate values must not publish Infinity after multiplication overflow'
+
 # Codex relay quota, replayed from a CC Switch usage script
-function New-UsageScriptMeta([string]$Url, [string]$Method, [bool]$Enabled, [string]$HeaderValue) {
+function New-UsageScriptMeta(
+  [string]$Url,
+  [string]$Method,
+  [bool]$Enabled,
+  [string]$HeaderValue,
+  $Timeout = 10
+) {
   $code = '({ request: { url: "' + $Url + '", method: "' + $Method + '", headers: { "Authorization": "' + $HeaderValue + '" } },' +
     ' extractor: function(response) { return { remaining: response?.remaining, unit: response?.unit ?? "USD" }; } })'
-  return (@{ usage_script = @{ enabled = $Enabled; language = 'javascript'; timeout = 10; code = $code } } | ConvertTo-Json -Depth 6 -Compress)
+  return (@{ usage_script = @{ enabled = $Enabled; language = 'javascript'; timeout = $Timeout; code = $code } } | ConvertTo-Json -Depth 6 -Compress)
 }
 
 function New-ProviderConfig([string]$BaseUrl, [string]$ApiKey) {
@@ -141,15 +195,76 @@ $ownAgent = Get-CodexUsageRequest `
   -MetaJson (@{ usage_script = @{ enabled = $true; timeout = 10; code = '({ request: { url: "{{baseUrl}}/v1/usage", method: "GET", headers: { "User-Agent": "cc-switch/1.0" } } })' } } | ConvertTo-Json -Depth 6 -Compress) `
   -SettingsConfigJson $standardConfig
 Assert-True ($ownAgent.headers['User-Agent'] -eq 'cc-switch/1.0') 'a script that declares its own User-Agent must keep it'
+$contentTypeRequest = Get-CodexUsageRequest `
+  -MetaJson (@{ usage_script = @{ enabled = $true; timeout = 10; code = '({ request: { url: "{{baseUrl}}/v1/usage", method: "GET", headers: { "Authorization": "Bearer {{apiKey}}", "Content-Type": "application/json" } } })' } } | ConvertTo-Json -Depth 6 -Compress) `
+  -SettingsConfigJson $standardConfig
+Assert-True ($contentTypeRequest.ok -and $contentTypeRequest.headers['Content-Type'] -eq 'application/json') 'an upstream Content-Type declaration must survive request parsing'
 
 Assert-True ((Get-CodexUsageRequest -MetaJson '{}' -SettingsConfigJson $standardConfig).reason -eq 'usage_script_missing') 'a provider without a usage script must say so'
 Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $false 'Bearer {{apiKey}}') -SettingsConfigJson $standardConfig).reason -eq 'usage_script_disabled') 'a disabled usage script must not be replayed'
 Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'POST' $true 'Bearer {{apiKey}}') -SettingsConfigJson $standardConfig).reason -eq 'unsupported_method') 'a mutating usage script must be refused, not trusted'
 Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson (New-ProviderConfig 'http://relay.example.com' 'sk-relay-test-key')).reason -eq 'insecure_endpoint') 'a plaintext endpoint must be refused'
 Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson (New-ProviderConfig '' 'sk-relay-test-key')).reason -eq 'no_base_url') 'a provider without base_url must degrade with a reason'
+$mismatchedProviderConfig = @{
+  auth = @{ OPENAI_API_KEY = 'sk-relay-test-key' }
+  config = "model_provider = `"trusted`"`n`n[model_providers.attacker]`nbase_url = `"https://attacker.example.test`"`n"
+} | ConvertTo-Json -Depth 6 -Compress
+Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson $mismatchedProviderConfig).reason -eq 'no_base_url') 'a missing selected provider section must not fall back to another provider base_url'
+$commentedBaseConfig = @{
+  auth = @{ OPENAI_API_KEY = 'sk-relay-test-key' }
+  config = "model_provider = `"trusted`"`n[model_providers.trusted]`n# base_url = `"https://comment-attacker.example.test`"`n"
+} | ConvertTo-Json -Depth 6 -Compress
+Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson $commentedBaseConfig).reason -eq 'no_base_url') 'a commented base_url must never become a credential destination'
+$commentedSectionConfig = @{
+  auth = @{ OPENAI_API_KEY = 'sk-relay-test-key' }
+  config = "model_provider = `"trusted`"`n# [model_providers.trusted]`nbase_url = `"https://comment-attacker.example.test`"`n"
+} | ConvertTo-Json -Depth 6 -Compress
+Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson $commentedSectionConfig).reason -eq 'no_base_url') 'a commented provider section must never become a credential destination'
+$nestedProviderConfig = @{
+  auth = @{ OPENAI_API_KEY = 'sk-relay-test-key' }
+  config = "[other]`nmodel_provider = `"attacker`"`n[model_providers.attacker]`nbase_url = `"https://attacker.example.test`"`n"
+} | ConvertTo-Json -Depth 6 -Compress
+Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson $nestedProviderConfig).reason -eq 'no_base_url') 'a model_provider key inside another TOML table must not select a credential destination'
+$lateProviderConfig = @{
+  auth = @{ OPENAI_API_KEY = 'sk-relay-test-key' }
+  config = "[model_providers.attacker]`nbase_url = `"https://attacker.example.test`"`nmodel_provider = `"attacker`"`n"
+} | ConvertTo-Json -Depth 6 -Compress
+Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson $lateProviderConfig).reason -eq 'no_base_url') 'a model_provider assignment after the first TOML table must not be treated as top-level'
 Assert-True ((Get-CodexUsageRequest -MetaJson $standardMeta -SettingsConfigJson (New-ProviderConfig 'https://relay.example.com' '')).reason -eq 'no_api_key') 'a provider without a key must degrade with a reason'
+Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta 'https://relay.example.com/v1/usage?key={{apiKey}}' 'GET' $true '') -SettingsConfigJson $standardConfig).reason -eq 'credential_in_url') 'an API key placeholder in a URL must be refused before expansion'
+Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta 'https://attacker.example/v1/usage' 'GET' $true 'Bearer {{apiKey}}') -SettingsConfigJson $standardConfig).reason -eq 'credential_scope_mismatch') 'a credential-bearing request must be derived from the selected provider base_url'
+Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}.attacker.example/v1/usage' 'GET' $true 'Bearer {{apiKey}}') -SettingsConfigJson $standardConfig).reason -eq 'credential_scope_mismatch') 'a base_url prefix lookalike must not receive provider credentials'
+Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}:444/v1/usage' 'GET' $true 'Bearer {{apiKey}}') -SettingsConfigJson $standardConfig).reason -eq 'credential_scope_mismatch') 'a different endpoint port must not receive provider credentials'
+foreach ($forbiddenHeader in @(
+  'Host', 'proxy-authorization', 'Connection', 'X-HTTP-Method-Override',
+  'Forwarded', 'X-Forwarded-Host', 'X-Original-Host', 'X-Host', 'X-Original-URL', 'X-Rewrite-URL'
+)) {
+  $forbiddenMeta = @{ usage_script = @{
+      enabled = $true
+      timeout = 10
+      code = '({ request: { url: "{{baseUrl}}/v1/usage", method: "GET", headers: { "' +
+        $forbiddenHeader + '": "{{apiKey}}" } } })'
+    } } | ConvertTo-Json -Depth 6 -Compress
+  Assert-True ((Get-CodexUsageRequest -MetaJson $forbiddenMeta -SettingsConfigJson $standardConfig).reason -eq 'unsupported_header') "the $forbiddenHeader header must not override request routing, proxy credentials, or method semantics"
+}
+$crlfHeaderMeta = @{ usage_script = @{
+    enabled = $true
+    timeout = 10
+    code = '({ request: { url: "{{baseUrl}}/v1/usage", method: "GET", headers: { "Authorization": "Bearer {{apiKey}}", "Accept": "safe' +
+      "`r`n" + 'X-Forwarded-Host: attacker.example" } } })'
+  } } | ConvertTo-Json -Depth 6 -Compress
+Assert-True ((Get-CodexUsageRequest -MetaJson $crlfHeaderMeta -SettingsConfigJson $standardConfig).reason -eq 'unsupported_header') 'a CRLF value must not inject a forbidden routing header after allowlist validation'
 Assert-True ((Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $true 'Bearer {{sessionToken}}') -SettingsConfigJson $standardConfig).reason -eq 'unresolved_placeholder') 'an unsupported placeholder must fail closed rather than be sent literally'
 Assert-True ((Get-CodexUsageRequest -MetaJson 'not json' -SettingsConfigJson $standardConfig).reason -eq 'usage_script_unreadable') 'unreadable provider metadata must degrade with a reason'
+
+$fractionalTimeout = Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $true 'Bearer {{apiKey}}' 0.1) -SettingsConfigJson $standardConfig
+$minimumTimeout = Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $true 'Bearer {{apiKey}}' 1) -SettingsConfigJson $standardConfig
+$maximumTimeout = Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $true 'Bearer {{apiKey}}' 60) -SettingsConfigJson $standardConfig
+$oversizedTimeout = Get-CodexUsageRequest -MetaJson (New-UsageScriptMeta '{{baseUrl}}/v1/usage' 'GET' $true 'Bearer {{apiKey}}' 60.1) -SettingsConfigJson $standardConfig
+Assert-True ($fractionalTimeout.timeoutSeconds -eq 10) 'a fractional timeout must not truncate to an infinite zero timeout'
+Assert-True ($minimumTimeout.timeoutSeconds -eq 1) 'the minimum integral timeout must be preserved'
+Assert-True ($maximumTimeout.timeoutSeconds -eq 60) 'the maximum integral timeout must be preserved'
+Assert-True ($oversizedTimeout.timeoutSeconds -eq 10) 'an oversized fractional timeout must fall back to the bounded default'
 
 $usage = [pscustomobject]@{
   isValid = $true
@@ -189,5 +304,41 @@ $balanceOnly = ConvertTo-CodexQuota -Response ([pscustomobject]@{ balance = 7 })
 Assert-Close $balanceOnly.remaining 7 'the balance fallback must match CC Switch extraction'
 Assert-True ($balanceOnly.isValid -eq $true) 'a response that says nothing about validity is assumed valid'
 Assert-True ((ConvertTo-CodexQuota -Response $null).reason -eq 'malformed_response') 'an empty response must degrade with a reason'
+foreach ($invalidResponse in @(
+  [pscustomobject]@{},
+  [pscustomobject]@{ remaining = 'not-a-number' },
+  [pscustomobject]@{ remaining = 5; isValid = 'false' },
+  [pscustomobject]@{ subscription = 'not-a-record' },
+  [pscustomobject]@{ subscription = [pscustomobject]@{ weekly_usage_usd = 'bad'; weekly_limit_usd = 10 } }
+)) {
+  Assert-True ((ConvertTo-CodexQuota -Response $invalidResponse).reason -eq 'malformed_response') 'malformed relay quota data must fail closed'
+}
+
+$invalidExpiry = ($usage | ConvertTo-Json -Depth 10 -Compress) | ConvertFrom-Json
+$invalidExpiry.subscription.expires_at = 'not-a-date'
+Assert-True ((ConvertTo-CodexQuota -Response $invalidExpiry -ProviderName 'Relay').reason -eq 'malformed_response') 'an invalid subscription expiry must fail closed'
+
+$invalidMonthlyStart = ($usage | ConvertTo-Json -Depth 10 -Compress) | ConvertFrom-Json
+Add-Member -InputObject $invalidMonthlyStart.subscription -NotePropertyName 'monthly_window_start' -NotePropertyValue 'not-a-date' -Force
+Assert-True ((ConvertTo-CodexQuota -Response $invalidMonthlyStart -ProviderName 'Relay').reason -eq 'malformed_response') 'an invalid unmetered window start must fail closed'
+
+$overflowingWindowStart = ($usage | ConvertTo-Json -Depth 10 -Compress) | ConvertFrom-Json
+$overflowingWindowStart.subscription.weekly_window_start = '9999-12-31T23:59:59Z'
+Assert-True ((ConvertTo-CodexQuota -Response $overflowingWindowStart -ProviderName 'Relay').reason -eq 'malformed_response') 'a parseable window start whose reset overflows must fail closed'
+
+$invalidPlanText = ($usage | ConvertTo-Json -Depth 10 -Compress) | ConvertFrom-Json
+$invalidPlanText.planName = "bad`nplan"
+Assert-True ((ConvertTo-CodexQuota -Response $invalidPlanText -ProviderName 'Relay').reason -eq 'malformed_response') 'control characters in relay text must fail closed'
+Assert-True ((ConvertTo-CodexQuota -Response $usage -ProviderName ('x' * 1025)).reason -eq 'malformed_response') 'an oversized provider name must fail closed'
+Assert-True ((ConvertTo-CodexQuota -Response ([pscustomobject]@{ remaining = 1; mode = ('x' * 129) }) -ProviderName 'Relay').reason -eq 'malformed_response') 'an oversized relay mode must fail before caching'
+
+$overflowingWeeklyDate = [pscustomobject]@{
+  subscription = [pscustomobject]@{
+    weekly_usage_usd = 1
+    weekly_limit_usd = 10
+    weekly_window_start = '9999-12-31T23:59:59+00:00'
+  }
+}
+Assert-True ((ConvertTo-CodexQuota -Response $overflowingWeeklyDate -ProviderName 'Relay').reason -eq 'malformed_response') 'an overflowing derived reset date must degrade instead of throwing'
 
 Write-Output 'ReportData.Tests.ps1: PASS'

@@ -36,7 +36,8 @@ Codex 额度有两个来源。官方 Codex 会把 `rate_limits` 写进本地会�
 
 ## 安装
 
-需要 Windows 10 或 Windows 11，以及 Node.js LTS。下面的命令还需要 Git。
+需要 Windows 10 或 Windows 11，以及 Node.js 22.13.0 或更高版本；推荐使用当前 LTS。
+下面的命令还需要 Git。
 没有 Git 时，可以下载仓库 ZIP，解压后运行 `install.bat`。
 
 ```powershell
@@ -48,15 +49,24 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 也可以双击 `install.bat`。安装器会固定已经审计过的 CodeBurn 和 ccusage 版本，
 把运行文件复制到 `%LOCALAPPDATA%\ClaudeUsage`，并创建 **AI Usage** 桌面快捷方式。
 以后打开快捷方式，就会生成一份新的用量快照。
+请在普通、非提升权限的用户会话中运行安装器；这是按用户安装的工具，管理员权限运行会被拒绝。
 CodeBurn 和 ccusage 会作为全局 npm 包安装，卸载 AI Usage 后仍会保留。安装器不会永久修改
-PowerShell 执行策略。
+PowerShell 执行策略。运行文件会先在同一用户目录内暂存和校验，并与所有 Windows 会话中正在
+生成的报告协调；升级失败时会恢复此前的受管文件和 npm 包版本。安装器被中断时，其依赖
+子进程也会一并终止；重新运行安装器可以修复未完成的事务或损坏的包清单，并清除安装器拥有的
+中断残留。
+双击运行的批处理入口会在失败时暂停，并保留 PowerShell 的退出码，避免错误随窗口一起消失。
 
 ## 隐私
 
 - Claude Code、Codex 的会话存储和 CC Switch 数据库都只会被读取。
 - 提示词、工具参数、服务商地址、鉴权头和凭据不会进入浏览器载荷或日志。
-- 正常启动会短暂保留临时报告文件，随后自动删除。
-- 跨运行保留的额度缓存只包含额度状态和时间信息，不包含令牌或 API 密钥。
+- 正常启动会短暂保留临时报告文件，随后自动删除；遇到 Windows 文件占用会自动重试，
+  仍未释放的残留会被标记，并在下次打开页面前优先清理。
+- 跨运行保留的额度缓存包含额度状态和时间信息。Codex 缓存还会保存当前 CC Switch 服务商 ID
+  与不透明的 SHA-256 配置指纹，防止切换服务商或原地修改密钥、端点、额度脚本后继续复用旧的
+  新鲜缓存；不会保存原始令牌、API 密钥、服务商地址或鉴权头。
+- 不会为了加速而缓存上一份完整报告；项目路径和会话标识仍然是用完即删的。
 
 运行时有四条明确记录的网络路径。CodeBurn 使用默认 USD 显示币种时 Frankfurter 请求不会
 启用；CC Switch 没有选中启用额度查询的中转服务商时，Codex 额度请求也不会启用。
@@ -64,22 +74,35 @@ PowerShell 执行策略。
 | 用途 | 目的地 | 发送内容 |
 |---|---|---|
 | 读取真实的 Claude 额度 | Anthropic OAuth 用量端点 | Claude Code 已有的 OAuth 令牌只放在鉴权头中，不发送会话内容或用量汇总 |
-| 读取真实的 Codex 额度 | CC Switch 本来就在查询的中转端点 | Codex 已有的 API 密钥只放在鉴权头中，不发送会话内容或用量汇总 |
+| 读取真实的 Codex 额度 | CC Switch 本来就在查询的中转端点 | Codex 已有的 API 密钥只放在服务商声明且受白名单约束的凭据请求头中，不发送会话内容或用量汇总 |
 | 刷新公开模型价格 | GitHub 原始文件 | 只请求公开价格目录，不发送凭据或用量数据 |
 | 刷新非 USD 汇率 | Frankfurter 公开 API | 只发送目标 ISO 币种代码 |
 
-两个凭据始终只读，不会进入快照、日志或错误信息，服务商地址同样不会写进快照。
-额度请求失败时，本地面板仍会显示。
+两个凭据始终只读，不会进入快照、日志或错误信息，服务商地址同样不会写进快照。Codex 密钥只会
+替换到已审计的请求头中，并且只能发送到 CC Switch 精确选中的 HTTPS 源；控制字符或跨服务商地址
+会被拒绝。额度请求失败时，本地面板仍会显示。
 
 ## 工作方式
 
 1. 隐藏启动器运行 `Generate-ClaudeReport.ps1`。
-2. CodeBurn 和 ccusage 汇总本地 Claude 与 Codex 元数据。
-3. 生成器核对模型成本，加入真实的 Claude 与 Codex 额度，再写出最小化的临时快照。
-4. 浏览器打开本地面板，正常启动随后删除临时文件。
+2. 没有互斥锁竞争且依赖预检正常时，浏览器会先于采集打开；CodeBurn 优先生成所选周期，
+   ccusage 以离线模式读取本地窗口数据。等待报告锁、公开价格或汇率冷缓存仍会增加耗时，
+   渐进页面不会掩盖这些情况。
+3. 两个服务商的报告完成后，生成器立即发布正确、可用的首屏；模型历史归属、其他周期和额度卡随后原子更新。
+4. 页面只轮询到最终更新完成，正常启动随后删除临时文件。
 
-CodeBurn 每次只运行一个进程，因为它的报告命令不支持并发。Windows 用户级互斥锁会同时
-保护单份报告里的调用和多个面板启动进程。
+如果第一次本地汇总就失败，加载页会立即提示失败，不再等到轮询超时；独立、原子且绑定本次运行的
+失败信号，也能在最终快照持续写入失败时终止已经可用页面的轮询。提示中不会包含采集器输出或凭据细节。
+失败页在无人重试时仍保留正常的浏览器读取窗口；再次打开快捷方式会请求有界的提前关闭，随后生成一份
+新报告，而不会复用失败页面。
+
+CodeBurn 每次只运行一个进程，因为它的报告命令不支持并发。按用户 SID 命名的全局 Windows 互斥锁会同时
+保护单份报告里的调用和多个面板启动进程。报告仍在生成时再次打开快捷方式，会直接复用
+当前页面，而不是再排队执行一轮汇总。每个采集器还会被原子创建在随句柄关闭即终止的 Windows Job Object
+中；即使生成器被强制结束或崩溃，旧 CodeBurn/ccusage 进程也不会残留到下一次启动。超时或输出超限时，
+生成器会等到整个 Job 进程树退出后才启动下一次 CodeBurn 调用。
+如果无法确认进程树已经清空，本轮会立即拒绝后续采集器启动，并在释放互斥锁前执行保守的同用户进程扫描。
+可选 ccusage 采集从进程启动起只有一个 120 秒预算和 16 MiB 输出上限，最终收集阶段不会重新获得一轮预算。
 
 [架构文档](docs/ARCHITECTURE.md)记录了数据流、成本核对、币种处理、网络边界和设计决策。
 
@@ -99,6 +122,11 @@ powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\src\Generate-ClaudeR
 ```powershell
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\ReportData.Tests.ps1
 powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\Static.Tests.ps1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\Generator.Integration.Tests.ps1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\InstallJob.Tests.ps1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\Installer.Integration.Tests.ps1
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\tests\Uninstaller.Integration.Tests.ps1
+node .\tests\BrowserSmoke.mjs
 ```
 
 卸载本地运行文件和快捷方式。

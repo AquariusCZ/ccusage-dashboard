@@ -10,21 +10,28 @@ AI Usage is a local Windows dashboard that normalizes Claude Code and OpenAI Cod
 Desktop shortcut
   -> dashboard.vbs (hidden wscript launcher)
   -> Generate-ClaudeReport.ps1
-       1. acquire the per-user Windows named mutex
-       2. copy template.html and bundled pixel fonts to %TEMP%\ClaudeUsage
-       3. open the browser immediately
-       4. start ccusage blocks for Claude window metadata (may overlap)
-       5. run CodeBurn status then report sequentially for every period x provider pair
-       6. reconcile durable model costs with currently readable model details
-       7. keep only the aggregates the dashboard renders
-       8. read the latest locally available Codex rate-limit snapshot
-       9. replay the CC Switch usage script of the current Codex provider
-      10. atomically write data.js
-      11. in finally, delete raw scratch on every path and delete final browser files
-          after the normal read grace period
-      12. release the mutex only after cleanup
+       1. refuse an existing install marker, then try the SID-scoped Global\ report mutex;
+          a normal launch reuses a period-compatible active page when another generator owns it;
+          a launch waiting behind a failed owner requests a bounded early close for that runId
+       2. after owning Global, recheck the marker before taking Local or reading any collector
+       3. copy template.html and bundled pixel fonts to %TEMP%\ClaudeUsage
+       4. after uncontended preflight, open the loader before starting collectors
+       5. start ccusage blocks --offline for Claude window metadata (may overlap)
+       6. run the default period's two CodeBurn reports sequentially
+       7. publish a cost-conserving revision of data.js; the browser becomes usable
+       8. run the two status calls and publish durable model attribution
+       9. repeat report-first/status-second for the remaining periods
+      10. read local Codex limits, then the two provider quota endpoints
+      11. atomically publish each revision and mark the last one complete; a failed final
+          publication enters the same classified failed state, retries the terminal revision,
+          then falls back to an independent runId-bound failure.js if data.js remains unwritable
+      12. in finally, retry deletion of raw scratch on every path and delete final browser
+          files after the normal read grace period; label an unreleased Windows lock as
+          cleanup_failed so the next launch cleans it before opening a page
+      13. release the mutex only after cleanup
 
-report.html polls data.js
+report.html polls data.js until complete and serially probes failure.js while data is
+missing or incomplete
   -> window.__DATA__
   -> gauges, hero, provider cards, trend, heatmap, donut, ranks, polar, tables
 ```
@@ -88,10 +95,13 @@ not inferred from its public interface. The installer pins this version and the 
 rejects other versions; a dependency upgrade must recheck this boundary before changing
 the pin. Any new app-owned upload remains a change to the product's premise.
 
-Both CodeBurn invocations are local readers apart from that shared public catalogue
-refresh; status reconciliation does not introduce another destination or send usage
-aggregates anywhere. The installed ccusage 20.0.14 package was also inspected on Windows and exposes no
-explicit network request in this flow. Both the installer and generator pin that audited
+CodeBurn is a local reader apart from that shared public catalogue refresh; status
+reconciliation does not introduce another destination or send usage aggregates anywhere.
+ccusage `20.0.20` normally refreshes public LiteLLM data and may query models.dev for
+missing models. AI Usage invokes `blocks --offline`, which skips both paths and uses the
+package's embedded catalogues. On the audited Windows x64 package, three offline runs
+averaged 356.7 ms versus 2313.7 ms online, and a recursive comparison found no value-level
+difference in the parsed block payload. Both the installer and generator pin that audited
 version; an unreviewed global upgrade is rejected before session data is read.
 
 CodeBurn has one conditional public network path: if the user configured a non-USD
@@ -114,17 +124,23 @@ extractor, polled every `autoQueryInterval` minutes, rendered as a balance. Noth
 about the result is written to disk, so the request has to be replayed rather than
 read back.
 
-The 2026-08-13 upstream inventory found no CLI, export, or local API for that
+The 2026-08-30 upstream recheck pinned `farion1231/cc-switch` v3.20.1 at commit
+`d8065cc628fcd373d00c4363d718095f19e78c9e`. It found no CLI, export, or local API for that
 database, so it is opened read-only through the `winsqlite3.dll` that Windows already
 ships - no new dependency, and no private cache is parsed. Only the current row is
-read: `select name, meta, settings_config from providers where app_type='codex' and is_current=1`.
-Switching providers in CC Switch therefore switches this card with it.
+read: `select id, name, meta, settings_config from providers where app_type='codex' and is_current=1`.
+The schema confirms `(id, app_type)` is the primary key while `name` is not unique and there is
+no `updated_at`; updates overwrite `settings_config` and `meta` in place. Fresh cache identity
+therefore combines the stable row ID with a SHA-256 fingerprint of ID, name, meta, and settings.
+Switching providers or changing the key, endpoint, or usage script invalidates the fresh cache.
 
 The declaration is reused; the extractor is not. `Get-CodexUsageRequest` reads the
-endpoint, method, headers, and timeout, and resolves `{{baseUrl}}` from the
-provider's TOML `model_providers.<model_provider>.base_url` and `{{apiKey}}` from its
-`auth.OPENAI_API_KEY`. `ConvertTo-CodexQuota` then does its own extraction, because
-the upstream extractor is JavaScript and because the card needs the whole
+endpoint, method, audited headers, and timeout. It parses `model_provider` as a complete,
+non-comment, unique top-level TOML assignment before the first table, then resolves
+`{{baseUrl}}` only from that exact
+`model_providers.<model_provider>` section; duplicate or malformed assignments fail closed.
+`{{apiKey}}` comes from `auth.OPENAI_API_KEY`. `ConvertTo-CodexQuota` then does its own
+extraction, because the upstream extractor is JavaScript and because the card needs the whole
 `subscription` block rather than the single balance CC Switch renders.
 
 Red lines, mirroring the Claude quota call:
@@ -136,8 +152,28 @@ Red lines, mirroring the Claude quota call:
    than trusted;
 3. the endpoint must be `https`, and every placeholder must resolve or the call
    fails closed rather than sending a literal `{{...}}`;
-4. a missing database, a busy database, a disabled script, and every transport
+4. a substituted key is accepted only when the declared URL uses `{{baseUrl}}` and the final
+   scheme, DNS host, and effective port equal the selected provider origin;
+5. header names are restricted to `Accept`, `Accept-Encoding`, `Accept-Language`, `Api-Key`,
+   `Authorization`, `Cache-Control`, `Content-Type`, `New-Api-User`, `Pragma`, `User-Agent`, and
+   `X-API-Key`, and all C0/DEL control characters are rejected before and after substitution;
+6. a missing database, a busy database, a disabled script, and every transport
    failure degrade to a stated reason, never throw.
+
+The pinned upstream templates use only `Authorization`, `User-Agent`, `Content-Type`, and
+`New-Api-User`; the current local Codex usage script uses the first two. Upstream supplies no
+configuration-version identity suitable for fresh cache reuse. The small additional
+metadata/API-key forms above are explicit compatibility choices. Arbitrary forwarded, proxy,
+rewrite, host, and routing headers are not replayed.
+
+The relay transport uses Windows PowerShell 5.1's `HttpClient` with redirects disabled.
+`ResponseHeadersRead` avoids buffering an untrusted body, while one cancellation token covers
+both response headers and streamed body reads. Declared and undeclared-length bodies are capped
+at 1 MiB after gzip/deflate decompression. Non-success responses are classified without reading
+their body, and transport failures discard exception text so a URL or authorization header cannot
+leak into the snapshot or console. .NET rejects `Content-Type` on `HttpRequestHeaders`; the
+transport therefore attaches that one audited upstream header to an empty `HttpContent` instance,
+while every other allowed name remains a request header.
 
 **Subscription windows are shared across keys; usage figures are not.** One
 subscription can back several API keys. The response splits accordingly: `usage`,
@@ -158,13 +194,17 @@ The 2026-08-09 upstream inventory found a deliberate split in CodeBurn 0.9.19:
   `models` from session files that are still readable now;
 - `status --format menubar-json` exposes durable `current.topModels` through a public
   command, capped at 20 rows;
-- CodeBurn 0.9.19 is still the latest published package, and upstream `main` retains the
-  same split, so an upgrade does not solve the mismatch.
+- CodeBurn 0.9.23 is available, but the 2026-08-29 platform audit found material cost,
+  call, and session differences against 0.9.19 over the same source store. Its faster
+  scanning is therefore not a drop-in performance patch; upgrading remains a separate
+  data-semantics migration.
 
 AI Usage therefore reuses the upstream public status shape instead of parsing CodeBurn's
 private cache or reimplementing its pricing logic. For each period/provider pair it runs
-status first and report second, then merges durable cost/call totals into report model
-rows so names and currently readable token details remain available.
+report first and publishes it through the existing cost-conserving fallback. It then runs
+status and republishes the period with durable cost/call totals merged into report model
+rows, so names and currently readable token details remain available. Status improves
+attribution; it is not required for a correct headline total.
 
 Report costs are already converted to CodeBurn's active display currency, while menubar
 `current.cost` and `topModels` remain USD. The merge multiplies durable cost, savings, and
@@ -211,28 +251,200 @@ Measured over one session store, same period, same flags:
 The tell is cheap to check: the two providers' model name sets must not overlap.
 
 `Generate-ClaudeReport.ps1` therefore runs CodeBurn **one process at a time**.
-Calls inside a report are sequential, and a per-user Windows named .NET mutex also
-serializes separate launcher processes until their shared temporary files are cleaned.
-The upstream inventory found no CodeBurn locking primitive usable on Windows; the
-built-in mutex was platform-verified before adoption. Each child process has a hard
-timeout; Windows `taskkill /T /F` terminates the npm wrapper and its Node descendants,
-and their process IDs are checked before the mutex can be released. Status reconciliation
-makes twelve serial CodeBurn calls for the three periods and two providers. A full-history
-Windows run measured roughly 23s on the audited machine; the loader covers that interval.
-Do not reintroduce parallelism for these calls. ccusage is a different tool over the same
-read-only files and may still overlap.
+Calls inside a report are sequential, and `Global\AIUsage-CodeBurn-<user SID>` also
+serializes separate launcher processes across Windows terminal sessions until their shared
+temporary files are cleaned. The user SID prevents unrelated accounts from sharing a lock.
+Installer transactions are serialized separately by `Global\AIUsage-Install-<SID>`. A
+migration first establishes `.install-pending`, publishes the pending-aware generator, and
+then drains old generators and CodeBurn processes while holding neither report mutex. Holding
+Global or Local during this drain could deadlock with an already-started generator waiting for
+that same lock. The installer enumerates `Win32_Process`, recognizes the generator by a filename
+boundary rather than one absolute path, resolves each candidate through `GetOwnerSid`, and waits
+for every already started managed generator or CodeBurn process owned by the current SID across
+Windows Sessions. After two empty scans it acquires Global followed by the previous
+current-Session `Local\AIUsage-CodeBurn` mutex, the same order used by the generator. A process
+with a positive generator/CodeBurn match and an unresolved owner remains blocking while its
+  PID is alive. An unreadable command line in any Session, including Session 0, is resolved by SID:
+  same-user candidates wait conservatively and other-user candidates are ignored. If owner lookup
+  fails, only a live process whose executable is exactly `codeburn.exe` or `ccusage.exe` remains
+  blocking; an unknown PowerShell/Node/cmd process is ignored. This distinguishes the target host's
+  long-lived Session 0 system PowerShell from a native collector without making the former block
+  every install.
+New launches see the marker and fail closed; a launch that passed its first check before the
+marker appeared rechecks immediately after it acquires Global and exits before Local or any
+collector read.
+The upstream inventory found no CodeBurn locking, migration, or parent-death primitive usable
+on Windows; ccusage likewise exposes no parent-lifetime contract. .NET `Process.Start` cannot
+atomically associate a new process with a Job Object. The project therefore reuses the same
+platform-verified Win32 path as the installer: every CodeBurn and ccusage `cmd.exe` root is
+created through `STARTUPINFOEX` plus `PROC_THREAD_ATTRIBUTE_JOB_LIST` inside an independent
+kill-on-close Job Object. The generator retains both the process and Job handles for that
+  collector's complete lifetime. A timeout or oversized output explicitly terminates the Job and
+  polls `JobObjectBasicAccountingInformation.ActiveProcesses` until two observations report zero
+  before the next collector may start. A plain `WaitForSingleObject` on the Job handle was tested
+  and does not signal when this process tree becomes empty on the target Windows host. A
+  force-terminated or crashed generator makes the kernel close its
+  Job handles and terminate every cmd/Node/PowerShell descendant. A force-kill integration probe
+immediately starts a replacement and uses a separate named test mutex to prove that the old and
+new CodeBurn processes never overlap.
+
+Explicit disposal also treats Job drain as a correctness condition: it checks
+`TerminateJobObject`, gives the accounting state a final bounded 10-second drain, always closes the
+kill-on-close Job and process handles, and marks cleanup uncertain on a timeout or Win32 failure.
+This deadline matters because termination-pending kernel I/O is not guaranteed to complete in a
+finite interval. Before releasing the report mutex, that exceptional path performs two empty
+same-SID process scans; if it cannot prove quiescence, the process exits without releasing the mutex
+so the replacement owner receives an abandoned mutex and repeats the scan. Installer command
+cleanup follows the same rule before npm rollback.
+
+The uncertainty flag is also a launch barrier, not merely a final diagnostic. Every collector start
+checks it before process creation; CodeBurn completion and each 100 ms ccusage heartbeat propagate
+it immediately. Optional status and ccusage errors degrade only after cleanup was verified, so their
+normal best-effort behavior cannot swallow an uncertain Job and start a later CodeBurn process.
+
+Process-start failure uses a separate two-part proof because Job membership itself may be the
+failed operation. It first requests direct-root termination, then whole-Job termination, waits for
+the root process handle to signal, and observes `ActiveProcesses == 0` twice before closing thread,
+process, and finally Job handles. If membership or either exit proof is unavailable, the dedicated
+cleanup exception triggers the conservative same-SID scan and prevents any later collector or npm
+operation from starting on an uncertain process tree.
+
+The official built-in mutex, named event, Job Object, and `Win32_Process/GetOwnerSid` CIM surfaces
+were platform-verified on the target Windows host, so no new process dependency was introduced.
+The 2026-08-29 upstream inventory found no CodeBurn or ccusage API for reporting a generator's
+failure to a second Windows launcher. A per-run .NET `EventWaitHandle` therefore supplies that
+missing platform coordination without changing either collector. Status reconciliation makes
+twelve serial CodeBurn calls for the three periods and two providers. Do not
+reintroduce parallelism for these calls. ccusage is a different tool over the same read-only
+files and may still overlap.
+
+The 2026-08-30 upstream recheck also found no collector-owned browser publication protocol,
+terminal sidecar, or Windows parent-lifetime budget that AI Usage could wrap. CodeBurn and
+ccusage expose CLI output only; neither can tell an already-open static page that a later atomic
+`data.js` replacement was denied. The app therefore owns the minimal `failure.js` protocol
+described below and enforces ccusage lifetime through the same platform Job Object rather than
+reimplementing either collector's aggregation or parsing.
+
+Both audited collectors are npm `.cmd` shims on Windows. PowerShell 5.1 can expose a null
+`ExitCode` when such a shim is launched directly with redirected output; converting that
+null to `int` produces a false zero. The generator therefore owns an explicit `cmd.exe`
+process and parses its JSON file only after a real zero exit code. A syntactically valid
+partial output from a nonzero process is discarded. Zero is still only a transport-level
+success: exact managed scratch for every legal period is deleted before launch, JSON `null`,
+strings, and booleans cannot be coerced into numeric fields, and every rendered array must
+contain records only. A report must contain every rendered field, a finite nonnegative
+`overview.cost`, an exact `yyyy-MM-dd` date for every daily row, and a scalar three-letter
+currency code before either provider is admitted into a period. Optional status must also carry
+finite cost values, Int64-range integral call counts, and a record-only `topModels`; malformed
+status or ccusage blocks are ignored rather than ending later periods. PowerShell accepts
+`ValidateSet` values case-insensitively, so the entry period is normalized to lowercase before
+CodeBurn sees it and the snapshot validator compares period keys ordinally.
+
+The optional ccusage process receives one absolute 120-second budget and a 16 MiB output cap
+from the instant it is started. Every 100 ms CodeBurn wait slice checks that same ccusage Job;
+the final local-limits phase waits only the remaining budget and never starts a second 120-second
+window. Either boundary terminates and drains the complete optional Job, deletes its output, and
+continues with an otherwise valid report. The integration stub covers both a process that writes
+past 16 MiB and then hangs and a process that hangs until a shortened test deadline.
+
+Validation is not the publication boundary. The generator rebuilds every nested report row,
+Claude quota window, Codex quota window, official rate limit, and ccusage block as an explicit
+render-only DTO. Collector-owned extra fields such as prompts, tool arguments, authorization
+headers, and URLs therefore cannot cross into `data.js` even when the surrounding object is
+otherwise valid. Relay quota conversion also requires at least one recognized response shape
+and exact JSON numeric/boolean types; `{}`, nonnumeric balances, and string booleans become
+`malformed_response` rather than a successful zero balance. The browser independently filters
+every external list through `Array.isArray`
+and removes falsey/non-object rows and invalid calendar dates before rendering. Dynamic date
+labels are HTML-escaped even after validation.
+
+The official Codex boundary was checked against `openai/codex`'s
+`codex-rs/protocol/src/protocol.rs`, where `RateLimitWindow.used_percent` is `f64` and
+`resets_at` is `Option<i64>` in Unix seconds. The collector boundary therefore accepts only a
+finite `[0,100]` JSON number plus a nullable Int64 reset value, then converts the reset to ISO
+text for the browser. It does not accept the ISO-shaped fixture value that older demo data used.
+
+### Startup optimization decision record
+
+One 2026-08-29 observation on this Windows host measured 33.045 seconds from process launch to
+the only `data.js` write. The
+twelve CodeBurn calls accounted for 29.396 seconds; parsing the 203 KB snapshot in Node
+took about 0.364 ms, and the two local fonts total 1.19 MB. The browser was waiting for
+aggregation, not loading a heavy page.
+
+Several upstream-first alternatives were measured before changing the orchestration:
+
+| option | result | decision |
+|---|---|---|
+| CodeBurn `web` / MCP | long-lived cache, but no complete model-token, project, and session report contract | reject |
+| CodeBurn `export` | about 3.9 s and 23 MB, but not durable and no full-history contract | reject |
+| CodeBurn 0.9.23 | faster scan, but materially different cost/call/session semantics on the same store | keep 0.9.19 |
+| persist the previous full snapshot | near-instant, but retains project paths and session identifiers across launches | reject |
+| parallel CodeBurn calls | faster, but proven provider contamination | reject |
+| default-period progressive publish | exact existing public CLI contract and unchanged final result | adopt |
+
+One deployed run produced its first correct 30-day snapshot at 5.382 seconds, durable
+30-day model attribution at 10.271 seconds, all three selectable periods at 24.472 seconds,
+and the complete revision at 32.789 seconds. Time to the first usable snapshot publication fell
+by 83.7%; the
+full enrichment time is intentionally similar because the same audited data still arrives.
+A post-hardening deployed smoke run on the same host measured 7.080 seconds, 12.750 seconds,
+28.520 seconds, and 36.030 seconds at the same four snapshot milestones. That observation
+reduced first-snapshot publication time by 78.6% against the original 33.045-second observation;
+full completion varies with the session store and optional quota latency and is not the
+optimization target. These are single-run diagnostics, not a regression threshold: cache state
+and input size were not fixed, and the measurement stops at atomic `data.js` publication. The
+browser can add up to its 500 ms polling interval plus render time. A cold CodeBurn public-price
+cache, and a cold exchange-rate cache for non-USD display, can also add their network timeout.
+Provider quota reads run only after local reports are available, so their network timeout
+can no longer hold the page behind the loader. A second normal launch while the mutex is
+held opens the already-running report instead of waiting through its cleanup grace period.
+That reuse first advances a read-lease timestamp. The owner waits a fresh grace period from
+the latest lease and switches the run state to `closing` before deletion; a launch racing
+that transition waits for the mutex instead of opening a half-removed report. State and lease
+writes use bounded retries and must succeed before a page can be opened or reused. If Windows
+keeps raw scratch locked, final browser files still burn after the read grace, the run state
+becomes `cleanup_failed`, and the next launch removes that residue before opening a page.
+
+A 2026-08-30 real-process/real-Edge smoke run measured 9.484 seconds from spawning the source
+generator to `#app.show` with the first 30-day revision. After the final security and parser
+hardening, repeat runs measured 8.436 seconds from `src/` and 8.455 seconds from the installed
+runtime mirror. The automated budget is 25 seconds. The test starts a fresh headless Edge
+concurrently, consumes the exact URL the generator hands
+to `Start-Process`, and requires the matching `active` owner plus read lease before navigating.
+Its wrapper records that URL instead of invoking Windows ShellExecute, so the number covers the
+real generator, a cold isolated Edge process, local-file loading, and rendering, but not the
+user's default-browser association or shortcut/ShellExecute latency. Those remain deployment
+smoke checks rather than part of the repeatable performance threshold. The final deployed desktop
+shortcut smoke published its first coordinated snapshot in 8.213 seconds and the generator then
+completed and released its owner record; that observation verifies the ShellExecute chain but does
+not claim DOM-visible timing.
+
+The final pre-release verification after the bounded-disposal and launch-barrier hardening measured
+9.518 seconds from `src/`, 8.470 seconds from the installed runtime mirror, and 8.479 seconds from
+the real desktop shortcut to its first coordinated 30-day snapshot. That shortcut run subsequently
+removed its owner, state, and data files and left zero CodeBurn or ccusage processes.
 
 ## Data contract
 
 `data.js` contains:
 
-- `periods`: the period keys produced this run, currently `week`, `30days`, `all`
+- `runId`: a unique identifier for one generator process; a lower revision from a new run
+  supersedes a higher revision left in an older browser tab
+- `revision`: a strictly increasing integer for this run; the browser ignores repeats
+- `complete`: false while later periods or quota fields are still arriving, true in the
+  final revision
+- `generationError`: null on the normal path, or `{ reason, stage }` with reason fixed to
+  `partial_generation_failed` when a failure after the first usable publish ends enrichment
+  without deleting the available report
+- `periods`: the period keys currently available, with the requested/default period first;
+  the normal sequence grows from `30days` to `30days`, `week`, `all`
 - `reports[periodKey].claude` / `reports[periodKey].codex`: trimmed CodeBurn reports
   whose `models` cost sum equals `overview.cost`; each also carries aggregate-only
   `costReconciliation` metadata described above
 - `limits.claudeQuota`: `{ ok, reason, fiveHour, sevenDay, limits[] }` from the
   OAuth usage endpoint. `ok:false` carries a classified `reason`
-  (`no_credentials`, `malformed_credentials`, `token_expired`, `token_rejected_401`,
+  (`loading`, `not_collected`, `no_credentials`, `malformed_credentials`, `token_expired`, `token_rejected_401`,
   `token_rejected_403`, `rate_limited`, `failed_local`, `malformed_response`,
   `http_<status>`) and the UI states it in plain Chinese.
   The token itself is never present in this file.
@@ -243,21 +455,39 @@ read-only files and may still overlap.
   remaining, expiresAt, windows[] }` replayed from the current CC Switch provider's
   usage script, where each window is `{ kind, limit, used, percent, startsAt, resetsAt }`
   and `percent` is null for an unmetered window. `ok:false` carries a classified
-  `reason` (`no_ccswitch`, `sqlite_unavailable`, `ccswitch_unreadable`,
+  `reason` (`loading`, `not_collected`, `no_ccswitch`, `sqlite_unavailable`, `ccswitch_unreadable`,
   `no_current_provider`, `usage_script_missing`, `usage_script_disabled`,
   `usage_script_unreadable`, `provider_config_unreadable`, `no_endpoint`,
-  `no_base_url`, `no_api_key`, `unsupported_method`, `insecure_endpoint`,
-  `unresolved_placeholder`, `key_rejected_401`, `key_rejected_403`, `rate_limited`,
-  `failed_local`, `malformed_response`, `http_<status>`) and the UI states it in
+  `no_base_url`, `no_api_key`, `credential_in_url`, `credential_scope_mismatch`,
+  `unsupported_header`, `unsupported_method`, `insecure_endpoint`, `unresolved_placeholder`,
+  `key_rejected_401`, `key_rejected_403`, `rate_limited`, `failed_local`, `request_timed_out`,
+  `response_too_large`, `malformed_response`, `http_<status>`) and the UI states it in
   plain Chinese. Neither the API key nor the provider endpoint is present in this file.
 - `limits.codex`: latest rate-limit metadata when the configured provider exposes
   it; only the official OpenAI endpoint emits it, so it is the fallback source and
   `limits.codexQuota` takes precedence when both are present
 - `generatedAt`, `period` (the default selection), `currency`, and source version
 
+`failure.js` is a separate atomic terminal channel. It contains only
+`window.__GENERATION_FAILURE__ = { reason, stage, runId, generatedAt }` and never exception text,
+collector output, credentials, or report data. With an existing snapshot the browser accepts it
+only when `runId` matches `data.js`; without data it accepts only `initial_generation_failed`,
+after the owner has removed both stale output files before launch. Both reasons and stages are
+closed enums: reasons are `initial_generation_failed` and `partial_generation_failed`; stages are
+`startup`, `default_usage`, `remaining_usage`, `local_limits`, `claude_quota`, `codex_quota`, and
+`final_publish`. `runId` must be a nonempty string of at most 128 characters and `generatedAt`
+must parse as a date.
+Missing or malformed fields leave the sidecar nonterminal and polling continues. The page probes
+it only while `data.js` is absent or `complete:false`, and stops both request streams after a valid
+terminal signal.
+
 `currency` is `{ code, symbol, rate }`. `code` is the report display currency, `rate` is
-the public USD-to-code rate CodeBurn used when available, and the UI prefixes non-USD
-figures with the ISO code so the hand-drawn bitmap totals remain unambiguous.
+exactly `1` for USD, the positive public USD-to-code rate CodeBurn used when available, or
+explicitly `null` for a non-USD report whose optional status calls supplied no usable rate.
+The UI prefixes non-USD
+figures with the ISO code so the hand-drawn bitmap totals remain unambiguous. Both report and
+status currency codes must be scalar ASCII letters with exactly three characters; booleans,
+arrays, whitespace, and trailing newlines are rejected rather than coerced.
 
 Each report keeps only `currency`, `overview`, `daily`, `models`, `projects`, and `topSessions`.
 Every other CodeBurn section is dropped; `shellCommands` is called out deliberately
@@ -276,9 +506,36 @@ explicit neutral remainder rather than a hidden gap.
 
 - Source session stores are read-only.
 - Aggregation runs locally and does not call a project backend.
-- The browser receives a single static snapshot; there is no server-side application state.
-- `data.js` is written through a temporary name and atomic move to prevent partial reads.
-- The normal launcher preserves burn-after-read behavior. `-KeepFile` is for debugging only.
+- The browser receives versioned static snapshots; there is no server-side application state.
+- `data.js` is written through a temporary name and same-volume atomic replacement, so a
+  poller sees either the previous complete file or the next complete file, never partial JSON.
+  Windows sharing violations use a bounded exponential retry while preserving the old target.
+- A failure before the first usage publish atomically writes a terminal `failure.js` containing
+  only a reason, stage, run ID, and timestamp. The
+  loader stops polling and reports the failure immediately; normal burn-after-read still removes
+  the signal and page. A period candidate enters the committed in-memory report set only when its
+  atomic snapshot write succeeds. A later failure therefore restores the last published period
+  set, publishes `complete:true`, classifies the stage, changes untouched quota states to
+  `not_collected`, and preserves the normal read grace. Final `complete:true` publication is
+  inside that same state machine: a final write failure retries a classified terminal revision;
+  if `data.js` remains unwritable, the independent `failure.js` atomically terminates the already
+  usable page without overwriting its last incomplete revision. Both paths change the coordination
+  records to `failed`, so an incomplete page can never remain reusable. With no second launch,
+  a failed page keeps the full normal grace for a cold
+  browser. A waiting launch validates the live failed owner, writes that exact `runId` to
+  `report-retry.request`, and then waits; only this request shortens the owner's remaining grace
+  to at most two seconds. A new owner deletes stale requests before publishing `starting`.
+  The owner and state records are separate files, so Windows readers can simultaneously deny
+  writes to both and leave two stale `active` values after a real failure. Every normal run therefore
+  creates a manual-reset `Global\AIUsage-ReportFailed-<SID>-<runId>` event before publishing
+  `starting`. The failure path signals this kernel event before attempting either file transition,
+  and active-page reuse checks it after validating the owner's PID and start time. The signal is
+  monotonic for the live run and the owner retains its handle through read grace and cleanup; it is
+  not persistent state and disappears when the last handle closes. The run ID prevents an older
+  event from poisoning a new owner. This uses the platform-verified .NET/Windows named-event
+  primitive because the upstream collectors expose no Windows launcher or failure-state contract.
+- The normal launcher preserves burn-after-read behavior. `-KeepFile` is for debugging only;
+  it opens and retains its unique debug directory directly and never joins the shared lease.
 - Codex rate-limit fields are absent on relay providers; the card then reads the relay's own
   quota, and states an explicit unavailable reason when neither source answers.
 - The CC Switch database is opened read-only and never written; its private caches are not parsed.
@@ -293,8 +550,10 @@ icon path is unchanged. `ie4uinit.exe -show` did not reliably evict it either.
 `install.ps1` publishes the icon under a content-hashed name,
 `icon-<sha256[0..7]>.ico`, and points the shortcut at that. New artwork changes
 the filename, which changes the cache key, so it appears immediately with no
-cache purge and no shell restart. Stale `icon-*.ico` copies are removed on each
-install, and `icon.ico` is still written under its canonical name.
+cache purge and no shell restart. After a shortcut commits, the installer removes only
+the previous content-addressed icon that the old shortcut actually referenced. Other
+icon-like files are never selected by a wildcard. `icon.ico` is still written under its
+canonical name.
 
 To check what the shell actually resolves, call `SHGetFileInfo` with
 `SHGFI_ICON` on the `.lnk` and save the returned bitmap. That is what Explorer
@@ -306,16 +565,130 @@ same retro family as the dashboard's 5x7 bitmap numerals and block meters.
 
 ## Repository and installation
 
-Canonical source lives in `src/`. `install.ps1` copies those files to `%LOCALAPPDATA%\ClaudeUsage` and creates the desktop shortcut. Running the generator directly from `src/` is supported because it resolves `template.html` relative to `$PSScriptRoot`.
+Canonical source lives in `src/`. `install.ps1` stages those files under `%LOCALAPPDATA%` and
+verifies their manifest, hashes, PowerShell syntax, and ASCII requirement before it takes the
+SID-scoped `Global\AIUsage-Install-<SID>` transaction mutex. Under that mutex it backs up the
+managed runtime, atomically writes `.install-pending`, publishes the pending-aware generator,
+and drains same-SID legacy generator/CodeBurn processes in every Session. The drain deliberately
+holds neither report mutex: an already-started generator may be waiting on Global or Local, so
+holding either while waiting for that process would create a five-minute lock cycle. The marker
+and pending-aware installed generator stop new supported launches while the drain is in progress.
+After two empty process scans, the installer acquires the SID-scoped Global report mutex and then
+the current-Session legacy Local mutex, matching the generator's lock order. Only then does it
+capture npm rollback baselines or mutate dependencies. Package state comes from `npm root -g`
+manifests and the exact PATH command; version output is accepted only after a zero exit code. An
+unreadable manifest, damaged shim, or nonzero shim is repaired by a forced install. CodeBurn
+0.9.19 declares Node `>=22.13.0`; the installer therefore requires a stable release at or above
+that version and accepts only a complete `vX.Y.Z` or `X.Y.Z` line. A warning containing a version
+and a `22.13.0-rc` prerelease are both rejected.
 
-When the repository itself is checked out at `%LOCALAPPDATA%\ClaudeUsage`, root-level runtime copies are ignored by Git. The uninstall script detects `.git` and removes only those runtime copies, preserving the repository.
+The installer publishes only managed runtime files, which matters when the installation
+directory is also the Git checkout. Each target is replaced atomically and verified against
+the staged hash before the desktop shortcut commits. The marker is published before the
+pending-aware generator and both precede the process drain and first dependency mutation.
+Thus a forced termination between marker and generator still leaves the complete old runtime
+and old dependencies; one after the generator leaves a fail-closed runtime until `install.ps1`
+is rerun. A failed recovery that entered with an existing marker deliberately retains the
+pending-aware generator.
+
+Before publishing a marker or mutating runtime state, installer and uninstaller walk existing
+components of their managed source, destination, transaction, and report-temp paths and reject
+reparse points. Recursive trees are inspected one directory at a time without following a link,
+and atomic publication/deletion helpers recheck the affected path. Integration tests place a
+junction inside the managed destination and verify that an outside sentinel remains unchanged.
+These path checks protect the supported per-user workflow from pre-existing redirection; they do
+not turn path-based PowerShell I/O into a general defence against a hostile same-user process that
+can replace a component between check and use. Running the installer elevated is outside the
+supported deployment model and is rejected before production mutation. A narrowly validated test
+mode permits elevated Windows CI only when destination, desktop, temp roots, Node, and npm are all
+inside its isolated test sandbox.
+
+The SID-scoped `Global\AIUsage-*` names coordinate cooperating installations and Sessions; they
+are not an authentication boundary. A hostile second local account that can pre-create one of
+these predictable kernel-object names may cause an immediate access failure or bounded denial of
+service. The utility does not grant that account access to report data or credentials, but hardened
+hostile multi-user desktops would require a private namespace or broker outside this per-user tool's
+scope.
+
+Every npm mutation is created inside a Windows Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and verified with `IsProcessInJob`. If PowerShell is
+force-terminated, the kernel terminates the npm wrapper and all descendants before another
+installer can acquire the mutex. The 2026-08-29 upstream inventory rejected the old
+`CREATE_SUSPENDED` then `AssignProcessToJobObject` sequence because killing the parent between
+those calls can strand a suspended child. Windows 10+'s official
+`PROC_THREAD_ATTRIBUTE_JOB_LIST` attaches the Job during `CreateProcessW`; it was verified on
+this Windows 10 x64 host under Windows PowerShell 5.1, including a parent already inside a Job.
+The Win32 API is the platform implementation; Vanara supplied a mature lifetime reference but
+does not expose a complete directly usable JOB_LIST mapping, so adding that dependency would
+not remove the required interop. The `npm root -g` and exact PATH version probes use the same
+Job creation path, redirect stdout to a transaction-owned file, discard stderr, time out after
+30 seconds, and reject more than 1 MiB of stdout. This avoids redirected-pipe backpressure and
+prevents an untrusted or damaged shim from hanging installation or escaping process-tree cleanup.
+If creation succeeds but startup or ownership transfer then fails, cleanup independently terminates
+the live root and the whole Job, waits for the root handle to signal, and requires two stable empty
+Job observations before closing handles. A missing membership or exit proof raises
+`InstallJobCleanupException`: later probes and npm commands are refused, npm rollback stops before
+another mutation, and the same-SID fallback scan must prove quiescence.
+A caught failure restores package versions, runtime files, shortcut, and icon in reverse order. Old
+icons are retired under the lock and only when the previous shortcut proves ownership; an
+already existing target-hash icon is backed up and restored if a later step fails. The
+installer first creates a private `-init-<GUID>` directory, writes the complete owning PID and
+process start time, and atomically renames that directory into the discoverable transaction
+namespace. After a successful recovery it removes only dead owner-tagged transaction directories,
+exact installer temp/backup names, and its stale `report-run.state=closing`; a concurrently waiting
+installer remains intact. An hour-old initialization shell may be removed only when it is empty or
+contains nothing except a malformed `.owner`; any unknown content is preserved.
+Command paths are passed to `cmd.exe` through a process environment variable with delayed
+expansion disabled, so a valid npm path containing a literal `%NAME%` segment is not rewritten.
+The broad same-SID npm process scan is reserved for an abandoned install mutex or a dedicated
+`InstallJobCleanupException`, meaning this installer's Job could not prove that its descendants
+drained. A normal runtime publication or verification failure rolls back immediately and does not
+wait for an unrelated long-lived `npm-cli.ps1`; the isolated regression test keeps such a process
+alive while forcing a locked-file publication failure.
+The installer never swaps or deletes the full destination tree. Running the generator directly
+from `src/` remains supported; it resolves assets relative to `$PSScriptRoot` and checks both
+the local and canonical installation markers.
+
+When the repository itself is checked out at `%LOCALAPPDATA%\ClaudeUsage`, root-level runtime
+copies are ignored by Git. The uninstall script detects `.git` and removes only those runtime
+copies, preserving the repository.
+
+Uninstall is a serialized transaction rather than a best-effort file sweep. It takes
+`Global\AIUsage-Install-<SID>`, writes `.install-pending`, and atomically replaces the canonical
+installed generator with a fail-closed launch gate. That replacement is the linearization point:
+old supported launchers that started before it are a finite set drained through `Win32_Process`,
+while every supported launch after it reaches only the gate. The uninstaller then takes the
+SID-scoped Global report mutex and the legacy current-Session Local mutex, rechecks that the gate
+did not change, and only then deletes. This project-specific gate uses the Windows atomic file
+replacement already required by installation; CodeBurn and ccusage expose no install/uninstall
+coordination primitive on Windows.
+
+Every managed removal uses terminating errors and verifies absence. In repository mode the
+shortcut is retained until managed runtime files and ownership-proven hashed icons are gone,
+because its icon reference is the evidence a retry needs to remove an older managed icon. A
+failure after marker publication rewrites the marker as `stage=failed`, leaves the remaining
+runtime fail closed (the gate may already be absent after a partial delete), and does not print
+success. Rerunning install repairs the runtime; rerunning uninstall completes from the partial
+state. Before a retry replaces an older uninstall marker, it removes only the exact gate temp and
+backup names proven by that marker. A second force termination therefore leaves the new marker as
+the complete ownership record instead of orphaning residue from the older PID. Direct execution
+of an arbitrary old generator copied outside the canonical install path is outside this gate's
+boundary.
 
 Normal launches retain the legacy `%TEMP%\ClaudeUsage\report.html` path while the
 named mutex covers its complete lifetime. `-KeepFile` and `-NoLaunch` are debugging
 modes: every run receives an independent `debug-<timestamp>-<pid>` directory so a later
 debug run cannot overwrite a retained snapshot. The two quota caches alone remain shared
 at the runtime root: `quota-cache.json` and `codex-quota-cache.json`. Both hold quota
-state only, with a 120-second fresh window and a 3600-second labelled-stale window.
+state plus bounded identity/invalidation metadata, with a 120-second fresh window and a
+3600-second labelled-stale window. A Codex
+cache is fresh only when the current CC Switch provider can be read and both its stable
+`providers.id` and SHA-256 configuration fingerprint match the cache envelope; display names
+are not unique and provider rows are updated in place. Neither cache identity enters `data.js`.
+Old envelopes without both fields, provider changes, and in-place meta/settings changes invalidate
+fresh reuse, while an unreadable provider may use the old value only as an explicitly labelled
+stale fallback. The cache stores only the digest, never raw provider metadata, settings, URLs, or
+credentials.
 
 ## Compatibility identifiers
 
@@ -390,15 +763,62 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 ## Verification
 
 - Run `tests/ReportData.Tests.ps1` for durable/live merge, gross-vs-net selection,
-  truncation, missing-status, and ahead-status fallbacks.
+  truncation, missing-status and ahead-status fallbacks, exact top-level TOML/section selection,
+  request-header allowlisting, and C0/DEL rejection.
 - Run `tests/Static.Tests.ps1` to parse the PowerShell scripts and module and syntax-check
   the dashboard JavaScript with Node.
+- Run `tests/Generator.Integration.Tests.ps1` to execute the generator against deterministic
+  stub CLIs. It verifies the two-call first publish, legacy mutex migration, ccusage offline
+  ingestion, literal-percent paths, nonzero-output rejection, zero-exit schema validation,
+  empty and one-row DTO arrays, strict currency/date boundaries including non-USD/no-rate
+  fallback, monotonic producer revisions, transactional currency-conflict
+  rejection, the pending-marker recheck after a Global wait, `-KeepFile`, active page
+  reuse/lease/closing, burn-after-read, cross-period and retained-debug locked-raw cleanup
+  recovery, parent force termination with Job-contained collectors and immediate non-overlapping
+  restart, Job-handle completion with sixteen live descendants, full failed-page grace without a
+  waiter, runId-bound early retry, persistent final-publication fault injection with the separate
+  failure sidecar, ccusage oversized-then-hang and absolute-deadline termination, simultaneous
+  write-denying
+  locks on both coordination files with the kernel failure event overriding their stale `active`
+  values, exactly one fresh recovery aggregation, final contract, and a retained terminal snapshot
+  after a later CodeBurn failure. Direct cache tests also prove that same-ID key, URL, or usage-script
+  changes invalidate fresh Codex quota reuse.
+- Run `tests/InstallJob.Tests.ps1` to force-kill an installer harness and prove that the
+  kernel terminates its descendant process tree; it also covers zero, nonzero, timeout, bounded
+  capture, oversized-output exits, and a root that exits while sixteen descendants finish at
+  staggered times.
+- Run `tests/Installer.Integration.Tests.ps1` against an isolated destination, desktop, and
+  stub npm root. It covers successful commit, local-mutex and cross-Session process waiting,
+  runtime replacement failure, existing-pending recovery, strict stable Node version parsing,
+  a correct-version/nonzero PATH shim,
+  post-shortcut rollback including a preexisting target-hash icon, full-installer force termination
+  and forward recovery, literal-percent npm paths, two concurrent complete installers, residue
+  cleanup, an unrelated long-lived npm-like process during ordinary publication rollback, icon
+  ownership, stderr backpressure, and corrupt manifest repair without touching real
+  installation/npm state.
+- Run `tests/Uninstaller.Integration.Tests.ps1` against an isolated destination and desktop. It
+  covers install-lock serialization, gate publication failure, the late-launch gate after process
+  drain, Global-then-Local waiting, partial managed deletion with a retained failed marker, direct
+  retry, repository preservation, junction rejection, and shortcut-backed icon ownership. The
+  test directly extracts the uninstaller's own process helpers to verify Same/Other/Unknown SID
+  classification in Session 0 and two stable empty scans after ccusage. Cross-Session enumeration
+  is exercised through the same SID/CIM code path, but CI does not create a second
+  interactive Windows logon.
 - Run `tests/New-DemoSnapshot.ps1` and verify its `data.js`; this deterministic fixture is
   also the only permitted source for the committed README screenshots.
+- Run `node tests/BrowserSmoke.mjs` to exercise local `file://` incomplete-to-complete
+  revisions in real headless Edge, including cross-run revision reset, deferred URL selection,
+  focus/state preservation, completion polling stop, desktop/mobile overflow, screenshots,
+  mismatched failure run IDs, independent startup/partial terminal sidecars, rejection of missing
+  or malformed sidecar fields without stopping polling, terminal polling stop, and runtime exceptions.
+- Run `node tests/BrowserSmoke.mjs --real-generator <generator-path>` for the optional
+  process-to-Edge `#app.show` budget. It consumes the generator's captured launch URL and verifies
+  `active` owner/lease state, but deliberately does not claim Windows ShellExecute coverage.
 - Generate a real snapshot with `-NoLaunch -KeepFile`.
-- Run `tests/Verify-Snapshot.ps1` against `data.js`; confirm each period/provider model
-  sum equals `overview.cost`, reconciliation metadata is present, sensitive markers are
-  absent, and Claude/Codex model name sets do not overlap.
+- Run `tests/Verify-Snapshot.ps1` against `data.js`; confirm the exact field whitelist and
+  scalar types/ranges for reports, both quota sources, official limits, and ccusage blocks;
+  each period/provider model sum equals `overview.cost`; sensitive markers are absent; and
+  Claude/Codex model name sets do not overlap.
 - Render at desktop and mobile widths; check console errors and horizontal
   overflow (`document.documentElement.scrollWidth` must equal `clientWidth`).
 - Exercise every period and provider combination, the chart/table toggle, and the
