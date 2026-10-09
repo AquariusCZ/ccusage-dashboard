@@ -2514,6 +2514,17 @@ function Test-JsonDateValue($Value) {
   )
 }
 
+# Model names a ccusage block lists; an absent or malformed field names none, and a
+# placeholder such as <synthetic> is not a model.
+function Get-BlockModelNames($Row) {
+  if (-not (Test-JsonRecordProperty $Row 'models') -or -not (Test-JsonArrayValue $Row.models)) {
+    return ,([string[]]@())
+  }
+  return ,([string[]]@($Row.models | Where-Object {
+    $_ -is [string] -and $_.Length -gt 0 -and $_.Length -le 256 -and -not ($_.StartsWith('<') -and $_.EndsWith('>'))
+  }))
+}
+
 function Select-UsableBlocks($Blocks) {
   $rows = if (Test-JsonRecordArray $Blocks) {
     @($Blocks)
@@ -2522,6 +2533,25 @@ function Select-UsableBlocks($Blocks) {
   } else {
     return $null
   }
+
+  # A model ccusage could not price adds nothing to a block's cost, and its output names
+  # no unpriced model (see ARCHITECTURE.md). A block with tokens but no cost shows that
+  # the models it names went unpriced in this run, unless one also stands alone in a
+  # block with a cost; another block with a cost naming one of them has priced only part
+  # of its spend. Only the flag reaches data.js, never a model name.
+  $unpricedModels = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+  $pricedModels = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+  foreach ($row in $rows) {
+    if (-not (Test-JsonRecordProperty $row 'costUSD') -or -not (Test-JsonNumberValue $row.costUSD)) { continue }
+    $names = Get-BlockModelNames $row
+    if ([double]$row.costUSD -gt 0) {
+      if ($names.Count -eq 1) { [void]$pricedModels.Add($names[0]) }
+    } elseif ((Test-JsonRecordProperty $row 'totalTokens') -and (Test-JsonInt64Value $row.totalTokens) -and
+        [double]$row.totalTokens -gt 0) {
+      foreach ($model in $names) { [void]$unpricedModels.Add($model) }
+    }
+  }
+  $unpricedModels.ExceptWith($pricedModels)
 
   $safeRows = New-Object Collections.Generic.List[object]
   foreach ($row in $rows) {
@@ -2554,6 +2584,17 @@ function Select-UsableBlocks($Blocks) {
         if ($null -eq $projection) { return $null }
         Add-Member -InputObject $safe -NotePropertyName 'projection' -NotePropertyValue $projection -Force
       }
+    }
+    # Snapshots run this DTO through here again, without the model names; an existing
+    # strict flag carries over so a second pass returns its own input unchanged.
+    $incomplete = (Test-JsonRecordProperty $row 'costIncomplete') -and $row.costIncomplete -is [bool] -and $row.costIncomplete
+    if (-not $incomplete -and $unpricedModels.Count) {
+      foreach ($model in (Get-BlockModelNames $row)) {
+        if ($unpricedModels.Contains($model)) { $incomplete = $true; break }
+      }
+    }
+    if ($incomplete -and [double]$safe.costUSD -gt 0) {
+      Add-Member -InputObject $safe -NotePropertyName 'costIncomplete' -NotePropertyValue $true -Force
     }
     $safeRows.Add($safe)
   }
@@ -2688,7 +2729,12 @@ function Receive-BlocksIfReady([bool]$WaitForCompletion = $false) {
       $remaining = if ($script:blocksDeadlineUtc) {
         [int][Math]::Max(0, [Math]::Ceiling(($script:blocksDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds))
       } else { 0 }
-      $exitCode = Wait-ChildProcess $job $remaining $blocksOutput $MaxCollectorOutputBytes
+      # A quota answer that lands while ccusage finishes is published at once, not after it.
+      $exitCode = Wait-ChildProcess $job $remaining $blocksOutput $MaxCollectorOutputBytes {
+        Receive-CodexOfficialQuota
+        Receive-ClaudeLiveQuota
+        Publish-QuotaUpdate
+      }
     } elseif ($exited) {
       $exitCode = Wait-ChildProcess $job 0 $blocksOutput $MaxCollectorOutputBytes
     } else {

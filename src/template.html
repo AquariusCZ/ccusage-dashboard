@@ -619,7 +619,7 @@ addEventListener("error", function (event) {
 (function () {
   "use strict";
 
-  var data = null, filter = "all", period = "30days", charts = [], terminalFailure = false;
+  var data = null, filter = "all", period = "30days", charts = [], terminalFailure = false, stalled = false;
   var lastRunId = null, lastRevision = -1, lastRevisionAt = Date.now(), desiredPeriod = null;
   var PERIOD_LABEL = { today: "今天", week: "近 7 天", "30days": "近 30 天", month: "本月", all: "全部", lifetime: "全部" };
 
@@ -647,6 +647,7 @@ addEventListener("error", function (event) {
     terminalFailure = true;
     clearInterval(bootTimer);
     if (data) {
+      renderQuota();
       var stamp = $("stamp");
       if (!stamp.textContent.includes("数据生成失败")) {
         stamp.textContent = stamp.textContent.replace(" · 更新中", " · 数据生成失败，请重新启动");
@@ -1077,9 +1078,10 @@ addEventListener("error", function (event) {
     });
     var head = "";
     if (off.stale === true) {
-      head = staleLine(off.staleReason === "loading"
+      var offReason = (terminalFailure || stalled) && off.staleReason === "loading" ? "not_collected" : off.staleReason;
+      head = staleLine(offReason === "loading"
         ? "正在刷新，先显示 " + dayClock(off.observedAt) + " 的本地记录"
-        : codexQuotaReason(off.staleReason) + "，显示 " + dayClock(off.observedAt) + " 的本地记录");
+        : codexQuotaReason(offReason) + "，显示 " + dayClock(off.observedAt) + " 的本地记录");
     } else if (off.source === "session") {
       head = '<p class="stale-hint">本地记录 · ' + esc(dayClock(off.observedAt)) + "</p>";
     }
@@ -1089,6 +1091,9 @@ addEventListener("error", function (event) {
   function renderQuota() {
     var host = $("quota"), out = [];
     var q = (data.limits && data.limits.claudeQuota) || {};
+    // Once the run has failed or stopped answering, nothing is still loading.
+    var stopped = terminalFailure || stalled;
+    var settled = function (code) { return stopped && code === "loading" ? "not_collected" : code; };
 
     if (filter !== "codex") {
       var rows = "", alarm = "", hint = "";
@@ -1121,13 +1126,14 @@ addEventListener("error", function (event) {
             (q.stale ? "缓存显示 " + esc(names.join("、")) + "已用尽，当前状态待刷新" : esc(names.join("、")) + "已用尽，相关请求会被拒绝") + "</p>";
         }
       } else {
-        rows = '<p class="empty">' + esc(quotaReason(q.reason)) + (usageReady() ? "，本地用量统计仍可查看。" : "") + "</p>";
+        rows = '<p class="empty">' + esc(quotaReason(settled(q.reason))) + (usageReady() ? "，本地用量统计仍可查看。" : "") + "</p>";
       }
       if (q.ok && q.stale) {
         var source = CLAUDE_SOURCE[q.source] || "缓存";
-        rows = staleLine(q.staleReason === "loading"
+        var staleReason = settled(q.staleReason);
+        rows = staleLine(staleReason === "loading"
           ? "正在刷新，先显示" + source + " " + dayClock(q.cachedAt) + " 的记录"
-          : quotaReason(q.staleReason) + "，显示" + source + " " + dayClock(q.cachedAt) + " 的记录") + rows;
+          : quotaReason(staleReason) + "，显示" + source + " " + dayClock(q.cachedAt) + " 的记录") + rows;
       }
       if (needsClaudeLogin(q.ok ? q.staleReason : q.reason)) {
         hint = '<p class="stale-hint">在终端运行 claude auth login 可显示实时额度</p>';
@@ -1136,16 +1142,29 @@ addEventListener("error", function (event) {
       // ccusage still supplies burn rate and projected spend, which the quota endpoint does not
       var live = claudeBlocks().filter(function (b) { return b.isActive && !b.isGap; })[0];
       var extra = "";
+      var windowStats = function (costText, burnText, projectedText) {
+        return '<div class="prov-stats" style="border-block-start:1px solid var(--line);padding-block-start:.65rem">' +
+          "<div><span>窗口成本</span><b>" + costText + "</b></div>" +
+          "<div><span>燃烧率</span><b>" + burnText + "</b></div>" +
+          "<div><span>窗口预计</span><b>" + projectedText + "</b></div></div>";
+      };
       if (live) {
         var liveCost = convertUsd(live.costUSD);
         var burn = convertUsd(live.burnRate && live.burnRate.costPerHour);
         var projected = convertUsd(live.projection && live.projection.totalCost);
-        // Tokens with no cost mean ccusage had no price for the model, not a free window.
+        // Tokens with no cost mean ccusage had no price for the model, not a free window;
+        // a window that also used such a model has priced only part of its spend.
         var unpriced = live.costUSD === 0 && live.totalTokens > 0;
-        extra = '<div class="prov-stats" style="border-block-start:1px solid var(--line);padding-block-start:.65rem">' +
-          '<div><span>窗口成本</span><b>' + (unpriced ? "未定价" : liveCost == null ? "-" : money(liveCost)) + "</b></div>" +
-          "<div><span>燃烧率</span><b>" + (burn ? money(burn) + "/时" : "-") + "</b></div>" +
-          "<div><span>窗口预计</span><b>" + (projected ? money(projected) : "-") + "</b></div></div>";
+        var floor = live.costIncomplete === true ? "≥" : "";
+        extra = windowStats(
+          unpriced ? "未定价" : liveCost == null ? "-" : floor + money(liveCost),
+          burn ? floor + money(burn) + "/时" : "-",
+          projected ? floor + money(projected) : "-");
+      } else if (data.complete === false && !data.generationError && !stopped &&
+          !(data.limits && data.limits.claudeBlocks)) {
+        // The window is still being priced; hold its row so the card does not jump.
+        var pending = '<span aria-hidden="true">…</span><span class="sr-only">计算中</span>';
+        extra = windowStats(pending, pending, pending);
       }
 
       out.push('<article class="card quota" style="--p:var(--claude)">' +
@@ -1203,7 +1222,7 @@ addEventListener("error", function (event) {
         populated = true;
       } else {
         // A ChatGPT login never consults the relay, so its own reason is the one to show.
-        var codexReason = cq.reason === "official_account" || !cq.reason ? off.reason : cq.reason;
+        var codexReason = settled(cq.reason === "official_account" || !cq.reason ? off.reason : cq.reason);
         var quotaLoading = codexReason === "loading" && data.complete === false;
         body = '<div class="quota-offline" role="status">' +
           '<span class="quota-port" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' +
@@ -1493,7 +1512,7 @@ addEventListener("error", function (event) {
       var s = new Date(b.startTime).getTime(), e = new Date(b.actualEndTime || b.endTime).getTime();
       if (!(e > s) || e < from || s > to) return;
       used++;
-      if (b.costUSD === 0 && b.totalTokens > 0) unpriced = true;
+      if ((b.costUSD === 0 && b.totalTokens > 0) || b.costIncomplete === true) unpriced = true;
       var span = e - s, c = n(convertUsd(b.costUSD));
       for (var t = s; t < e; ) {                     // spread across the hours it actually spanned
         var slot = new Date(t), next = new Date(slot);
@@ -1859,7 +1878,10 @@ addEventListener("error", function (event) {
         JSON.stringify(data.limits && data.limits.claudeBlocks);
       var usageChanged = currencyChanged || previousPeriod !== period || wasPending || blocksChanged ||
         JSON.stringify(previousReport) !== JSON.stringify(nextReport);
-      if (currencyChanged || (wasPending && usageReady()) ||
+      // The window row's placeholder depends on the run's state, not only on its limits.
+      var runStateChanged = !previousData || previousData.complete !== data.complete ||
+        !previousData.generationError !== !data.generationError;
+      if (currencyChanged || runStateChanged || (wasPending && usageReady()) ||
           JSON.stringify(previousLimits) !== JSON.stringify(data.limits)) renderQuota();
       if (usageChanged) syncUsage();
     }
@@ -1872,6 +1894,8 @@ addEventListener("error", function (event) {
     if (Date.now() - waitStartedAt < 600000) {
       setTimeout(load, 500);
     } else if (data) {
+      stalled = true;
+      renderQuota();
       $("stamp").textContent = $("stamp").textContent.replace(" · 更新中", " · 更新未完成，请重新启动");
     } else {
       $("bootMessage").textContent = "数据生成超时，请重新启动";

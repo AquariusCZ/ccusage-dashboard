@@ -690,40 +690,74 @@ async function main() {
   assert.equal(recordedState.codexStale, true);
   assert.equal(recordedState.overflow, 0);
 
-  // ccusage can finish after the first usage revision, and the hour chart must follow;
-  // a profile with unpriced windows is hidden rather than drawn with a false peak.
+  // ccusage can finish after the first usage revision: its window row holds its place
+  // meanwhile, and the hour chart follows when the blocks land. A profile with unpriced
+  // or partly priced windows is hidden rather than drawn with a false peak.
   const lateBlocks = structuredClone(finalSnapshot);
   lateBlocks.runId = "late-blocks-browser-smoke";
   const withoutBlocks = structuredClone(lateBlocks);
   withoutBlocks.revision = 1;
+  withoutBlocks.complete = false;
   withoutBlocks.limits.claudeBlocks = null;
+  // A run can end without blocks (ccusage missing or failed) and with unchanged limits.
+  const endedWithoutBlocks = structuredClone(withoutBlocks);
+  endedWithoutBlocks.revision = 2;
+  endedWithoutBlocks.complete = true;
   const withBlocks = structuredClone(lateBlocks);
-  withBlocks.revision = 2;
+  withBlocks.revision = 3;
   const unpricedBlocks = structuredClone(lateBlocks);
-  unpricedBlocks.revision = 3;
+  unpricedBlocks.revision = 4;
   // Only the active window loses its price; the others keep the profile above zero.
   unpricedBlocks.limits.claudeBlocks.blocks = unpricedBlocks.limits.claudeBlocks.blocks.map((block) =>
     block.isActive ? { ...block, costUSD: 0, totalTokens: 5000000 } : block
   );
+  const partlyPricedBlocks = structuredClone(lateBlocks);
+  partlyPricedBlocks.revision = 5;
+  partlyPricedBlocks.limits.claudeBlocks.blocks = partlyPricedBlocks.limits.claudeBlocks.blocks.map((block) =>
+    block.isActive ? { ...block, costIncomplete: true } : block
+  );
   const hoursState = await evaluate(`(function () {
     var hidden = function () { return document.querySelector('#hoursWrap').classList.contains('hide'); };
+    var windowCost = function () {
+      var cells = Array.prototype.slice.call(document.querySelectorAll('#quota .quota:first-child .prov-stats div'));
+      var cell = cells.filter(function (c) { return c.textContent.indexOf('窗口成本') === 0; })[0];
+      return cell ? cell.querySelector('b').textContent : null;
+    };
+    var state = {};
     window.__DATA__ = ${JSON.stringify(withoutBlocks)};
     window.__render__();
-    var before = hidden();
+    state.pending = { hidden: hidden(), cost: windowCost() };
+    window.__DATA__ = ${JSON.stringify(endedWithoutBlocks)};
+    window.__render__();
+    state.ended = { hidden: hidden(), cost: windowCost() };
     window.__DATA__ = ${JSON.stringify(withBlocks)};
     window.__render__();
-    var after = hidden();
+    state.priced = { hidden: hidden(), cost: windowCost() };
     window.__DATA__ = ${JSON.stringify(unpricedBlocks)};
     window.__render__();
-    return { before: before, after: after, unpriced: hidden() };
+    state.unpriced = { hidden: hidden(), cost: windowCost() };
+    window.__DATA__ = ${JSON.stringify(partlyPricedBlocks)};
+    window.__render__();
+    state.partlyPriced = { hidden: hidden(), cost: windowCost() };
+    state.overflow = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+    return state;
   })()`);
-  assert.deepEqual(hoursState, { before: true, after: false, unpriced: true }, JSON.stringify(hoursState));
+  assert.deepEqual(hoursState, {
+    pending: { hidden: true, cost: "…计算中" },
+    ended: { hidden: true, cost: null },
+    priced: { hidden: false, cost: "$12.50" },
+    unpriced: { hidden: true, cost: "未定价" },
+    partlyPriced: { hidden: true, cost: "≥$12.50" },
+    overflow: 0
+  }, JSON.stringify(hoursState));
 
   const staleIncompleteSnapshot = structuredClone(finalSnapshot);
   staleIncompleteSnapshot.runId = "stale-incomplete-browser-smoke";
   staleIncompleteSnapshot.revision = 1;
   staleIncompleteSnapshot.complete = false;
   staleIncompleteSnapshot.generationError = null;
+  // ccusage has not answered yet, so the window row is a placeholder until the failure.
+  staleIncompleteSnapshot.limits.claudeBlocks = null;
   writeSnapshot(staleIncompleteSnapshot);
   const staleFailureUrl = pathToFileURL(path.join(work, "report.html"));
   staleFailureUrl.searchParams.set("failure", "stale-incomplete");
@@ -731,6 +765,11 @@ async function main() {
   await waitFor(
     () => evaluate("window.__DATA__?.runId === 'stale-incomplete-browser-smoke' && document.querySelector('#stamp')?.textContent.includes('更新中')"),
     "an existing incomplete snapshot before its terminal failure signal"
+  );
+  assert.equal(
+    await evaluate("document.querySelector('#quota .quota:first-child').textContent.includes('计算中')"),
+    true,
+    "An incomplete run without blocks did not hold the window row."
   );
   writeFailure("default_usage", "different-browser-smoke", "partial_generation_failed");
   await new Promise((resolve) => setTimeout(resolve, 750));
@@ -754,8 +793,10 @@ async function main() {
     loaderHidden: getComputedStyle(document.querySelector('#loader')).display === 'none',
     stamp: document.querySelector('#stamp').textContent,
     failure: window.__GENERATION_FAILURE__ || null,
-    bootError: window.__BOOT_ERROR__ || null
+    bootError: window.__BOOT_ERROR__ || null,
+    windowRow: document.querySelector('#quota .quota:first-child').textContent.includes('窗口成本')
   })`);
+  assert.equal(staleFailureState.windowRow, false, "A terminal failure left the window row placeholder.");
   assert.equal(staleFailureState.appShown, true);
   assert.equal(staleFailureState.loaderHidden, true);
   assert.ok(staleFailureState.stamp.includes("\u6570\u636e\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u91cd\u65b0\u542f\u52a8"));
@@ -862,8 +903,22 @@ try {
   if (generator && generator.exitCode === null) {
     spawnSync("taskkill.exe", ["/PID", String(generator.pid), "/T", "/F"], { stdio: "ignore" });
   }
+  // Edge helpers can outlive the browser process and keep the profile open. Each carries
+  // this run's unique --user-data-dir, so exactly those Edge processes are stopped.
+  if (profile && profile.length >= 20) {
+    spawnSync("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "$profilePath = $env:AI_USAGE_EDGE_PROFILE; if (-not $profilePath -or $profilePath.Length -lt 20) { exit }; " +
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'msedge.exe' -and $_.CommandLine -and " +
+        "$_.CommandLine.IndexOf($profilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0 } | " +
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    ], { stdio: "ignore", timeout: 20000, env: { ...process.env, AI_USAGE_EDGE_PROFILE: profile } });
+  }
   for (const directory of [work, profile, realStartupTemp]) {
     if (!directory) continue;
-    try { fs.rmSync(directory, { recursive: true, force: true }); } catch {}
+    // Edge's helper processes can hold profile files for a moment after the browser exits,
+    // and a real-generator profile may cache a page built from real usage data.
+    try { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch {}
+    if (fs.existsSync(directory)) console.warn(`BrowserSmoke.mjs: could not remove ${directory}`);
   }
 }

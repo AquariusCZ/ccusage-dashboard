@@ -121,10 +121,17 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   embedded offline snapshot lacked `claude-opus-5-5` and priced current windows at $0, so
   offline mode is not used. A failed fetch silently falls back to that snapshot with exit code
   0, and an unknown model then adds nothing to a block's cost, so pass `totalTokens`: render an
-  active window with tokens but zero cost as unpriced, never as $0.00, and hide the hour profile
-  when any block in range is unpriced. Redraw the usage sections when `claudeBlocks` arrives
-  after the first usage revision. ccusage honours `HTTP(S)_PROXY`/`ALL_PROXY` only, not the
-  Windows system proxy. Give the optional process one absolute 120-second budget and 16 MiB
+  active window with tokens but zero cost as unpriced, never as $0.00. ccusage names no
+  unpriced model in captured output, so a block with tokens and no cost marks the models it
+  names as unpriced in that run (not `<...>` placeholders, nor a model that stands alone in a
+  block with a cost); flag any other block with a cost naming one of them `costIncomplete`
+  (never publish the model names) and render its amounts as lower bounds (`≥`). Every snapshot
+  reruns the blocks selector on the stored DTO, so it must return its own output unchanged.
+  Hide the hour profile when any block in range is unpriced or flagged. Hold the window row with
+  placeholders until ccusage answers or the run ends, and redraw the usage sections when
+  `claudeBlocks` arrives after the first usage revision. The final ccusage wait keeps receiving
+  and publishing quota answers. ccusage honours `HTTP(S)_PROXY`/`ALL_PROXY`
+  only, not the Windows system proxy. Give the optional process one absolute 120-second budget and 16 MiB
   output cap from launch; every CodeBurn wait slice must enforce them, and final collection may
   wait only the remaining budget.
 - When the user has selected a non-USD CodeBurn display currency, CodeBurn may refresh

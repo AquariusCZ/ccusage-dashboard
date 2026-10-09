@@ -27,8 +27,9 @@ Desktop shortcut
        9. run a status call only for a provider whose live models do not reconcile, and
           publish durable model attribution
       10. repeat report-first/status-when-needed for the remaining periods
-      11. finish the quota reads within their own remaining budgets; replay the CC Switch
-          relay only for an API-key Codex login
+      11. finish ccusage within its remaining budget while still publishing quota answers that
+          land meanwhile, then the quota reads within their own remaining budgets; replay the
+          CC Switch relay only for an API-key Codex login
       12. atomically publish each revision and mark the last one complete; a failed final
           publication enters the same classified failed state, retries the terminal revision,
           then falls back to an independent runId-bound failure.js if data.js remains unwritable
@@ -187,9 +188,32 @@ the snapshot does not know adds nothing to a block's cost, and the JSON names mo
 per-model cost or an unpriced marker. Each block's `totalTokens` therefore travels to the page:
 an active window with tokens but zero cost renders as unpriced rather than as $0.00, and the
 24-hour profile is hidden when any block in range is unpriced or the profile has no cost at all.
-A window that mixes priced and unpriced models after a failed fetch still shows only its priced
-part; nothing in the output can tell the two apart. Both the installer and generator pin the
-audited version; an unreviewed global upgrade is rejected before session data is read.
+A window that mixes priced and unpriced models after a failed fetch has a positive cost that
+covers only the priced part. The binary does carry `WARN Missing pricing for ...; cost excludes
+this model` messages, but with stdout and stderr redirected, as a collector must run, ccusage
+20.0.20 printed none of them on 2026-10-08/09: not in JSON or table mode, not with `--debug`, and
+not with `LOG_LEVEL` set to `warn`, `4`, or `debug`, after both `--offline` and a failed online
+fetch. They presumably need an interactive terminal; that was not verified further.
+
+The blocks still carry the evidence. A block with tokens and no cost shows that the models it names
+went unpriced in that run, except a placeholder such as `<synthetic>` and any model that also
+stands alone in a block with a cost, so the generator flags every other block with a cost that
+names one of them with `costIncomplete`. Only the flag reaches `data.js`, never a model name. Each
+snapshot runs the stored blocks DTO through the same selector again; a strict `costIncomplete:true`
+carries over, so that second pass returns its input unchanged (the first release of this flag lost
+it there, which only an end-to-end scenario showed). The page shows a flagged window's cost, burn
+rate, and projection as lower bounds (`≥`) and hides the 24-hour profile. A model that never
+appears in a zero-cost block cannot be identified and still shows only its priced part. Both the
+installer and generator pin the audited version; an unreviewed global upgrade is rejected before
+session data is read.
+
+The blocks now usually arrive a few seconds after the Claude card, sometimes after the first usage
+revision. Until ccusage answers or the run ends, the card holds the window row with placeholders
+(read aloud as "计算中"), so it does not grow when the blocks land; if they show no active window,
+the row goes away. A terminal failure or a stalled page re-renders the cards, so neither a
+placeholder nor a "loading" quota line outlives the run. If ccusage is still running once every
+period is published, the final wait on it keeps receiving the Codex and Claude quota reads and
+publishes any answer at once.
 
 CodeBurn has one conditional public network path: if the user configured a non-USD
 display currency and its 24-hour exchange-rate cache is absent or stale, `loadCurrency()`
@@ -605,8 +629,9 @@ removed its owner, state, and data files and left zero CodeBurn or ccusage proce
   The token and the account identifiers are never present in this file.
 - `limits.claudeBlocks`: optional ccusage block data, including `startTime`,
   `totalTokens`, `burnRate`, and `projection` for the active window - still the only source of
-  burn rate and projected spend. An active window with tokens but zero cost is shown as
-  unpriced.
+  burn rate and projected spend - and `costIncomplete:true` on a block whose cost leaves out an
+  unpriced model. An active window with tokens but zero cost is shown as unpriced, and a flagged
+  one as a lower bound.
 - `limits.codexQuota`: `{ ok, reason, provider, planName, mode, isValid, unit,
   remaining, expiresAt, windows[] }` replayed from the current CC Switch provider's
   usage script, where each window is `{ kind, limit, used, percent, startsAt, resetsAt }`
@@ -951,7 +976,11 @@ than a fixed `foreignObject`, which silently clipped wider totals.
   locks on both coordination files with the kernel failure event overriding their stale `active`
   values, exactly one fresh recovery aggregation, final contract, and a retained terminal snapshot
   after a later CodeBurn failure. Direct cache tests also prove that same-ID key, URL, or usage-script
-  changes invalidate fresh Codex quota reuse. Quota-first scenarios prove that quota-only
+  changes invalidate fresh Codex quota reuse. Direct blocks tests prove that a block naming a model
+  seen unpriced elsewhere is flagged as a lower bound, that placeholders and models priced alone
+  flag nothing, that a non-boolean flag is dropped, and that a second pass returns the DTO
+  unchanged; a `blocks-mixed-pricing` scenario proves the flag reaches `data.js` without any model
+  name. Quota-first scenarios prove that quota-only
   revisions precede the first usage revision, that reconciled reports skip status (six calls),
   that a ChatGPT login publishes the stub app-server's `codex` bucket without credentials or
   other buckets and never consults the relay, that a hung app-server falls back to the labelled
@@ -993,12 +1022,16 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 - Run `node tests/BrowserSmoke.mjs` to exercise local `file://` incomplete-to-complete
   revisions in real headless Edge, including a quota-only first revision, official Codex window
   labels, recorded-quota labelling and rolled-over windows, an unpriced active window shown as
-  unpriced rather than $0.00 while a priced one keeps its cost, a 24-hour profile that appears
-  when ccusage blocks arrive after the usage revision and hides when a block in range is
-  unpriced, cross-run revision reset, deferred URL selection,
+  unpriced rather than $0.00 while a priced one keeps its cost and a partly priced one reads as a
+  lower bound, a window row held by placeholders until ccusage answers and cleared when a run
+  ends without blocks or fails, a 24-hour profile that
+  appears when ccusage blocks arrive after the usage revision and hides when a block in range is
+  unpriced or partly priced, cross-run revision reset, deferred URL selection,
   focus/state preservation, completion polling stop, desktop/mobile overflow, screenshots,
   mismatched failure run IDs, independent startup/partial terminal sidecars, rejection of missing
   or malformed sidecar fields without stopping polling, terminal polling stop, and runtime exceptions.
+  Afterwards it stops every Edge helper that carries the run's unique profile path, because helpers
+  outlive the browser process and kept the temporary profile open, and then removes the profile.
 - Run `node tests/BrowserSmoke.mjs --real-generator <generator-path>` for the optional
   process-to-Edge `#app.show` budget. It consumes the generator's captured launch URL and verifies
   `active` owner/lease state, but deliberately does not claim Windows ShellExecute coverage.

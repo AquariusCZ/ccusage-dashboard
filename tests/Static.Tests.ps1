@@ -217,6 +217,15 @@ if (-not $generator.Contains('$request.Client.MaxResponseContentBufferSize = $Ma
   throw 'The non-blocking Claude quota request is not bounded and redirect-free.'
 }
 $blocksDeadlineIndex = $generator.IndexOf('$blocksDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($CCUsageTimeoutMilliseconds)')
+$finalBlocksWait = '(?s)\$exitCode = Wait-ChildProcess \$job \$remaining \$blocksOutput \$MaxCollectorOutputBytes \{\s*' +
+  'Receive-CodexOfficialQuota\s+Receive-ClaudeLiveQuota\s+Publish-QuotaUpdate\s*\}'
+$optionalCollectors = [regex]::Match($generator, '(?s)function Receive-OptionalCollectors \{(.*?)\n\}')
+if (-not [regex]::IsMatch($generator, $finalBlocksWait) -or -not $optionalCollectors.Success -or
+    $optionalCollectors.Groups[1].Value -notmatch '(?m)^\s*Receive-BlocksIfReady\s*$' -or
+    -not $generator.Contains('function Get-BlockModelNames') -or
+    -not $generator.Contains("-NotePropertyName 'costIncomplete' -NotePropertyValue `$true")) {
+  throw 'The final ccusage wait no longer publishes quota answers, slice polling can block on ccusage, or partly priced windows are not flagged.'
+}
 $blocksStartIndex = $generator.IndexOf("`$blocksJob = Start-OptionalJsonCommand `$CCUsage @('blocks', '--json')")
 if (-not $generator.Contains('$CCUsageTimeoutMilliseconds = 120000') -or
     $blocksDeadlineIndex -lt 0 -or $blocksStartIndex -lt 0 -or $blocksDeadlineIndex -gt $blocksStartIndex -or

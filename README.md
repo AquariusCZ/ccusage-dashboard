@@ -32,9 +32,10 @@ Model costs always reconcile to the headline estimate. Any unresolved difference
 as **unattributed cost**, and incomplete token totals are marked as lower bounds. The current
 5-hour window is priced from the latest public catalogue. When the catalogue cannot be fetched,
 ccusage falls back to its built-in prices: a window whose models are all unknown to them reads
-unpriced instead of $0.00, and a window that mixes known and unknown models shows only the part
-it could price. ccusage reaches the catalogue through the `HTTP_PROXY`/`HTTPS_PROXY` environment
-variables, not the Windows system proxy.
+unpriced instead of $0.00, and a window that mixes known and unknown models shows the part it
+could price, marked as a lower bound (`≥`) once another window in the same run shows that model
+unpriced. ccusage reaches the catalogue through the
+`HTTP_PROXY`/`HTTPS_PROXY` environment variables, not the Windows system proxy.
 
 Claude quota is read live when the Claude Code CLI is signed in. The Claude desktop app keeps
 its own login, so a desktop-only user has no CLI token; the card then shows the newest record

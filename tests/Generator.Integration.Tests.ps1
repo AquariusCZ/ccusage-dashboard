@@ -2353,6 +2353,14 @@ if ($env:AI_USAGE_CCUSAGE_MODE -eq 'blocks-null') {
   Write-Output '{"blocks":[null]}'
   exit 0
 }
+if ($env:AI_USAGE_CCUSAGE_MODE -eq 'blocks-mixed-pricing') {
+  Write-Output ('{"blocks":[' +
+    '{"startTime":"2026-08-29T00:00:00Z","endTime":"2026-08-29T05:00:00Z","costUSD":0,"totalTokens":900,' +
+    '"isActive":false,"isGap":false,"models":["stub-new-model"]},' +
+    '{"startTime":"2026-08-29T06:00:00Z","endTime":"2026-08-29T11:00:00Z","costUSD":1.25,"totalTokens":4200,' +
+    '"isActive":true,"isGap":false,"models":["stub-old-model","stub-new-model"]}]}')
+  exit 0
+}
 if ($env:AI_USAGE_CCUSAGE_MODE -eq 'oversized') {
   [Console]::Out.Write(('x' * (17 * 1024 * 1024)))
   exit 0
@@ -2477,7 +2485,7 @@ while ($true) {
     'Test-JsonStringValue', 'Test-JsonNonEmptyStringValue', 'Test-JsonBooleanValue',
     'Test-JsonPercentValue', 'Test-FiniteJsonNumber', 'Test-JsonArrayValue',
     'Test-JsonRecordArray', 'Test-OutputRecordArray', 'Test-IsoCalendarDate', 'Test-JsonDateValue',
-    'Select-UsableBlocks', 'Test-UsableBlocks',
+    'Get-BlockModelNames', 'Select-UsableBlocks', 'Test-UsableBlocks',
     'Select-UsableStatus',
     'Stop-ProcessTree', 'Close-CollectorProcess', 'Assert-CollectorCleanupVerified',
     'Start-JsonCommand', 'Start-OptionalJsonCommand', 'Get-NpmPackageVersion', 'Get-CodexProviderFingerprint',
@@ -3106,6 +3114,49 @@ namespace AiUsage {
     throw 'A nested object crossed a strict render-only DTO boundary.'
   }
 
+  # ccusage prices models silently: a block with tokens and no cost marks the models it
+  # names as unpriced, so another block naming one of them is only a lower bound.
+  $mixedBlocks = ('{"blocks":[' +
+    '{"startTime":"2026-08-29T00:00:00Z","endTime":"2026-08-29T05:00:00Z","costUSD":0,"totalTokens":900,' +
+    '"isActive":false,"isGap":false,"models":["new-model"]},' +
+    '{"startTime":"2026-08-29T06:00:00Z","endTime":"2026-08-29T11:00:00Z","costUSD":1.25,"totalTokens":4200,' +
+    '"isActive":true,"isGap":false,"models":["old-model","new-model"]},' +
+    '{"startTime":"2026-08-29T12:00:00Z","endTime":"2026-08-29T17:00:00Z","costUSD":2.5,"totalTokens":3000,' +
+    '"isActive":false,"isGap":false,"models":["old-model"]}]}') | ConvertFrom-Json
+  $mixedSafe = @((Select-UsableBlocks $mixedBlocks).blocks)
+  $mixedJson = ConvertTo-Json -InputObject $mixedSafe -Depth 5 -Compress
+  if ($mixedSafe.Count -ne 3 -or (Test-OutputRecordProperty $mixedSafe[0] 'costIncomplete') -or
+      $mixedSafe[1].costIncomplete -ne $true -or (Test-OutputRecordProperty $mixedSafe[2] 'costIncomplete') -or
+      $mixedJson -match 'new-model|old-model|"models"') {
+    throw 'A window that used an unpriced model was not marked as a lower bound, or model names reached the DTO.'
+  }
+  $pricedBlocks = ('{"blocks":[{"startTime":"2026-08-29T06:00:00Z","endTime":"2026-08-29T11:00:00Z",' +
+    '"costUSD":1.25,"totalTokens":4200,"isActive":true,"isGap":false,"models":["new-model"]}]}') | ConvertFrom-Json
+  if (Test-OutputRecordProperty @((Select-UsableBlocks $pricedBlocks).blocks)[0] 'costIncomplete') {
+    throw 'A fully priced window was marked as a lower bound.'
+  }
+  # Every snapshot runs the stored DTO through the selector again, without model names.
+  $secondPassJson = ConvertTo-Json -InputObject @((Select-UsableBlocks (Select-UsableBlocks $mixedBlocks)).blocks) -Depth 5 -Compress
+  if ($secondPassJson -cne $mixedJson) {
+    throw 'A second pass over the blocks DTO did not return it unchanged, so the lower-bound flag would be lost.'
+  }
+  $stringFlag = ('{"blocks":[{"startTime":"2026-08-29T06:00:00Z","endTime":"2026-08-29T11:00:00Z",' +
+    '"costUSD":1.25,"totalTokens":4200,"isActive":true,"isGap":false,"costIncomplete":"true"}]}') | ConvertFrom-Json
+  if (Test-OutputRecordProperty @((Select-UsableBlocks $stringFlag).blocks)[0] 'costIncomplete') {
+    throw 'A non-boolean lower-bound flag crossed the blocks DTO.'
+  }
+  # A placeholder name is not a model, and a model seen alone with a cost is priced.
+  $noisyBlocks = ('{"blocks":[' +
+    '{"startTime":"2026-08-29T00:00:00Z","endTime":"2026-08-29T05:00:00Z","costUSD":0,"totalTokens":900,' +
+    '"isActive":false,"isGap":false,"models":["<synthetic>","free-model"]},' +
+    '{"startTime":"2026-08-29T06:00:00Z","endTime":"2026-08-29T11:00:00Z","costUSD":0.5,"totalTokens":800,' +
+    '"isActive":false,"isGap":false,"models":["free-model"]},' +
+    '{"startTime":"2026-08-29T12:00:00Z","endTime":"2026-08-29T17:00:00Z","costUSD":2.5,"totalTokens":3000,' +
+    '"isActive":true,"isGap":false,"models":["old-model","<synthetic>","free-model"]}]}') | ConvertFrom-Json
+  if (@((Select-UsableBlocks $noisyBlocks).blocks | Where-Object { Test-OutputRecordProperty $_ 'costIncomplete' }).Count) {
+    throw 'A placeholder name or a model priced elsewhere marked a window as a lower bound.'
+  }
+
   $lockedPath = Join-Path $sandbox 'locked-file.txt'
   [IO.File]::WriteAllText($lockedPath, 'old', [Text.Encoding]::ASCII)
   $lockedStream = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -3335,6 +3386,11 @@ namespace AiUsage {
     $stringRevision = Copy-Snapshot $success.Final
     $stringRevision.revision = '1'
     Assert-SnapshotRejected $stringRevision 'string-revision'
+    foreach ($badFlag in @(@{ Name = 'string-cost-incomplete'; Value = 'true' }, @{ Name = 'false-cost-incomplete'; Value = $false })) {
+      $flagged = Copy-Snapshot $success.Final
+      @($flagged.limits.claudeBlocks.blocks)[0] | Add-Member -NotePropertyName 'costIncomplete' -NotePropertyValue $badFlag.Value -Force
+      Assert-SnapshotRejected $flagged $badFlag.Name
+    }
     $stringComplete = Copy-Snapshot $success.Final
     $stringComplete.complete = 'true'
     Assert-SnapshotRejected $stringComplete 'string-complete'
@@ -3700,6 +3756,21 @@ namespace AiUsage {
         $sensitiveBlocksRaw -match 'private prompt|private args|private-token-value|prompt|authorization|toolArguments') {
       throw 'ccusage block enrichment was not reduced to its explicit output DTO.'
     }
+
+    # End to end, through every snapshot's second pass over the stored blocks DTO.
+    $mixedPricing = Invoke-Scenario 'blocks-mixed-pricing' '' 0 $false 'before' 'blocks-mixed-pricing'
+    $mixedPricingRaw = [IO.File]::ReadAllText($mixedPricing.DataPath)
+    $mixedPricingBlocks = @($mixedPricing.Final.limits.claudeBlocks.blocks)
+    # Report rows legitimately carry a "models" field; the blocks must not.
+    if ($mixedPricing.Final.generationError -or $mixedPricingBlocks.Count -ne 2 -or
+        $mixedPricingBlocks[1].costIncomplete -ne $true -or
+        @($mixedPricingBlocks[0].PSObject.Properties.Name) -contains 'costIncomplete' -or
+        @($mixedPricingBlocks | Where-Object { @($_.PSObject.Properties.Name) -contains 'models' }).Count -or
+        $mixedPricingRaw -match 'stub-new-model|stub-old-model') {
+      throw 'A partly priced ccusage window did not reach data.js as a lower bound, or model names leaked.'
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $mixedPricing.DataPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'A partly priced ccusage window failed contract verification.' }
 
     $invalidBlocks = Invoke-Scenario 'blocks-object' '' 0 $false 'before' 'blocks-object'
     if ($invalidBlocks.Final.generationError -or $invalidBlocks.Final.limits.claudeBlocks) {
