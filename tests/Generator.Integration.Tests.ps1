@@ -43,7 +43,8 @@ $oldCodexMode = $env:AI_USAGE_CODEX_MODE
 $oldCodexLog = $env:AI_USAGE_CODEX_LOG
 $oldCodexTimeout = $env:AI_USAGE_CODEX_TIMEOUT_MS
 $oldStubReconciled = $env:AI_USAGE_STUB_RECONCILED
-$oldModuleAnalysisCache = $env:PSModuleAnalysisCachePath
+$oldLocation = (Get-Location).Path
+$oldCurrentDirectory = [Environment]::CurrentDirectory
 $codexLog = Join-Path $sandbox 'codex.log'
 $sandboxAppData = Join-Path $sandbox 'appdata'
 
@@ -2120,11 +2121,15 @@ try {
 }
 
 try {
-  # Windows PowerShell finds its module-analysis cache through the profile's
-  # LocalAppData. A scenario profile has none, so the cache would otherwise be
-  # written relative to the working directory, which is usually the repository.
-  $env:PSModuleAnalysisCachePath = Join-Path $sandbox 'ModuleAnalysisCache'
   New-Item -ItemType Directory -Force -Path $runtime, $stubs | Out-Null
+  # Windows PowerShell finds its module-analysis cache through the profile's
+  # LocalAppData. A scenario profile has none, so a child writes that cache
+  # relative to its working directory; keep every child's working directory in
+  # the sandbox rather than the repository. Pinning PSModuleAnalysisCachePath
+  # instead would start each child from an empty cache, and on a host with many
+  # installed modules that cold analysis outlasts the short startup budgets.
+  [Environment]::CurrentDirectory = $sandbox
+  Set-Location -LiteralPath $sandbox
   Copy-Item (Join-Path $root 'src\*') -Destination $runtime -Recurse -Force
   $env:AI_USAGE_PATH_TOKEN = 'expanded-path-must-not-be-used'
 
@@ -3643,6 +3648,9 @@ namespace AiUsage {
 
   Write-Output 'Generator.Integration.Tests.ps1: PASS'
 } finally {
+  # A process's current directory cannot be deleted, so leave the sandbox first.
+  try { Set-Location -LiteralPath $oldLocation } catch {}
+  [Environment]::CurrentDirectory = $oldCurrentDirectory
   $env:PATH = $oldPath
   $env:TEMP = $oldTemp
   $env:TMP = $oldTmp
@@ -3674,7 +3682,6 @@ namespace AiUsage {
   $env:AI_USAGE_CODEBURN_BARRIER_MATCH = $oldCodeBurnBarrierMatch
   $env:AI_USAGE_CODEBURN_BARRIER_READY = $oldCodeBurnBarrierReady
   $env:AI_USAGE_CODEBURN_BARRIER_RELEASE = $oldCodeBurnBarrierRelease
-  $env:PSModuleAnalysisCachePath = $oldModuleAnalysisCache
   try {
     if ($env:AI_USAGE_KEEP_TEST_SANDBOX -eq '1') {
       Write-Warning "Retained generator test sandbox: $sandbox"
