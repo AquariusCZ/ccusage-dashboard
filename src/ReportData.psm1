@@ -667,4 +667,346 @@ function ConvertTo-CodexQuota {
   }
 }
 
-Export-ModuleMember -Function Merge-CodeBurnDurableModels, Resolve-DisplayCurrency, Get-CodexUsageRequest, ConvertTo-CodexQuota
+# Reads one field from either a ConvertFrom-Json record or a JavaScriptSerializer
+# dictionary. The leading comma keeps a JSON array an array instead of letting
+# the pipeline unroll it.
+function Get-AnyValue($Record, [string]$Name) {
+  if ($null -eq $Record) { return $null }
+  if ($Record -is [Collections.IDictionary]) {
+    if (([Collections.IDictionary]$Record).Contains($Name)) { return ,$Record[$Name] }
+    return $null
+  }
+  if ($Record -is [pscustomobject] -and (Test-RecordProperty $Record $Name)) { return ,$Record.$Name }
+  return $null
+}
+
+function Test-AnyRecord($Value) {
+  return $Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]
+}
+
+function Test-AnyArray($Value) {
+  return $Value -is [Collections.IList] -and -not ($Value -is [string])
+}
+
+function ConvertTo-IsoTimestamp($Value) {
+  if (-not (Test-BoundedTextValue $Value 128 $false) -or
+      $Value -notmatch '\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})\z') {
+    return $null
+  }
+  $parsed = [DateTimeOffset]::MinValue
+  if (-not [DateTimeOffset]::TryParse(
+      $Value, [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { return $null }
+  return $parsed.ToString('o')
+}
+
+function ConvertFrom-UnixSecondsValue($Value) {
+  if (-not (Test-FiniteNumberValue $Value $false)) { return $null }
+  $number = [double]$Value
+  if ($number -le 0 -or $number -gt 253402300799 -or [Math]::Floor($number) -ne $number) { return $null }
+  return [DateTimeOffset]::FromUnixTimeSeconds([int64]$number).ToString('o')
+}
+
+function ConvertTo-QuotaPercent($Value) {
+  if (-not (Test-FiniteNumberValue $Value $false)) { return $null }
+  return [Math]::Min(100.0, [Math]::Max(0.0, [double]$Value))
+}
+
+<#
+  One Claude usage document, wherever it was read from.
+
+  The live OAuth endpoint and Claude Code's own `cachedUsageUtilization` copy of it
+  share one shape: `five_hour`, `seven_day`, and the authoritative `limits[]`.
+  Utilization above 100 is clamped so an overage still reads as exhausted instead
+  of failing the whole card.
+#>
+function ConvertTo-ClaudeQuotaPayload {
+  [CmdletBinding()]
+  param($Usage)
+
+  if (-not (Test-AnyRecord $Usage)) { return $null }
+  foreach ($required in @('five_hour', 'seven_day', 'limits')) {
+    if ($Usage -is [Collections.IDictionary]) {
+      if (-not ([Collections.IDictionary]$Usage).Contains($required)) { return $null }
+    } elseif (-not (Test-RecordProperty $Usage $required)) {
+      return $null
+    }
+  }
+
+  $windows = [ordered]@{}
+  foreach ($pair in @(@('fiveHour', 'five_hour'), @('sevenDay', 'seven_day'))) {
+    $window = Get-AnyValue $Usage $pair[1]
+    if ($null -eq $window) { $windows[$pair[0]] = $null; continue }
+    if (-not (Test-AnyRecord $window)) { return $null }
+    $utilization = ConvertTo-QuotaPercent (Get-AnyValue $window 'utilization')
+    if ($null -eq $utilization) { return $null }
+    $resetsRaw = Get-AnyValue $window 'resets_at'
+    $resetsAt = if ($null -eq $resetsRaw) { $null } else { ConvertTo-IsoTimestamp $resetsRaw }
+    if ($null -ne $resetsRaw -and $null -eq $resetsAt) { return $null }
+    $windows[$pair[0]] = [ordered]@{ utilization = $utilization; resetsAt = $resetsAt }
+  }
+
+  $rawLimits = Get-AnyValue $Usage 'limits'
+  if (-not (Test-AnyArray $rawLimits)) { return $null }
+  $limits = New-Object Collections.Generic.List[object]
+  foreach ($limit in $rawLimits) {
+    if (-not (Test-AnyRecord $limit)) { return $null }
+    $kind = Get-AnyValue $limit 'kind'
+    if (-not (Test-BoundedTextValue $kind 64 $false) -or $kind -cnotmatch '\A[a-z0-9_]+\z') { return $null }
+    $percentRaw = Get-AnyValue $limit 'percent'
+    $percent = if ($null -eq $percentRaw) { $null } else { ConvertTo-QuotaPercent $percentRaw }
+    if ($null -ne $percentRaw -and $null -eq $percent) { return $null }
+    $resetsRaw = Get-AnyValue $limit 'resets_at'
+    $resetsAt = if ($null -eq $resetsRaw) { $null } else { ConvertTo-IsoTimestamp $resetsRaw }
+    if ($null -ne $resetsRaw -and $null -eq $resetsAt) { return $null }
+    $isActive = Get-AnyValue $limit 'is_active'
+    if ($null -ne $isActive -and -not ($isActive -is [bool])) { return $null }
+    $model = Get-AnyValue (Get-AnyValue (Get-AnyValue $limit 'scope') 'model') 'display_name'
+    $row = [ordered]@{ kind = $kind }
+    foreach ($text in @(@('group', (Get-AnyValue $limit 'group')), @('severity', (Get-AnyValue $limit 'severity')), @('model', $model))) {
+      $value = $text[1]
+      if ($null -ne $value -and -not (Test-BoundedTextValue $value 1024)) { return $null }
+      $row[$text[0]] = $value
+    }
+    $row['percent'] = $percent
+    $row['resetsAt'] = $resetsAt
+    $row['isActive'] = $isActive
+    $limits.Add([pscustomobject]$row)
+  }
+
+  return [pscustomobject][ordered]@{
+    ok       = $true
+    reason   = $null
+    fiveHour = if ($windows.fiveHour) { [pscustomobject]$windows.fiveHour } else { $null }
+    sevenDay = if ($windows.sevenDay) { [pscustomobject]$windows.sevenDay } else { $null }
+    limits   = $limits.ToArray()
+  }
+}
+
+<#
+  Claude Code keeps its last usage response in ~/.claude.json as
+  `cachedUsageUtilization = { fetchedAtMs, accountUuid, utilization }`. It is only
+  trusted for the account Claude Code reports as signed in, and only while young
+  enough that its weekly window can still be current.
+#>
+function ConvertTo-ClaudeCodeCachedQuota {
+  [CmdletBinding()]
+  param(
+    $Cache,
+    [string]$AccountUuid,
+    [int64]$NowMilliseconds,
+    [int64]$MaxAgeMilliseconds
+  )
+
+  if (-not (Test-AnyRecord $Cache) -or [string]::IsNullOrWhiteSpace($AccountUuid)) { return $null }
+  $cachedAccount = Get-AnyValue $Cache 'accountUuid'
+  if (-not ($cachedAccount -is [string]) -or $cachedAccount -cne $AccountUuid) { return $null }
+  $fetchedAt = Get-AnyValue $Cache 'fetchedAtMs'
+  if (-not (Test-FiniteNumberValue $fetchedAt $false)) { return $null }
+  $observed = [int64][Math]::Floor([double]$fetchedAt)
+  if ($observed -le 0 -or $observed -gt ($NowMilliseconds + 300000) -or
+      ($NowMilliseconds - $observed) -gt $MaxAgeMilliseconds) { return $null }
+  $payload = ConvertTo-ClaudeQuotaPayload (Get-AnyValue $Cache 'utilization')
+  if (-not $payload) { return $null }
+  return [pscustomobject][ordered]@{
+    source = 'claude_code'
+    observedAtMilliseconds = $observed
+    payload = $payload
+  }
+}
+
+<#
+  The Claude desktop app samples plan usage into plan-usage-history.json as
+  `{ t, org, u: { fh, sd } }`: five-hour and seven-day utilization, without reset
+  times. Only samples for the signed-in organization are considered; with no known
+  organization, a history that mixes organizations is rejected outright.
+#>
+function ConvertTo-ClaudeDesktopQuota {
+  [CmdletBinding()]
+  param(
+    $History,
+    [string]$OrganizationUuid,
+    [int64]$NowMilliseconds,
+    [int64]$MaxAgeMilliseconds,
+    [ValidateRange(1, 100000)][int]$MaxSamples = 5000
+  )
+
+  $samples = Get-AnyValue $History 'samples'
+  if (-not (Test-AnyArray $samples)) { return $null }
+  $organizations = New-Object Collections.Generic.HashSet[string]
+  $best = $null
+  $bestTime = [int64]0
+  # The app appends samples in time order, so a bounded tail holds every candidate
+  # inside the age limit; an unbounded history cannot stall the collector slice.
+  $first = [Math]::Max(0, $samples.Count - $MaxSamples)
+  for ($index = $first; $index -lt $samples.Count; $index++) {
+    $sample = $samples[$index]
+    if (-not (Test-AnyRecord $sample)) { continue }
+    $org = Get-AnyValue $sample 'org'
+    if (-not (Test-BoundedTextValue $org 128 $false)) { continue }
+    $time = Get-AnyValue $sample 't'
+    if (-not (Test-FiniteNumberValue $time $false)) { continue }
+    $observed = [int64][Math]::Floor([double]$time)
+    if ($observed -le 0 -or $observed -gt ($NowMilliseconds + 300000) -or
+        ($NowMilliseconds - $observed) -gt $MaxAgeMilliseconds) { continue }
+    if (-not [string]::IsNullOrWhiteSpace($OrganizationUuid) -and $org -cne $OrganizationUuid) { continue }
+    [void]$organizations.Add($org)
+    if ($observed -gt $bestTime) {
+      $best = $sample
+      $bestTime = $observed
+    }
+  }
+  if (-not $best -or $organizations.Count -ne 1) { return $null }
+
+  $usage = Get-AnyValue $best 'u'
+  if (-not (Test-AnyRecord $usage)) { return $null }
+  $fiveHour = ConvertTo-QuotaPercent (Get-AnyValue $usage 'fh')
+  $sevenDay = ConvertTo-QuotaPercent (Get-AnyValue $usage 'sd')
+  if ($null -eq $fiveHour -and $null -eq $sevenDay) { return $null }
+  return [pscustomobject][ordered]@{
+    source = 'claude_desktop'
+    observedAtMilliseconds = $bestTime
+    payload = [pscustomobject][ordered]@{
+      ok       = $true
+      reason   = $null
+      fiveHour = if ($null -eq $fiveHour) { $null } else { [pscustomobject][ordered]@{ utilization = $fiveHour; resetsAt = $null } }
+      sevenDay = if ($null -eq $sevenDay) { $null } else { [pscustomobject][ordered]@{ utilization = $sevenDay; resetsAt = $null } }
+      limits   = @()
+    }
+  }
+}
+
+function Select-NewestQuotaCandidate {
+  [CmdletBinding()]
+  param([object[]]$Candidates)
+
+  $best = $null
+  foreach ($candidate in @($Candidates)) {
+    if (-not $candidate -or -not (Test-RecordProperty $candidate 'observedAtMilliseconds')) { continue }
+    if (-not $best -or [int64]$candidate.observedAtMilliseconds -gt [int64]$best.observedAtMilliseconds) {
+      $best = $candidate
+    }
+  }
+  return $best
+}
+
+<#
+  Codex login mode, from the `auth_mode` field Codex writes into auth.json. No other
+  field is consulted, so no credential is ever read. A missing file, a missing field,
+  or a value this app does not know is `unknown`, never a guess.
+#>
+function Get-CodexAuthModeFromDocument {
+  [CmdletBinding()]
+  param($Document)
+
+  if (-not (Test-AnyRecord $Document)) { return 'unknown' }
+  $mode = Get-AnyValue $Document 'auth_mode'
+  if (-not ($mode -is [string])) { return 'unknown' }
+  $normalized = $mode.Trim().ToLowerInvariant()
+  if ($normalized.StartsWith('chatgpt')) { return 'chatgpt' }
+  if ($normalized -in @('apikey', 'api_key')) { return 'apikey' }
+  return 'unknown'
+}
+
+<#
+  One official Codex rate-limit snapshot as the browser contract.
+
+  Two upstream spellings reach here: `codex app-server`'s camelCase
+  `account/rateLimits/read` result, and the snake_case `rate_limits` Codex writes
+  into session transcripts. Both carry Unix-second resets. Only the `codex` bucket
+  is the plan quota; other buckets (for example `base_model_inference`) are skipped
+  by the caller.
+#>
+function ConvertTo-CodexOfficialQuota {
+  [CmdletBinding()]
+  param(
+    $Snapshot,
+    [ValidateSet('app_server', 'session')][string]$Source,
+    [DateTimeOffset]$ObservedAt
+  )
+
+  if (-not (Test-AnyRecord $Snapshot)) { return $null }
+  $limitId = Get-AnyValue $Snapshot 'limitId'
+  if ($null -eq $limitId) { $limitId = Get-AnyValue $Snapshot 'limit_id' }
+  if ($null -ne $limitId -and $limitId -cne 'codex') { return $null }
+
+  $windows = [ordered]@{}
+  foreach ($name in @('primary', 'secondary')) {
+    $window = Get-AnyValue $Snapshot $name
+    if ($null -eq $window) { $windows[$name] = $null; continue }
+    if (-not (Test-AnyRecord $window)) { return $null }
+    $usedRaw = Get-AnyValue $window 'usedPercent'
+    if ($null -eq $usedRaw) { $usedRaw = Get-AnyValue $window 'used_percent' }
+    $used = ConvertTo-QuotaPercent $usedRaw
+    if ($null -eq $used) { return $null }
+    $resetsRaw = Get-AnyValue $window 'resetsAt'
+    if ($null -eq $resetsRaw) { $resetsRaw = Get-AnyValue $window 'resets_at' }
+    $resetsAt = if ($null -eq $resetsRaw) { $null } else { ConvertFrom-UnixSecondsValue $resetsRaw }
+    if ($null -ne $resetsRaw -and $null -eq $resetsAt) { return $null }
+    $minutesRaw = Get-AnyValue $window 'windowDurationMins'
+    if ($null -eq $minutesRaw) { $minutesRaw = Get-AnyValue $window 'window_minutes' }
+    $minutes = $null
+    if ($null -ne $minutesRaw) {
+      if (-not (Test-FiniteNumberValue $minutesRaw $false) -or [double]$minutesRaw -le 0 -or
+          [double]$minutesRaw -gt 5256000 -or [Math]::Floor([double]$minutesRaw) -ne [double]$minutesRaw) {
+        return $null
+      }
+      $minutes = [int64]$minutesRaw
+    }
+    $windows[$name] = [pscustomobject][ordered]@{
+      used_percent   = $used
+      resets_at      = $resetsAt
+      window_minutes = $minutes
+    }
+  }
+  if (-not $windows.primary -and -not $windows.secondary) { return $null }
+
+  $plan = Get-AnyValue $Snapshot 'planType'
+  if ($null -eq $plan) { $plan = Get-AnyValue $Snapshot 'plan_type' }
+  # Upstream plan types are lowercase snake case; normalize rather than reject the
+  # whole snapshot over a casing difference.
+  $plan = if ($plan -is [string] -and $plan -match '\A[A-Za-z0-9_]{1,64}\z') { $plan.ToLowerInvariant() } else { $null }
+
+  return [pscustomobject][ordered]@{
+    ok         = $true
+    reason     = $null
+    source     = $Source
+    observedAt = $ObservedAt.ToString('o')
+    planType   = $plan
+    primary    = $windows.primary
+    secondary  = $windows.secondary
+  }
+}
+
+<#
+  Newest plan-quota snapshot in one transcript tail. Newer Codex releases write
+  several buckets per turn and the last line is often not the plan bucket, so
+  lines are scanned from the end for `limit_id` `codex` (or a pre-bucket record
+  without any `limit_id`).
+#>
+function Select-CodexSessionRateLimit {
+  [CmdletBinding()]
+  param([string[]]$Lines)
+
+  for ($index = $Lines.Count - 1; $index -ge 0; $index--) {
+    $line = $Lines[$index]
+    if ([string]::IsNullOrEmpty($line) -or $line.IndexOf('"rate_limits"') -lt 0) { continue }
+    try { $entry = $line | ConvertFrom-Json } catch { continue }
+    $payload = Get-AnyValue $entry 'payload'
+    $limits = Get-AnyValue $payload 'rate_limits'
+    if (-not (Test-AnyRecord $limits)) { continue }
+    $limitId = Get-AnyValue $limits 'limit_id'
+    if ($null -ne $limitId -and $limitId -cne 'codex') { continue }
+    $stamp = ConvertTo-IsoTimestamp (Get-AnyValue $entry 'timestamp')
+    if (-not $stamp) { continue }
+    return [pscustomobject][ordered]@{
+      observedAt = [DateTimeOffset]::Parse($stamp, [Globalization.CultureInfo]::InvariantCulture)
+      snapshot   = $limits
+    }
+  }
+  return $null
+}
+
+Export-ModuleMember -Function Merge-CodeBurnDurableModels, Resolve-DisplayCurrency, Get-CodexUsageRequest, ConvertTo-CodexQuota,
+  ConvertTo-ClaudeQuotaPayload, ConvertTo-ClaudeCodeCachedQuota, ConvertTo-ClaudeDesktopQuota, Select-NewestQuotaCandidate,
+  Get-CodexAuthModeFromDocument, ConvertTo-CodexOfficialQuota, Select-CodexSessionRateLimit

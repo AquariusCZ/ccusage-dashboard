@@ -17,18 +17,24 @@ Desktop shortcut
        3. copy template.html and bundled pixel fonts to %TEMP%\ClaudeUsage
        4. after uncontended preflight, open the loader before starting collectors
        5. start ccusage blocks --offline for Claude window metadata (may overlap)
-       6. run the default period's two CodeBurn reports sequentially
-       7. publish a cost-conserving revision of data.js; the browser becomes usable
-       8. run the two status calls and publish durable model attribution
-       9. repeat report-first/status-second for the remaining periods
-      10. read local Codex limits, then the two provider quota endpoints
-      11. atomically publish each revision and mark the last one complete; a failed final
+       6. start the quota reads: the Claude OAuth request as an async HttpClient task when
+          the CLI token is valid, and the Job-contained Codex helper for a ChatGPT login
+       7. run the default period's two CodeBurn reports sequentially; between 100 ms wait
+          slices, load the local quota records once and publish any changed quota state,
+          so a quota-only revision (empty periods) reaches the page within about a second
+       8. publish a cost-conserving revision of data.js; usage becomes visible
+       9. run a status call only for a provider whose live models do not reconcile, and
+          publish durable model attribution
+      10. repeat report-first/status-when-needed for the remaining periods
+      11. finish the quota reads within their own remaining budgets; replay the CC Switch
+          relay only for an API-key Codex login
+      12. atomically publish each revision and mark the last one complete; a failed final
           publication enters the same classified failed state, retries the terminal revision,
           then falls back to an independent runId-bound failure.js if data.js remains unwritable
-      12. in finally, retry deletion of raw scratch on every path and delete final browser
+      13. in finally, retry deletion of raw scratch on every path and delete final browser
           files after the normal read grace period; label an unreleased Windows lock as
           cleanup_failed so the next launch cleans it before opening a page
-      13. release the mutex only after cleanup
+      14. release the mutex only after cleanup
 
 report.html polls data.js until complete and serially probes failure.js while data is
 missing or incomplete
@@ -69,8 +75,43 @@ Red lines, mirrored from the reference implementation in the AI Resume project:
    (the HTTP failure path deliberately drops the exception text, which can echo
    the `Authorization` header);
 3. under 60 seconds of remaining life counts as expired - no request is made;
-4. malformed credentials and request failures degrade to the ccusage window with a
-   stated reason, never throw.
+4. malformed credentials and request failures degrade to the newest local record, or
+   to a stated reason, never throw.
+
+The request is an `HttpClient` task started at launch with `ResponseContentRead`,
+`MaxResponseContentBufferSize` = 1 MiB, redirects disabled, and one cancellation token over
+the whole exchange. Because the body is buffered before the task completes, polling
+`IsCompleted` between collector slices can never stall on a trickling response.
+
+### When the CLI is signed out
+
+A 2026-10-08 check on the target host found the standalone CLI signed out
+(`claude auth status` reported `loggedIn: false`; `.credentials.json` kept empty token
+strings after its refresh token expired) while the user worked in the Claude desktop app.
+The desktop app keeps its own login encrypted with Electron safeStorage and runs its embedded
+Claude Code with host-supplied auth, so the CLI token is never refreshed. Decrypting another
+client's credential store was rejected outright. Two official records already on disk carry
+the same quota without any credential:
+
+- Claude Code's `~/.claude.json` holds `cachedUsageUtilization = { fetchedAtMs,
+  accountUuid, utilization }`, a copy of the last `/api/oauth/usage` response with
+  `five_hour`, `seven_day`, and `limits[]`. It is used only when `accountUuid` equals the
+  file's own `oauthAccount.accountUuid`. Windows PowerShell's `ConvertFrom-Json` rejects this
+  file because project keys repeat with different case, so it is parsed with
+  `JavaScriptSerializer`, which also parses the 88 KB document in about 3 ms.
+- The desktop app's `%APPDATA%\Claude\plan-usage-history.json` keeps `{ t, org, u: { fh, sd } }`
+  samples: five-hour and seven-day utilization without reset times. Only samples for the
+  signed-in organization are used; an unknown account with a mixed-organization history is
+  rejected.
+
+The newest of these and the app's own one-hour quota cache wins and is published with
+`stale:true`, `staleReason` (why live failed, or `loading` while it is pending), `cachedAt`
+(when the record was observed), and `source`. Records older than seven days are ignored. The
+page never invents a reset time: a recorded window whose reset has passed, or whose record is
+older than the window itself, renders as rolled over rather than with its old figure, and a
+recorded per-model limit past its reset no longer raises the blocked alarm. The desktop app
+samples only while its own usage view refreshes, so its record can lag; the card states the
+time and suggests `claude auth login` for live figures.
 
 ### Network boundary
 
@@ -79,12 +120,13 @@ read the user's own quota - the same call Claude Code makes. No session content,
 prompt text, or usage aggregate is sent, and a failure still leaves the local
 dashboard usable.
 
-The app makes exactly two authenticated requests, both of them quota reads against
+The app itself makes at most two authenticated requests, both of them quota reads against
 a provider the user has already configured, and both of them replaying a call that
-tool already makes on its own: this one, and the Codex relay usage call described
-below. Neither sends anything but the credential that authenticates it. Any third
-authenticated destination, and any app-owned upload, remains a change to the
-product's premise.
+tool already makes on its own: this one, and - for an API-key Codex login only - the Codex
+relay usage call described below. For a ChatGPT Codex login, the official Codex CLI makes its
+own rate-limit read with its own credential. None of them sends anything but the credential
+that authenticates it. Any third authenticated destination, reading another client's
+credential, and any app-owned upload remain changes to the product's premise.
 
 The required CodeBurn 0.9.19 performs one additional upstream-controlled network
 operation: when its 24-hour cache is absent or stale, its status/report commands call
@@ -111,12 +153,45 @@ sent; no credential, session content, rendered payload, or usage aggregate is in
 USD does not use this path. CodeBurn falls back to rate 1 when the fetch fails, and exposes
 the active `{ code, symbol, rate }` in menubar JSON; AI Usage consumes that public value.
 
-## Codex quota comes from the provider, not from the session record
+## Codex quota follows the login Codex uses
 
-`limits.codex` is scraped from the newest session transcript that carries a
-`rate_limits` payload. Only the official OpenAI endpoint ever emits one, so a
-relay-backed Codex provider leaves that card permanently empty however much quota
-is left. The relay knows the answer; the session record never sees it.
+Codex's `auth.json` records `auth_mode`; only that field is read. Its credentials are never
+opened by this app.
+
+### ChatGPT login: the official CLI answers
+
+A ChatGPT login is limited by the account's own plan, which no relay or session file knows
+precisely. The 2026-10-08 upstream check found the answer already exposed by the official CLI:
+`codex app-server` serves `account/rateLimits/read` (schema `GetAccountRateLimitsResponse`,
+generated offline with `codex app-server generate-json-schema`), the call behind Codex's own
+`/status`. It returns `rateLimits` plus `rateLimitsByLimitId`, each window carrying
+`usedPercent`, `windowDurationMins`, and Unix-second `resetsAt`, and `planType`. Codex owns,
+refreshes, and sends its credential; AI Usage never sees it. On the target host the read took
+about 1.8 seconds.
+
+`src/codex-rate-limits.mjs` is the smallest client: it starts the CLI (an npm `.cmd` shim is
+run through `cmd.exe` with the path in the environment, so a literal percent pair is never
+expanded), sends `initialize`, `initialized`, and `account/rateLimits/read` as newline-delimited
+JSON-RPC, selects the `codex` bucket, prints one whitelisted JSON object, and ends stdin so
+app-server exits. A wedged child tree is stopped with `taskkill /T`. Windows PowerShell 5.1
+cannot drive this protocol directly: its redirected stdin writes a UTF-8 BOM that app-server
+rejects as invalid JSON, and file-redirected stdin ends the session before the answer. The
+generator runs the helper through the same Job-contained collector path as ccusage, with one
+absolute 30-second budget and a 1 MiB output cap, concurrently with CodeBurn.
+
+Since 2026-09 every Codex turn writes several rate-limit buckets into the session transcript,
+and the last line is often `base_model_inference` (`gpt-reserve`) at 0% rather than the plan
+bucket. The previous reader took the last line and, separately, validated the already-converted
+snapshot a second time, which rejected its own ISO reset and silently dropped every official
+quota. The session record is now read for the newest `limit_id` `codex` entry (or a pre-bucket
+entry without `limit_id`), converted exactly once, and used only as the labelled fallback when
+the live read fails or is still pending.
+
+### API-key login through a relay
+
+`limits.codex` official data never reaches a relay-backed provider, so that card would stay
+empty however much quota is left. The relay knows the answer; the session record never sees
+it.
 
 CC Switch already solved this. Every provider row in `%USERPROFILE%\.cc-switch\cc-switch.db`
 may carry a `usage_script` in `providers.meta`: one declared GET plus a JavaScript
@@ -201,10 +276,15 @@ The 2026-08-09 upstream inventory found a deliberate split in CodeBurn 0.9.19:
 
 AI Usage therefore reuses the upstream public status shape instead of parsing CodeBurn's
 private cache or reimplementing its pricing logic. For each period/provider pair it runs
-report first and publishes it through the existing cost-conserving fallback. It then runs
+report first and publishes it through the existing cost-conserving fallback. When that
+fallback leaves any remainder (or drops a contradictory allocation), it then runs
 status and republishes the period with durable cost/call totals merged into report model
-rows, so names and currently readable token details remain available. Status improves
-attribution; it is not required for a correct headline total.
+rows, so names and currently readable token details remain available. A report whose live
+rows sum exactly to `overview.cost` skips status: every session is still readable, so the merge
+would name the same models at the same costs, and past the 20-row status cap the live rows are
+the more complete list. A non-USD report still runs status until one call has supplied
+CodeBurn's exchange rate, because status is its only public source.
+Status improves attribution; it is not required for a correct headline total.
 
 Report costs are already converted to CodeBurn's active display currency, while menubar
 `current.cost` and `topModels` remain USD. The merge multiplies durable cost, savings, and
@@ -313,10 +393,10 @@ The official built-in mutex, named event, Job Object, and `Win32_Process/GetOwne
 were platform-verified on the target Windows host, so no new process dependency was introduced.
 The 2026-08-29 upstream inventory found no CodeBurn or ccusage API for reporting a generator's
 failure to a second Windows launcher. A per-run .NET `EventWaitHandle` therefore supplies that
-missing platform coordination without changing either collector. Status reconciliation makes
-twelve serial CodeBurn calls for the three periods and two providers. Do not
-reintroduce parallelism for these calls. ccusage is a different tool over the same read-only
-files and may still overlap.
+missing platform coordination without changing either collector. The three periods and two
+providers make six serial report calls plus at most six status calls. Do not
+reintroduce parallelism for these calls. ccusage and the Codex quota helper are different
+tools over different files and may still overlap.
 
 The 2026-08-30 upstream recheck also found no collector-owned browser publication protocol,
 terminal sidecar, or Windows parent-lifetime budget that AI Usage could wrap. CodeBurn and
@@ -364,6 +444,31 @@ The official Codex boundary was checked against `openai/codex`'s
 finite `[0,100]` JSON number plus a nullable Int64 reset value, then converts the reset to ISO
 text for the browser. It does not accept the ISO-shaped fixture value that older demo data used.
 
+### Quota-first startup, 2026-10-08
+
+A real run on the target host before this change published the first 30-day usage at
+7.4 seconds and completed at 41.7 seconds; both quota cards arrived only in the last revision
+and were wrong (signed-out CLI, relay script missing, official limits dropped). Each CodeBurn
+call costs about 2.7 to 3.5 seconds, of which about 1 second is Node and bundle start-up and
+most of the rest loads and validates CodeBurn's 76 MB session cache; the period hardly matters.
+
+Changes and measured effect (single runs, same host, warm caches):
+
+| change | effect |
+|---|---|
+| quota reads start at launch and run concurrently | live Codex quota at 3.7 s instead of after the last report |
+| local quota records published between collector slices | quota-only revision at about 1.5 s |
+| status pass skipped where live models already reconcile | 12 CodeBurn calls became 9 for this store |
+| `NODE_COMPILE_CACHE` for collectors | about 0.35 s less per CodeBurn call once warm |
+| quota change counter instead of per-slice serialization | removed about 1 s of heartbeat overhead before the first usage |
+
+First usage stays at about 8 seconds because it is two serial CodeBurn calls; the complete
+revision moved to about 33 seconds. Rejected alternatives: parallel CodeBurn (proven provider
+contamination), CodeBurn internals in one Node process (module-private API, and the session
+cache is still reloaded per range), CodeBurn `web`/MCP (no full report contract), a persisted
+previous snapshot (the user chose to keep burn-after-read), and decrypting the Claude desktop
+app's login for live Claude quota (another client's protected credential).
+
 ### Startup optimization decision record
 
 One 2026-08-29 observation on this Windows host measured 33.045 seconds from process launch to
@@ -396,8 +501,8 @@ optimization target. These are single-run diagnostics, not a regression threshol
 and input size were not fixed, and the measurement stops at atomic `data.js` publication. The
 browser can add up to its 500 ms polling interval plus render time. A cold CodeBurn public-price
 cache, and a cold exchange-rate cache for non-USD display, can also add their network timeout.
-Provider quota reads run only after local reports are available, so their network timeout
-can no longer hold the page behind the loader. A second normal launch while the mutex is
+Provider quota reads start at launch and run concurrently with the local reports, so their
+network timeout can no longer hold the page behind the loader or delay a usage revision. A second normal launch while the mutex is
 held opens the already-running report instead of waiting through its cleanup grace period.
 That reuse first advances a read-lease timestamp. The owner waits a fresh grace period from
 the latest lease and switches the run state to `closing` before deletion; a launch racing
@@ -438,23 +543,29 @@ removed its owner, state, and data files and left zero CodeBurn or ccusage proce
   `partial_generation_failed` when a failure after the first usable publish ends enrichment
   without deleting the available report
 - `periods`: the period keys currently available, with the requested/default period first;
-  the normal sequence grows from `30days` to `30days`, `week`, `all`
+  the normal sequence grows from `[]` (quota-only revisions) to `30days`, then `30days`,
+  `week`, `all`. A quota-only revision has empty `reports` and a provisional USD `currency`;
+  the page shows the quota cards and holds the usage sections behind one status card
 - `reports[periodKey].claude` / `reports[periodKey].codex`: trimmed CodeBurn reports
   whose `models` cost sum equals `overview.cost`; each also carries aggregate-only
   `costReconciliation` metadata described above
-- `limits.claudeQuota`: `{ ok, reason, fiveHour, sevenDay, limits[] }` from the
-  OAuth usage endpoint. `ok:false` carries a classified `reason`
+- `limits.claudeQuota`: `{ ok, reason, source, fiveHour, sevenDay, limits[] }`. `source` is
+  `oauth` (live), `cache` (the app's own quota cache), `claude_code`
+  (`cachedUsageUtilization`), or `claude_desktop` (desktop plan-usage samples, which carry
+  no reset times or per-model limits). A non-live record adds `stale:true`, `staleReason`,
+  and `cachedAt` (when it was observed). `ok:false` carries a classified `reason`
   (`loading`, `not_collected`, `no_credentials`, `malformed_credentials`, `token_expired`, `token_rejected_401`,
-  `token_rejected_403`, `rate_limited`, `failed_local`, `malformed_response`,
+  `token_rejected_403`, `rate_limited`, `request_timed_out`, `failed_local`, `malformed_response`,
   `http_<status>`) and the UI states it in plain Chinese.
-  The token itself is never present in this file.
+  The token and the account identifiers are never present in this file.
 - `limits.claudeBlocks`: optional ccusage block data, including `startTime`,
   `burnRate`, and `projection` for the active window - still the only source of
   burn rate and projected spend
 - `limits.codexQuota`: `{ ok, reason, provider, planName, mode, isValid, unit,
   remaining, expiresAt, windows[] }` replayed from the current CC Switch provider's
   usage script, where each window is `{ kind, limit, used, percent, startsAt, resetsAt }`
-  and `percent` is null for an unmetered window. `ok:false` carries a classified
+  and `percent` is null for an unmetered window. It is attempted only for an API-key login; for a
+  ChatGPT or unrecognized login it is `{ ok:false, reason:'official_account' }`. Otherwise `ok:false` carries a classified
   `reason` (`loading`, `not_collected`, `no_ccswitch`, `sqlite_unavailable`, `ccswitch_unreadable`,
   `no_current_provider`, `usage_script_missing`, `usage_script_disabled`,
   `usage_script_unreadable`, `provider_config_unreadable`, `no_endpoint`,
@@ -463,9 +574,15 @@ removed its owner, state, and data files and left zero CodeBurn or ccusage proce
   `key_rejected_401`, `key_rejected_403`, `rate_limited`, `failed_local`, `request_timed_out`,
   `response_too_large`, `malformed_response`, `http_<status>`) and the UI states it in
   plain Chinese. Neither the API key nor the provider endpoint is present in this file.
-- `limits.codex`: latest rate-limit metadata when the configured provider exposes
-  it; only the official OpenAI endpoint emits it, so it is the fallback source and
-  `limits.codexQuota` takes precedence when both are present
+- `limits.codex`: the official plan quota, `{ ok, reason, source, observedAt, planType,
+  primary, secondary }` where `source` is `app_server` (live through the Codex CLI) or
+  `session` (the newest `codex` bucket in a session transcript) and each window is
+  `{ used_percent, resets_at, window_minutes }` with an ISO `resets_at`. A session record shown
+  because the live read failed or is pending adds `stale:true` and `staleReason`. `ok:false`
+  carries `loading`, `not_collected`, `not_logged_in`, `api_key_login`, `codex_cli_missing`,
+  `app_server_unavailable`, `account_unavailable`, `no_rate_limits`, `request_timed_out`, `response_too_large`,
+  `failed_local`, or `malformed_response`. A successful relay quota takes precedence on the
+  card; only an API-key login consults the relay
 - `generatedAt`, `period` (the default selection), `currency`, and source version
 
 `failure.js` is a separate atomic terminal channel. It contains only
@@ -681,7 +798,10 @@ modes: every run receives an independent `debug-<timestamp>-<pid>` directory so 
 debug run cannot overwrite a retained snapshot. The two quota caches alone remain shared
 at the runtime root: `quota-cache.json` and `codex-quota-cache.json`. Both hold quota
 state plus bounded identity/invalidation metadata, with a 120-second fresh window and a
-3600-second labelled-stale window. A Codex
+3600-second labelled-stale window. The Claude cache is bound to a SHA-256 digest of the CLI
+login's organization and Claude Code's signed-in account and organization; an account switch,
+a missing digest, or a legacy envelope is never reused, and a fresh entry stands in for a request
+only while the CLI token is still valid. A Codex
 cache is fresh only when the current CC Switch provider can be read and both its stable
 `providers.id` and SHA-256 configuration fingerprint match the cache envelope; display names
 are not unique and provider rows are updated in place. Neither cache identity enters `data.js`.
@@ -764,7 +884,9 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 
 - Run `tests/ReportData.Tests.ps1` for durable/live merge, gross-vs-net selection,
   truncation, missing-status and ahead-status fallbacks, exact top-level TOML/section selection,
-  request-header allowlisting, and C0/DEL rejection.
+  request-header allowlisting, C0/DEL rejection, Claude usage documents from both parsers,
+  account- and organization-bound local records, Codex login modes, plan-bucket selection, and
+  one-time Unix-to-ISO reset conversion.
 - Run `tests/Static.Tests.ps1` to parse the PowerShell scripts and module and syntax-check
   the dashboard JavaScript with Node.
 - Run `tests/Generator.Integration.Tests.ps1` to execute the generator against deterministic
@@ -782,7 +904,15 @@ than a fixed `foreignObject`, which silently clipped wider totals.
   locks on both coordination files with the kernel failure event overriding their stale `active`
   values, exactly one fresh recovery aggregation, final contract, and a retained terminal snapshot
   after a later CodeBurn failure. Direct cache tests also prove that same-ID key, URL, or usage-script
-  changes invalidate fresh Codex quota reuse.
+  changes invalidate fresh Codex quota reuse. Quota-first scenarios prove that quota-only
+  revisions precede the first usage revision, that reconciled reports skip status (six calls),
+  that a ChatGPT login publishes the stub app-server's `codex` bucket without credentials or
+  other buckets and never consults the relay, that a hung app-server falls back to the labelled
+  session record and leaves no process behind, that an account error is classified, and that a
+  signed-out CLI shows the desktop record from the first revision. Direct tests cover the async
+  Claude transport (pending, 401, redirect, malformed, timeout, oversized, unsendable header),
+  Claude Code and desktop records including another account's data, and idempotent official
+  Codex DTO validation.
 - Run `tests/InstallJob.Tests.ps1` to force-kill an installer harness and prove that the
   kernel terminates its descendant process tree; it also covers zero, nonzero, timeout, bounded
   capture, oversized-output exits, and a root that exits while sixteen descendants finish at
@@ -808,7 +938,8 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 - Run `tests/New-DemoSnapshot.ps1` and verify its `data.js`; this deterministic fixture is
   also the only permitted source for the committed README screenshots.
 - Run `node tests/BrowserSmoke.mjs` to exercise local `file://` incomplete-to-complete
-  revisions in real headless Edge, including cross-run revision reset, deferred URL selection,
+  revisions in real headless Edge, including a quota-only first revision, official Codex window
+  labels, recorded-quota labelling and rolled-over windows, cross-run revision reset, deferred URL selection,
   focus/state preservation, completion polling stop, desktop/mobile overflow, screenshots,
   mismatched failure run IDs, independent startup/partial terminal sidecars, rejection of missing
   or malformed sidecar fields without stopping polling, terminal polling stop, and runtime exceptions.

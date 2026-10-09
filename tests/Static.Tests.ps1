@@ -19,7 +19,7 @@ foreach ($relative in @(
 # match a file on disk. All visible copy lives in template.html, which is served as
 # UTF-8 HTML; a name that must stay non-ASCII is built from its code points.
 foreach ($relative in @(
-  'src\Generate-ClaudeReport.ps1', 'src\ReportData.psm1',
+  'src\Generate-ClaudeReport.ps1', 'src\ReportData.psm1', 'src\codex-rate-limits.mjs',
   'tests\New-DemoSnapshot.ps1', 'tests\ReportData.Tests.ps1', 'tests\Static.Tests.ps1', 'tests\Verify-Snapshot.ps1',
   'tests\Generator.Integration.Tests.ps1', 'tests\InstallJob.Tests.ps1', 'tests\Installer.Integration.Tests.ps1',
   'tests\Uninstaller.Integration.Tests.ps1',
@@ -179,8 +179,35 @@ if (-not $generator.Contains('function Assert-CollectorCleanupVerified') -or
   throw 'An uncertain collector cleanup can be swallowed or cross a later process-launch boundary.'
 }
 if (-not $generator.Contains('$MaxCollectorOutputBytes = [int64](16 * 1024 * 1024)') -or
-    -not $generator.Contains('Wait-ChildProcess $run 120000 $Output $MaxCollectorOutputBytes { Receive-BlocksIfReady }')) {
+    -not $generator.Contains('Wait-ChildProcess $run 120000 $Output $MaxCollectorOutputBytes { Receive-CollectorSlice }')) {
   throw 'Collector output is not bounded to the audited 16 MiB limit while the process is running.'
+}
+$codexHelper = [IO.File]::ReadAllText((Join-Path $root 'src\codex-rate-limits.mjs'))
+if (-not $generator.Contains('$official.Job = Start-OptionalJsonCommand $node @($CodexHelperScript, $codex) $codexQuotaOutput') -or
+    -not $generator.Contains('$CodexQuotaTimeoutMilliseconds = 30000') -or
+    -not $generator.Contains('function Test-CodexQuotaOutputOversized') -or
+    -not $generator.Contains('try { $rootExited = $job.RootHasExited } catch { $inspectionFailed = $true }') -or
+    -not $generator.Contains("if (-not `$job.HasExited -and -not (Stop-ProcessTree `$job)) {")) {
+  throw 'The official Codex quota helper is not a bounded, Job-contained optional collector.'
+}
+if ($codexHelper -match '(?i)auth\.json|access_token|refresh_token|OPENAI_API_KEY|Authorization' -or
+    -not $codexHelper.Contains('account/rateLimits/read') -or -not $codexHelper.Contains('%AI_USAGE_CODEX_COMMAND%')) {
+  throw 'The Codex quota helper must ask app-server for rate limits without touching Codex credentials.'
+}
+if (-not $generator.Contains("`$codexQuota = [ordered]@{ ok = `$false; reason = 'official_account' }") -or
+    $generator -match 'oauth:tokenCache|Local State|safeStorage|ProtectedData') {
+  throw 'Quota sources must follow the login in use and never open the desktop app''s encrypted token store.'
+}
+$publishCandidate = [regex]::Match($generator, '(?s)function Publish-PeriodCandidate\(\[string\]\$PeriodKey\) \{(.*?)\n\}')
+if (-not $publishCandidate.Success -or $publishCandidate.Groups[1].Value -match 'Publish-QuotaUpdate|Receive-CollectorSlice' -or
+    -not $generator.Contains('function Publish-QuotaUpdate') -or
+    -not $generator.Contains('if ($GenerationFailed -or $script:QuotaStateVersion -eq $script:PublishedQuotaVersion) { return }')) {
+  throw 'A quota-only publish can run while an uncommitted period candidate is in the report set.'
+}
+if (-not $generator.Contains('$request.Client.MaxResponseContentBufferSize = $MaxBytes') -or
+    -not $generator.Contains('[Net.Http.HttpCompletionOption]::ResponseContentRead') -or
+    ([regex]::Matches($generator, '\$Handler\.AllowAutoRedirect = \$false')).Count -lt 2) {
+  throw 'The non-blocking Claude quota request is not bounded and redirect-free.'
 }
 $blocksDeadlineIndex = $generator.IndexOf('$blocksDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($CCUsageTimeoutMilliseconds)')
 $blocksStartIndex = $generator.IndexOf("`$blocksJob = Start-OptionalJsonCommand `$CCUsage @('blocks', '--json', '--offline')")
@@ -340,6 +367,17 @@ foreach ($functionName in @(
   }
 }
 
+$authModeReader = Get-FunctionText (Join-Path $root 'src\ReportData.psm1') 'Get-CodexAuthModeFromDocument'
+if ($authModeReader -match '(?i)tokens|refresh_token|access_token|id_token|OPENAI_API_KEY') {
+  throw 'The Codex login-mode reader must consult auth_mode only, never a credential slot.'
+}
+$reportDataModule = [IO.File]::ReadAllText((Join-Path $root 'src\ReportData.psm1'))
+foreach ($source in @($generator, $reportDataModule, $codexHelper)) {
+  if ($source -match '(?i)Claude\\config\.json|oauth:tokenCache|safeStorage') {
+    throw 'Runtime code references the Claude desktop app''s encrypted login store.'
+  }
+}
+
 $uninstallLockIndex = $uninstaller.IndexOf('$installMutex = [Threading.Mutex]::new')
 $uninstallMarkerIndex = $uninstaller.IndexOf("(Get-UninstallMarker 'pending')")
 $uninstallGateIndex = $uninstaller.IndexOf('Publish-UninstallGate $generatorPath')
@@ -380,6 +418,8 @@ try {
   [IO.File]::WriteAllText($tempJs, $match.Groups[1].Value, (New-Object Text.UTF8Encoding($false)))
   & node --check $tempJs
   if ($LASTEXITCODE -ne 0) { throw 'Dashboard JavaScript syntax check failed.' }
+  & node --check (Join-Path $root 'src\codex-rate-limits.mjs')
+  if ($LASTEXITCODE -ne 0) { throw 'Codex quota helper syntax check failed.' }
 } finally {
   try { if (Test-Path $tempJs) { [IO.File]::Delete($tempJs) } } catch {}
 }

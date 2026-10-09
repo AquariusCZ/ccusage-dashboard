@@ -37,6 +37,15 @@ $oldFinalPublishFault = $env:AI_USAGE_FINAL_PUBLISH_FAULT
 $oldCodeBurnBarrierMatch = $env:AI_USAGE_CODEBURN_BARRIER_MATCH
 $oldCodeBurnBarrierReady = $env:AI_USAGE_CODEBURN_BARRIER_READY
 $oldCodeBurnBarrierRelease = $env:AI_USAGE_CODEBURN_BARRIER_RELEASE
+$oldAppData = $env:APPDATA
+$oldCodexHome = $env:CODEX_HOME
+$oldCodexMode = $env:AI_USAGE_CODEX_MODE
+$oldCodexLog = $env:AI_USAGE_CODEX_LOG
+$oldCodexTimeout = $env:AI_USAGE_CODEX_TIMEOUT_MS
+$oldStubReconciled = $env:AI_USAGE_STUB_RECONCILED
+$oldModuleAnalysisCache = $env:PSModuleAnalysisCachePath
+$codexLog = Join-Path $sandbox 'codex.log'
+$sandboxAppData = Join-Path $sandbox 'appdata'
 
 function Read-Snapshot([string]$Path) {
   try {
@@ -58,6 +67,15 @@ function Read-StartupFailure([string]$Path) {
   } catch {
     return $null
   }
+}
+
+# Before the first usage report, the only data.js a run may own is its quota-only
+# revision; a startup failure must still terminate through failure.js.
+function Test-StartupDataAllowed([string]$DataPath, [string]$RunId) {
+  if (-not (Test-Path -LiteralPath $DataPath)) { return $true }
+  $snapshot = Read-Snapshot $DataPath
+  return $snapshot -and @($snapshot.periods).Count -eq 0 -and $snapshot.complete -eq $false -and
+    [string]$snapshot.runId -ceq $RunId
 }
 
 function Assert-NoFailureScriptResidue([string]$Directory, [string]$Label) {
@@ -133,19 +151,25 @@ function Invoke-Scenario(
   [string]$CCUsageMode = '',
   [bool]$LaunchKeepFile = $false,
   [string]$Period = '',
-  [string]$GeneratorPath = ''
+  [string]$GeneratorPath = '',
+  [scriptblock]$Prepare = $null
 ) {
   $scenarioRoot = Join-Path $sandbox $Name
   $scenarioTemp = Join-Path $scenarioRoot 'temp'
   $profile = Join-Path $scenarioRoot 'profile'
-  New-Item -ItemType Directory -Force -Path $scenarioTemp, $profile | Out-Null
-  foreach ($log in @($codeBurnLog, $ccusageLog)) {
+  $appData = Join-Path $profile 'AppData\Roaming'
+  New-Item -ItemType Directory -Force -Path $scenarioTemp, $profile, $appData | Out-Null
+  foreach ($log in @($codeBurnLog, $ccusageLog, $codexLog)) {
     if (Test-Path -LiteralPath $log) { [IO.File]::Delete($log) }
   }
+  # Quota fixtures (Claude Code config, desktop history, Codex auth and sessions)
+  # are written into this scenario's isolated profile before the generator starts.
+  if ($Prepare) { & $Prepare $profile $appData }
 
   $env:TEMP = $scenarioTemp
   $env:TMP = $scenarioTemp
   $env:USERPROFILE = $profile
+  $env:APPDATA = $appData
   $env:AI_USAGE_STUB_FAILURE = $Failure
   $env:AI_USAGE_STUB_FAILURE_MODE = $FailureMode
   $env:AI_USAGE_CCUSAGE_EXIT = [string]$CCUsageExit
@@ -210,6 +234,8 @@ function Start-Process {
   $snapshots = @{}
   $snapshotSequence = New-Object Collections.Generic.List[object]
   $firstCodeBurnCount = $null
+  $firstUsage = $null
+  $firstUsageCodeBurnCount = $null
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
     foreach ($dataPath in @(Get-ChildItem -LiteralPath (Join-Path $scenarioTemp 'ClaudeUsage') -Filter 'data.js' -File -Recurse -ErrorAction SilentlyContinue)) {
@@ -219,6 +245,10 @@ function Start-Process {
         $snapshotSequence.Add($snapshot)
         if ($null -eq $firstCodeBurnCount) {
           $firstCodeBurnCount = @(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue).Count
+        }
+        if ($null -eq $firstUsage -and @($snapshot.periods).Count -gt 0) {
+          $firstUsage = $snapshot
+          $firstUsageCodeBurnCount = @(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue).Count
         }
       }
     }
@@ -253,18 +283,27 @@ function Start-Process {
   if (-not $snapshots.ContainsKey([int]$final.revision)) { $snapshotSequence.Add($final) }
   $snapshots[[int]$final.revision] = $final
 
+  if ($null -eq $firstUsage -and @($final.periods).Count -gt 0) {
+    $firstUsage = $final
+    $firstUsageCodeBurnCount = @(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue).Count
+  }
+
   $result = [pscustomobject]@{
     Snapshots = $snapshots
     SnapshotSequence = $snapshotSequence
     First = $snapshotSequence[0]
     FirstCodeBurnCount = $firstCodeBurnCount
+    FirstUsage = $firstUsage
+    FirstUsageCodeBurnCount = $firstUsageCodeBurnCount
     Final = $final
     DataPath = $dataPath
     CodeBurnCalls = @(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue)
     CCUsageCalls = @(Get-Content -LiteralPath $ccusageLog -ErrorAction SilentlyContinue)
+    CodexCalls = @(Get-Content -LiteralPath $codexLog -ErrorAction SilentlyContinue)
     LaunchCalls = @(Get-Content -LiteralPath $launchLog -ErrorAction SilentlyContinue)
   }
   try { $process.Dispose() } catch {}
+  $env:APPDATA = $sandboxAppData
   return $result
 }
 
@@ -501,7 +540,9 @@ function Start-Process {
       if ($failure.reason -ne 'initial_generation_failed' -or $failure.stage -ne 'default_usage') {
         throw 'Startup failure signal did not contain its classified stage.'
       }
-      if (Test-Path -LiteralPath $dataPath) { throw 'Startup failure signal overwrote data.js instead of using failure.js.' }
+      if (-not (Test-StartupDataAllowed $dataPath ([string]$failure.runId))) {
+        throw 'Startup failure signal overwrote data.js instead of using failure.js.'
+      }
     } elseif ($failure.generationError.reason -ne 'partial_generation_failed' -or
         $failure.generationError.stage -ne 'remaining_usage') {
       throw 'Partial failure snapshot did not contain its classified stage.'
@@ -618,7 +659,7 @@ function Start-Process {
     if (-not $failure) { throw 'The failure read-grace probe did not publish its terminal signal.' }
     Start-Sleep -Milliseconds 2500
     $process.Refresh()
-    if ($process.HasExited -or (Test-Path -LiteralPath $dataPath) -or
+    if ($process.HasExited -or -not (Test-StartupDataAllowed $dataPath ([string]$failure.runId)) -or
         -not (Test-Path -LiteralPath $failurePath) -or
         -not (Test-Path -LiteralPath $htmlPath) -or
         -not (Test-Path -LiteralPath $statePath) -or
@@ -1320,6 +1361,9 @@ if ($Period) {
     while (-not $first -and [DateTime]::UtcNow -lt $firstDeadline) {
       if ($owner.HasExited) { break }
       $first = Read-Snapshot $dataPath
+      # A quota-only revision precedes usage; wait for the first usage snapshot,
+      # after which the default period's raw reports are complete and closed.
+      if ($first -and @($first.periods).Count -eq 0) { $first = $null }
       if (-not $first) { Start-Sleep -Milliseconds 20 }
     }
     if (-not $first) {
@@ -2076,6 +2120,10 @@ try {
 }
 
 try {
+  # Windows PowerShell finds its module-analysis cache through the profile's
+  # LocalAppData. A scenario profile has none, so the cache would otherwise be
+  # written relative to the working directory, which is usually the repository.
+  $env:PSModuleAnalysisCachePath = Join-Path $sandbox 'ModuleAnalysisCache'
   New-Item -ItemType Directory -Force -Path $runtime, $stubs | Out-Null
   Copy-Item (Join-Path $root 'src\*') -Destination $runtime -Recurse -Force
   $env:AI_USAGE_PATH_TOKEN = 'expanded-path-must-not-be-used'
@@ -2147,8 +2195,12 @@ if ($operation -eq 'report') {
     date = '2026-08-29'; cost = $cost; savings = 0; calls = $calls
     turns = 4; editTurns = 2; oneShotTurns = 1; oneShotRate = 50
   })
+  # By default live model rows cover only half the headline, as after source logs
+  # age out, so durable status attribution is required. Reconciled mode returns
+  # complete live rows, which needs no status pass at all.
+  $modelCost = if ($env:AI_USAGE_STUB_RECONCILED -eq '1') { $cost } else { $cost / 2 }
   $models = [object[]]@([pscustomobject][ordered]@{
-    name = $modelName; calls = $calls; cost = $cost; savings = 0; estimatedCost = 0
+    name = $modelName; calls = $calls; cost = $modelCost; savings = 0; estimatedCost = 0
     inputTokens = 100; outputTokens = 20; cacheReadTokens = 50; cacheWriteTokens = 10
   })
   $projects = [object[]]@([pscustomobject][ordered]@{
@@ -2197,6 +2249,7 @@ if ($operation -eq 'report') {
   $reportCurrency = switch ($env:AI_USAGE_STUB_FAILURE_MODE) {
     'currency' { if ($isFailure) { 'EUR' } else { 'USD' }; break }
     'cny-no-rate' { 'CNY'; break }
+    'cny-rate' { 'CNY'; break }
     'currency-bool' { if ($isFailure) { $true } else { 'USD' }; break }
     'currency-array' { if ($isFailure) { ,([object[]]@('USD')) } else { 'USD' }; break }
     'currency-newline' { if ($isFailure) { "USD`n" } else { 'USD' }; break }
@@ -2250,6 +2303,7 @@ if ($operation -eq 'status') {
   }
   $statusCurrency = switch ($env:AI_USAGE_STUB_FAILURE_MODE) {
     'cny-no-rate' { [ordered]@{ code = 'CNY'; rate = $null; symbol = 'CNY' }; break }
+    'cny-rate' { [ordered]@{ code = 'CNY'; rate = 7.1; symbol = 'CNY' }; break }
     'status-bool-currency' { if ($isFailure) { $true } else { [ordered]@{ code = 'USD'; rate = 1; symbol = '$' } }; break }
     'status-array-currency' { if ($isFailure) { ,([object[]]@('USD')) } else { [ordered]@{ code = 'USD'; rate = 1; symbol = '$' } }; break }
     'status-newline-currency' { if ($isFailure) { [ordered]@{ code = "USD`n"; rate = 1; symbol = '$' } } else { [ordered]@{ code = 'USD'; rate = 1; symbol = '$' } }; break }
@@ -2319,8 +2373,55 @@ if ($env:AI_USAGE_CCUSAGE_MODE -eq 'blocks-nested-fields') {
 } | ConvertTo-Json -Depth 10 -Compress
 if ($env:AI_USAGE_CCUSAGE_EXIT) { exit [int]$env:AI_USAGE_CCUSAGE_EXIT }
 '@
+  # A minimal `codex app-server`: newline-delimited JSON-RPC on stdin/stdout. The
+  # real binary is never reached because the stub directory leads PATH.
+  $codexStub = @'
+$ErrorActionPreference = 'Stop'
+$stubArgs = @($args)
+[IO.File]::AppendAllText($env:AI_USAGE_CODEX_LOG, ($stubArgs -join '|') + "`r`n", [Text.Encoding]::ASCII)
+if ($stubArgs[0] -ne 'app-server') { exit 2 }
+$mode = [string]$env:AI_USAGE_CODEX_MODE
+if ($mode -eq 'exit') { exit 3 }
+$reset = [DateTimeOffset]::UtcNow.AddHours(3).ToUnixTimeSeconds()
+$weekReset = [DateTimeOffset]::UtcNow.AddDays(5).ToUnixTimeSeconds()
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { exit 0 }
+  if ([string]::IsNullOrWhiteSpace($line)) { continue }
+  $message = $line | ConvertFrom-Json
+  if ($message.id -eq 1) {
+    [Console]::Out.WriteLine('{"id":1,"result":{"codexHome":"C:\\stub","platformFamily":"windows","platformOs":"windows","userAgent":"stub"}}')
+    [Console]::Out.WriteLine('{"method":"remoteControl/status/changed","params":{}}')
+    [Console]::Out.Flush()
+    continue
+  }
+  if ($message.id -ne 2) { continue }
+  if ($mode -eq 'hang') { while ($true) { Start-Sleep -Seconds 1 } }
+  if ($mode -eq 'error') {
+    [Console]::Out.WriteLine('{"id":2,"error":{"code":-32603,"message":"codex account authentication required to read rate limits"}}')
+  } elseif ($mode -eq 'garbage') {
+    [Console]::Out.WriteLine('{"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":"lots"}}}}')
+  } else {
+    $codex = '{"limitId":"codex","limitName":null,"primary":{"usedPercent":37,"windowDurationMins":300,"resetsAt":' + $reset + '},' +
+      '"secondary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":' + $weekReset + '},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},' +
+      '"planType":"plus","authorization":"Bearer stub-token-must-not-pass"}'
+    $other = '{"limitId":"base_model_inference","limitName":"gpt-reserve","primary":{"usedPercent":99,"windowDurationMins":10080,"resetsAt":' + $weekReset + '},"planType":"plus"}'
+    [Console]::Out.WriteLine('{"id":2,"result":{"rateLimits":' + $other + ',"rateLimitsByLimitId":{"codex":' + $codex + ',"base_model_inference":' + $other + '}}}')
+  }
+  [Console]::Out.Flush()
+}
+'@
   [IO.File]::WriteAllText((Join-Path $stubs 'codeburn-stub.ps1'), $codeBurnStub, (New-Object Text.UTF8Encoding($false)))
   [IO.File]::WriteAllText((Join-Path $stubs 'ccusage-stub.ps1'), $ccusageStub, (New-Object Text.UTF8Encoding($false)))
+  [IO.File]::WriteAllText((Join-Path $stubs 'codex-stub.ps1'), $codexStub, (New-Object Text.UTF8Encoding($false)))
+  [IO.File]::WriteAllText((Join-Path $stubs 'codex.cmd'), '@echo off' + "`r`n" + 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-stub.ps1" %*' + "`r`n" + 'exit /b %errorlevel%' + "`r`n", [Text.Encoding]::ASCII)
+  New-Item -ItemType Directory -Force -Path $sandboxAppData | Out-Null
+  $env:APPDATA = $sandboxAppData
+  $env:CODEX_HOME = $null
+  $env:AI_USAGE_CODEX_LOG = $codexLog
+  $env:AI_USAGE_CODEX_MODE = ''
+  $env:AI_USAGE_CODEX_TIMEOUT_MS = ''
+  $env:AI_USAGE_STUB_RECONCILED = ''
   [IO.File]::WriteAllText((Join-Path $stubs 'codeburn.cmd'), '@echo off' + "`r`n" + 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0codeburn-stub.ps1" %*' + "`r`n" + 'exit /b %errorlevel%' + "`r`n", [Text.Encoding]::ASCII)
   [IO.File]::WriteAllText((Join-Path $stubs 'ccusage.cmd'), '@echo off' + "`r`n" + 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0ccusage-stub.ps1" %*' + "`r`n" + 'exit /b %errorlevel%' + "`r`n", [Text.Encoding]::ASCII)
   foreach ($package in @([pscustomobject]@{ Name = 'codeburn'; Version = '0.9.19' }, [pscustomobject]@{ Name = 'ccusage'; Version = '20.0.20' })) {
@@ -2334,6 +2435,17 @@ if ($env:AI_USAGE_CCUSAGE_EXIT) { exit [int]$env:AI_USAGE_CCUSAGE_EXIT }
   $env:AI_USAGE_CODEBURN_LOG = $codeBurnLog
   $env:AI_USAGE_CCUSAGE_LOG = $ccusageLog
 
+  Import-Module (Join-Path $root 'src\ReportData.psm1') -Force
+  $MaxQuotaResponseBytes = [int64](1024 * 1024)
+  $MaxLocalDocumentBytes = [int64](16 * 1024 * 1024)
+  $LocalQuotaMaxAgeMilliseconds = [int64](7 * 24 * 60 * 60 * 1000)
+  $ClaudeQuotaTimeoutSeconds = 20
+  $script:ClaudeLive = $null
+  $script:ClaudeCacheCandidate = $null
+  $script:ClaudeLocalCandidates = $null
+  $script:ClaudeConfig = $null
+  $script:QuotaCollectionStopped = $false
+  $script:QuotaStateVersion = 0
   $tokens = $null
   $parseErrors = $null
   $generatorAst = [Management.Automation.Language.Parser]::ParseFile(
@@ -2344,7 +2456,7 @@ if ($env:AI_USAGE_CCUSAGE_EXIT) { exit [int]$env:AI_USAGE_CCUSAGE_EXIT }
     'Write-TextFileWithRetry', 'Remove-FileWithRetry', 'Test-OutputRecordProperty',
     'Get-OutputRecordValue', 'Select-TypedOutputRecord', 'Select-ReportFields',
     'New-MalformedQuotaState', 'Test-OutputReasonCode', 'Select-ClaudeQuotaFields',
-    'Select-CodexQuotaFields', 'Select-CodexRateLimits', 'Test-JsonRecordProperty',
+    'Select-CodexQuotaFields', 'Select-CodexOfficialFields', 'Test-JsonRecordProperty',
     'Test-JsonNumberValue', 'Test-JsonFiniteNumberValue', 'Test-JsonInt64Value',
     'Test-JsonStringValue', 'Test-JsonNonEmptyStringValue', 'Test-JsonBooleanValue',
     'Test-JsonPercentValue', 'Test-FiniteJsonNumber', 'Test-JsonArrayValue',
@@ -2353,7 +2465,13 @@ if ($env:AI_USAGE_CCUSAGE_EXIT) { exit [int]$env:AI_USAGE_CCUSAGE_EXIT }
     'Select-UsableStatus',
     'Stop-ProcessTree', 'Close-CollectorProcess', 'Assert-CollectorCleanupVerified',
     'Start-JsonCommand', 'Start-OptionalJsonCommand', 'Get-NpmPackageVersion', 'Get-CodexProviderFingerprint',
-    'Get-ClaudeOAuthUsage', 'Invoke-BoundedJsonRequest', 'Get-CodexProviderQuota'
+    'Get-ClaudeOAuthUsage', 'Invoke-BoundedJsonRequest', 'Get-CodexProviderQuota',
+    'Read-FileTailLines', 'Read-JsonDocument', 'Get-DocumentField', 'Get-RoamingAppDataPath', 'Get-CodexHomePath',
+    'Get-ClaudeIdentityFingerprint', 'Read-ClaudeCodeConfig',
+    'Read-ClaudeQuotaCache', 'Read-ClaudeCliCredential', 'Start-AsyncJsonRequest', 'Test-AsyncJsonRequestDone',
+    'Complete-AsyncJsonRequest', 'Start-ClaudeUsageRequest', 'Start-ClaudeLiveQuota', 'Receive-ClaudeLiveQuota',
+    'Stop-ClaudeLiveQuota', 'Update-ClaudeLocalQuota', 'Resolve-ClaudeQuotaState', 'Step-QuotaState',
+    'Get-CodexAuthMode', 'Get-CodexSessionQuota', 'Resolve-CodexOfficialQuota', 'Set-CodexHelperResult'
   )) {
     $definition = $generatorAst.Find({
       param($node)
@@ -2477,6 +2595,40 @@ namespace AiUsage {
   if ($slowHttp.ok -or $slowHttp.reason -ne 'request_timed_out') {
     throw 'The bounded JSON transport did not cancel a timed-out request.'
   }
+
+  # The Claude quota read is a non-blocking task polled between collector slices.
+  $asyncHandler = [AiUsage.TestHttpHandler]::new(200, $utf8.GetBytes('{"five_hour":null}'), $true, 400)
+  $asyncRequest = Start-AsyncJsonRequest -Uri 'https://api.example.test/usage' -Headers @{ Authorization = 'Bearer test' } `
+    -TimeoutSeconds 5 -MaxBytes 1024 -Handler $asyncHandler
+  if (Test-AsyncJsonRequestDone $asyncRequest) { throw 'A pending async quota request reported completion immediately.' }
+  $asyncDeadline = [DateTime]::UtcNow.AddSeconds(5)
+  while (-not (Test-AsyncJsonRequestDone $asyncRequest) -and [DateTime]::UtcNow -lt $asyncDeadline) { Start-Sleep -Milliseconds 20 }
+  $asyncResult = Complete-AsyncJsonRequest $asyncRequest
+  if (-not $asyncResult.ok -or -not (Test-OutputRecordProperty $asyncResult.value 'five_hour') -or $asyncHandler.RequestCount -ne 1) {
+    throw 'The async quota transport did not return a completed small response.'
+  }
+  foreach ($asyncCase in @(
+    @{ Handler = [AiUsage.TestHttpHandler]::new(401, $utf8.GetBytes('{}'), $true, 0); Timeout = 2; Reason = 'http_error'; Status = 401 },
+    @{ Handler = [AiUsage.TestHttpHandler]::new(302, $utf8.GetBytes('{"secret":"body"}'), $true, 0); Timeout = 2; Reason = 'http_error'; Status = 302 },
+    @{ Handler = [AiUsage.TestHttpHandler]::new(200, $utf8.GetBytes('{broken'), $true, 0); Timeout = 2; Reason = 'malformed_response'; Status = 200 },
+    @{ Handler = [AiUsage.TestHttpHandler]::new(200, $utf8.GetBytes('{}'), $true, 2500); Timeout = 1; Reason = 'request_timed_out'; Status = $null }
+  )) {
+    $caseResult = Complete-AsyncJsonRequest (Start-AsyncJsonRequest -Uri 'https://api.example.test/usage' -Headers @{} `
+      -TimeoutSeconds $asyncCase.Timeout -MaxBytes 1024 -Handler $asyncCase.Handler)
+    if ($caseResult.ok -or $caseResult.reason -ne $asyncCase.Reason -or $caseResult.status -ne $asyncCase.Status) {
+      throw "The async quota transport misclassified a $($asyncCase.Reason) response."
+    }
+  }
+  foreach ($includeLength in @($true, $false)) {
+    $largeAsync = Complete-AsyncJsonRequest (Start-AsyncJsonRequest -Uri 'https://api.example.test/usage' -Headers @{} `
+      -TimeoutSeconds 2 -MaxBytes 1024 -Handler ([AiUsage.TestHttpHandler]::new(200, (New-Object byte[] 4096), $includeLength, 0)))
+    if ($largeAsync.ok) { throw 'The async quota transport accepted a body above its buffer limit.' }
+  }
+  $badHeader = Start-AsyncJsonRequest -Uri 'https://api.example.test/usage' -Headers @{ "Bad`nName" = 'x' } -TimeoutSeconds 1 -MaxBytes 1024 `
+    -Handler ([AiUsage.TestHttpHandler]::new(200, $utf8.GetBytes('{}'), $true, 0))
+  if (-not (Test-AsyncJsonRequestDone $badHeader) -or (Complete-AsyncJsonRequest $badHeader).reason -ne 'failed_local') {
+    throw 'An unsendable async quota header was not refused before sending.'
+  }
   if ((Test-JsonDateValue '2026-08-29') -or (Test-JsonDateValue 'not-a-date') -or
       -not (Test-JsonDateValue '2026-08-29T01:02:03Z')) {
     throw 'ISO timestamp validation did not enforce the documented shape.'
@@ -2517,9 +2669,24 @@ namespace AiUsage {
   )
   $QuotaCachePath = Join-Path $oauthProfile 'quota-cache.json'
   $profileBeforeMalformedOAuth = $env:USERPROFILE
+  $appDataBeforeMalformedOAuth = $env:APPDATA
   try {
     $env:USERPROFILE = $oauthProfile
-    function Invoke-RestMethod { return $script:testOAuthResponse }
+    $env:APPDATA = Join-Path $oauthProfile 'AppData\Roaming'
+    New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+    $script:testOAuthRequests = 0
+    function Start-ClaudeUsageRequest {
+      param([string]$Authorization)
+      if ($Authorization -cne 'Bearer test-token') { throw 'The Claude quota request did not carry the CLI token.' }
+      $script:testOAuthRequests += 1
+      return [pscustomobject]@{ Fake = $true }
+    }
+    function Test-AsyncJsonRequestDone { return $true }
+    $script:testOAuthHttp = $null
+    function Complete-AsyncJsonRequest {
+      if ($script:testOAuthHttp) { return $script:testOAuthHttp }
+      return [pscustomobject][ordered]@{ ok = $true; reason = $null; status = 200; value = $script:testOAuthResponse }
+    }
     foreach ($malformedResponse in @(
       [pscustomobject]@{},
       [pscustomobject]@{ five_hour = $null; seven_day = $null; limits = [pscustomobject]@{} },
@@ -2557,9 +2724,109 @@ namespace AiUsage {
     if ($corruptOAuthCache.ok -ne $false -or $corruptOAuthCache.reason -ne 'malformed_response') {
       throw 'A malformed stale Claude cache envelope bypassed response degradation.'
     }
+
+    # A desktop-only user: the CLI holds no token, so the newest local official
+    # record is shown, labelled with its source and age, without any request.
+    [void](Remove-FileWithRetry $QuotaCachePath)
+    [IO.File]::WriteAllText($oauthCredentials, '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0},"organizationUuid":"org-a"}', [Text.Encoding]::ASCII)
+    $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $weekReset = [DateTimeOffset]::UtcNow.AddDays(3).ToString('o')
+    # Real Claude Code configs repeat project keys that differ only in case.
+    $claudeConfigJson = '{"projects":{"C:/Work/App":{"a":1},"c:/Work/App":{"a":2}},' +
+      '"oauthAccount":{"accountUuid":"account-a","organizationUuid":"org-a","emailAddress":"user@example.test"},' +
+      '"cachedUsageUtilization":{"fetchedAtMs":' + ($nowMs - 7200000) + ',"accountUuid":"account-a","utilization":' +
+      '{"five_hour":{"utilization":40,"resets_at":"' + [DateTimeOffset]::UtcNow.AddHours(-1).ToString('o') + '"},' +
+      '"seven_day":{"utilization":55,"resets_at":"' + $weekReset + '"},' +
+      '"limits":[{"kind":"weekly_all","group":"weekly","percent":55,"severity":"normal","resets_at":"' + $weekReset + '","scope":null,"is_active":true}]}}}'
+    [IO.File]::WriteAllText((Join-Path $oauthProfile '.claude.json'), $claudeConfigJson, [Text.Encoding]::ASCII)
+    $script:testOAuthRequests = 0
+    $codeCacheQuota = Get-ClaudeOAuthUsage
+    if (-not $codeCacheQuota.ok -or $codeCacheQuota.source -ne 'claude_code' -or $codeCacheQuota.stale -ne $true -or
+        $codeCacheQuota.staleReason -ne 'no_credentials' -or [double]$codeCacheQuota.sevenDay.utilization -ne 55 -or
+        $script:testOAuthRequests -ne 0) {
+      throw 'Claude Code''s own cached usage was not shown for a signed-out CLI.'
+    }
+    if (($codeCacheQuota | ConvertTo-Json -Depth 10 -Compress) -match 'user@example|emailAddress|account-a|org-a') {
+      throw 'Account identity leaked into the Claude quota DTO.'
+    }
+    $desktopDirectory = Join-Path $env:APPDATA 'Claude'
+    New-Item -ItemType Directory -Force -Path $desktopDirectory | Out-Null
+    $history = '{"version":2,"samples":[{"t":' + ($nowMs - 3600000) + ',"org":"org-a","u":{"fh":22,"sd":7}},' +
+      '{"t":' + ($nowMs - 60000) + ',"org":"org-other","u":{"fh":99,"sd":99}}]}'
+    [IO.File]::WriteAllText((Join-Path $desktopDirectory 'plan-usage-history.json'), $history, [Text.Encoding]::ASCII)
+    $desktopQuota = Get-ClaudeOAuthUsage
+    if (-not $desktopQuota.ok -or $desktopQuota.source -ne 'claude_desktop' -or [double]$desktopQuota.fiveHour.utilization -ne 22 -or
+        $null -ne $desktopQuota.fiveHour.resetsAt -or $desktopQuota.staleReason -ne 'no_credentials') {
+      throw 'The newer desktop plan-usage sample for the signed-in organization did not win.'
+    }
+    $foreignConfig = $claudeConfigJson.Replace('"accountUuid":"account-a","utilization"', '"accountUuid":"account-b","utilization"').
+      Replace('"organizationUuid":"org-a"', '"organizationUuid":"org-c"')
+    [IO.File]::WriteAllText((Join-Path $oauthProfile '.claude.json'), $foreignConfig, [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText($oauthCredentials, '{"claudeAiOauth":{"accessToken":"","expiresAt":0}}', [Text.Encoding]::ASCII)
+    $foreignQuota = Get-ClaudeOAuthUsage
+    if ($foreignQuota.ok -ne $false -or $foreignQuota.reason -ne 'no_credentials') {
+      throw 'Another account''s cached or desktop quota was shown.'
+    }
+
+    # A valid CLI token still wins, and a two-minute answer is reused without a request.
+    [IO.File]::WriteAllText($oauthCredentials, '{"claudeAiOauth":{"accessToken":"test-token","expiresAt":253402300799000}}', [Text.Encoding]::ASCII)
+    [void](Remove-FileWithRetry $QuotaCachePath)
+    $script:testOAuthResponse = '{"five_hour":{"utilization":12,"resets_at":"2030-01-01T00:00:00Z"},"seven_day":null,"limits":[]}' | ConvertFrom-Json
+    $script:testOAuthRequests = 0
+    $liveQuota = Get-ClaudeOAuthUsage
+    if (-not $liveQuota.ok -or $liveQuota.source -ne 'oauth' -or (Test-OutputRecordProperty $liveQuota 'stale') -or
+        $script:testOAuthRequests -ne 1) {
+      throw 'A live Claude quota answer did not take precedence over local records.'
+    }
+    $freshQuota = Get-ClaudeOAuthUsage
+    if (-not $freshQuota.ok -or $freshQuota.source -ne 'cache' -or $script:testOAuthRequests -ne 1) {
+      throw 'A two-minute Claude quota cache did not avoid a repeated request.'
+    }
+    $cacheEnvelope = [IO.File]::ReadAllText($QuotaCachePath)
+    if ($cacheEnvelope -notmatch '"accountFingerprint":"[0-9a-f]{64}"' -or $cacheEnvelope -match 'account-a|org-c|test-token') {
+      throw 'The Claude quota cache is not bound to an opaque account digest.'
+    }
+
+    # The cache belongs to one account: a switch makes it unusable at once.
+    [IO.File]::WriteAllText((Join-Path $oauthProfile '.claude.json'),
+      '{"oauthAccount":{"accountUuid":"account-z","organizationUuid":"org-z"}}', [Text.Encoding]::ASCII)
+    $switchedQuota = Get-ClaudeOAuthUsage
+    if (-not $switchedQuota.ok -or $switchedQuota.source -ne 'oauth' -or $script:testOAuthRequests -ne 2) {
+      throw 'Another account''s cached Claude quota was reused after an account switch.'
+    }
+    # A signed-out CLI can no longer present even a fresh answer as live.
+    [IO.File]::WriteAllText($oauthCredentials, '{"claudeAiOauth":{"accessToken":"","expiresAt":0}}', [Text.Encoding]::ASCII)
+    $loggedOutQuota = Get-ClaudeOAuthUsage
+    if (-not $loggedOutQuota.ok -or $loggedOutQuota.source -ne 'cache' -or $loggedOutQuota.stale -ne $true -or
+        $loggedOutQuota.staleReason -ne 'no_credentials' -or $script:testOAuthRequests -ne 2) {
+      throw 'A fresh Claude cache was shown as live after the CLI signed out.'
+    }
+    # Envelopes from before account binding are never reused.
+    [IO.File]::WriteAllText($oauthCredentials, '{"claudeAiOauth":{"accessToken":"test-token","expiresAt":253402300799000}}', [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText($QuotaCachePath, ([ordered]@{
+      cachedAt = [DateTimeOffset]::Now.ToString('o'); cachedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+      payload = [ordered]@{ ok = $true; reason = $null; fiveHour = $null; sevenDay = $null; limits = @() }
+    } | ConvertTo-Json -Depth 10 -Compress), (New-Object Text.UTF8Encoding($false)))
+    $legacyQuota = Get-ClaudeOAuthUsage
+    if ($legacyQuota.source -ne 'oauth' -or $script:testOAuthRequests -ne 3) {
+      throw 'A Claude quota cache without an account digest was reused.'
+    }
+    [void](Remove-FileWithRetry $QuotaCachePath)
+    $script:testOAuthHttp = [pscustomobject][ordered]@{ ok = $false; reason = 'malformed_response'; status = 200; value = $null }
+    if ((Get-ClaudeOAuthUsage).reason -ne 'malformed_response') {
+      throw 'A 200 response with an unusable body was reported as an HTTP status.'
+    }
+    $script:testOAuthHttp = [pscustomobject][ordered]@{ ok = $false; reason = 'http_error'; status = 401; value = $null }
+    if ((Get-ClaudeOAuthUsage).reason -ne 'token_rejected_401') {
+      throw 'A rejected Claude token was not classified from its HTTP status.'
+    }
+    $script:testOAuthHttp = $null
   } finally {
     $env:USERPROFILE = $profileBeforeMalformedOAuth
-    Remove-Item Function:\Invoke-RestMethod -ErrorAction SilentlyContinue
+    $env:APPDATA = $appDataBeforeMalformedOAuth
+    foreach ($mock in @('Start-ClaudeUsageRequest', 'Test-AsyncJsonRequestDone', 'Complete-AsyncJsonRequest')) {
+      Remove-Item "Function:\$mock" -ErrorAction SilentlyContinue
+    }
   }
 
   $sensitiveQuota = [pscustomobject]@{
@@ -2570,29 +2837,78 @@ namespace AiUsage {
     ok = $true; remaining = 5; providerUrl = 'https://private.example.test'
     windows = @([pscustomobject]@{ kind = 'weekly'; used = 5; limit = 10; toolArguments = 'private args' })
   }
-  $sensitiveLimits = [pscustomobject]@{
-    primary = [pscustomobject]@{ used_percent = 25; resets_at = 123; prompt = 'private prompt' }
+  $sensitiveOfficial = [pscustomobject]@{
+    ok = $true; reason = $null; source = 'app_server'; observedAt = '2026-08-29T01:02:03Z'; planType = 'pro'
+    primary = [pscustomobject]@{ used_percent = 25; resets_at = '2026-08-29T06:02:03Z'; window_minutes = 300; prompt = 'private prompt' }
+    secondary = $null
     credits = [pscustomobject]@{ authorization = 'Bearer private-token-value' }
   }
   $safeBoundaryJson = @(
     Select-ClaudeQuotaFields $sensitiveQuota
     Select-CodexQuotaFields $sensitiveRelay
-    Select-CodexRateLimits $sensitiveLimits
+    Select-CodexOfficialFields $sensitiveOfficial
   ) | ConvertTo-Json -Depth 20 -Compress
   if ($safeBoundaryJson -match 'private|providerUrl|prompt|authorization|toolArguments|credits') {
     throw 'A quota DTO retained a non-contract or sensitive field.'
   }
-  $normalizedLimits = Select-CodexRateLimits $sensitiveLimits
-  if (-not $normalizedLimits.primary.resets_at -or
-      [DateTimeOffset]::Parse($normalizedLimits.primary.resets_at).ToUnixTimeSeconds() -ne 123) {
-    throw 'Official Codex Unix reset seconds were not normalized for the browser.'
+  # The publisher validates the same official DTO on every revision; a second pass
+  # must neither change nor reject it (it once silently dropped every reset time).
+  $officialOnce = Select-CodexOfficialFields $sensitiveOfficial
+  $officialTwice = Select-CodexOfficialFields $officialOnce
+  if (-not $officialTwice.ok -or
+      ($officialOnce | ConvertTo-Json -Depth 10 -Compress) -cne ($officialTwice | ConvertTo-Json -Depth 10 -Compress)) {
+    throw 'Re-validating a published official Codex quota changed or rejected it.'
   }
-  $stringRateLimit = [pscustomobject]@{
-    primary = [pscustomobject]@{ used_percent = 25; resets_at = '2026-08-29T01:02:03Z' }
+  $unixReset = [pscustomobject]@{
+    ok = $true; reason = $null; source = 'session'; observedAt = '2026-08-29T01:02:03Z'; planType = $null
+    primary = [pscustomobject]@{ used_percent = 25; resets_at = 123; window_minutes = $null }; secondary = $null
   }
-  if ($null -ne (Select-CodexRateLimits $stringRateLimit)) {
-    throw 'Official Codex rate limits accepted a non-upstream reset timestamp type.'
+  if ((Select-CodexOfficialFields $unixReset).ok) {
+    throw 'The published official Codex contract accepted a raw Unix reset.'
   }
+  $staleWithoutReason = [pscustomobject]@{
+    ok = $true; reason = $null; source = 'session'; observedAt = '2026-08-29T01:02:03Z'; planType = $null; stale = $true
+    primary = [pscustomobject]@{ used_percent = 25; resets_at = $null; window_minutes = 300 }; secondary = $null
+  }
+  if ((Select-CodexOfficialFields $staleWithoutReason).ok) {
+    throw 'A stale official Codex quota without its reason was accepted.'
+  }
+
+  # Codex helper output and official-quota resolution.
+  $script:CodexOfficial = [pscustomobject][ordered]@{
+    Mode = 'chatgpt'; Job = $null; DeadlineUtc = $null; Result = $null; Reason = $null; Session = $null; SessionLoaded = $true
+  }
+  Set-CodexHelperResult ('{"ok":true,"fetchedAt":"2026-10-09T02:26:20.774Z","snapshot":{"limitId":"codex","planType":"plus","primary":{"usedPercent":37,"windowDurationMins":300,"resetsAt":1792117580},"secondary":null}}' | ConvertFrom-Json)
+  $helperQuota = Resolve-CodexOfficialQuota
+  if (-not $helperQuota.ok -or $helperQuota.source -ne 'app_server' -or $helperQuota.planType -ne 'plus' -or
+      [int]$helperQuota.primary.used_percent -ne 37 -or [int]$helperQuota.primary.window_minutes -ne 300) {
+    throw 'A valid Codex helper result was not published as the live official quota.'
+  }
+  $script:CodexOfficial.Result = $null
+  Set-CodexHelperResult ('{"ok":false,"reason":"<script>"}' | ConvertFrom-Json)
+  if ($script:CodexOfficial.Reason -ne 'malformed_response') { throw 'An unknown helper reason crossed into the snapshot.' }
+  Set-CodexHelperResult ('{"ok":true,"snapshot":{"limitId":"base_model_inference","primary":{"usedPercent":1}}}' | ConvertFrom-Json)
+  if ($script:CodexOfficial.Result -or $script:CodexOfficial.Reason -ne 'malformed_response') {
+    throw 'A non-plan Codex bucket from the helper was accepted.'
+  }
+  $script:CodexOfficial.Reason = 'request_timed_out'
+  $script:CodexOfficial.Session = Select-CodexOfficialFields ([pscustomobject]@{
+    ok = $true; reason = $null; source = 'session'; observedAt = '2026-09-30T19:55:41.405Z'; planType = $null
+    primary = [pscustomobject]@{ used_percent = 60; resets_at = '2026-10-07T05:11:37Z'; window_minutes = 10080 }; secondary = $null
+  })
+  $staleOfficial = Resolve-CodexOfficialQuota
+  if (-not $staleOfficial.ok -or $staleOfficial.stale -ne $true -or $staleOfficial.staleReason -ne 'request_timed_out' -or
+      $staleOfficial.source -ne 'session') {
+    throw 'A failed live Codex read did not fall back to the labelled local record.'
+  }
+  $script:CodexOfficial.Mode = 'apikey'
+  $apiKeyOfficial = Resolve-CodexOfficialQuota
+  if (-not $apiKeyOfficial.ok -or (Test-OutputRecordProperty $apiKeyOfficial 'stale')) {
+    throw 'An API-key login did not show its last official record as a plain local record.'
+  }
+  $script:CodexOfficial.Session = $null
+  $script:CodexOfficial.Mode = 'unknown'
+  if ((Resolve-CodexOfficialQuota).reason -ne 'not_logged_in') { throw 'A missing Codex login was not stated.' }
   $completeClaudeQuota = [pscustomobject][ordered]@{
     ok = $true; reason = $null; fiveHour = $null; sevenDay = $null; limits = @()
   }
@@ -2677,7 +2993,8 @@ namespace AiUsage {
     })
   }
   $badRateLimits = [pscustomobject]@{
-    primary = [pscustomobject]@{ used_percent = 25; resets_at = $nestedSecret }
+    ok = $true; reason = $null; source = 'app_server'; observedAt = '2026-08-29T01:02:03Z'; planType = 'pro'
+    primary = [pscustomobject]@{ used_percent = 25; resets_at = $nestedSecret; window_minutes = 300 }; secondary = $null
   }
   $badBlocks = [pscustomobject]@{ blocks = @([pscustomobject]@{
     startTime = '2026-08-29T00:00:00Z'; endTime = '2026-08-29T05:00:00Z'
@@ -2694,14 +3011,14 @@ namespace AiUsage {
   $strictBoundaryJson = @(
     Select-ClaudeQuotaFields $badClaudeQuota
     Select-CodexQuotaFields $badCodexQuota
-    Select-CodexRateLimits $badRateLimits
+    Select-CodexOfficialFields $badRateLimits
     Select-UsableBlocks $badBlocks
     Select-UsableStatus $badStatus
   ) | ConvertTo-Json -Depth 20 -Compress
   if ($strictBoundaryJson -match 'authorization|Bearer_DTO_BYPASS' -or
       (Select-ClaudeQuotaFields $badClaudeQuota).reason -ne 'malformed_response' -or
       (Select-CodexQuotaFields $badCodexQuota).reason -ne 'malformed_response' -or
-      $null -ne (Select-CodexRateLimits $badRateLimits) -or
+      (Select-CodexOfficialFields $badRateLimits).reason -ne 'malformed_response' -or
       $null -ne (Select-UsableBlocks $badBlocks) -or
       $null -ne (Select-UsableStatus $badStatus)) {
     throw 'A nested object crossed a strict render-only DTO boundary.'
@@ -2903,10 +3220,22 @@ namespace AiUsage {
     $success = Invoke-Scenario 'success' '' 0 $true
     Assert-ProgressiveContract $success 'Successful generator scenario'
     if ($success.First.complete -ne $false) { throw 'First progressive snapshot was already complete.' }
-    if (@($success.First.periods).Count -ne 1 -or $success.First.periods[0] -ne '30days') {
-      throw 'First progressive snapshot did not contain only the default period.'
+    if (@($success.First.periods).Count -ne 0 -or $success.FirstCodeBurnCount -gt 1 -or
+        $success.First.limits.claudeQuota.reason -ne 'no_credentials' -or
+        $success.First.limits.codex.reason -ne 'not_logged_in') {
+      throw 'Quota state was not published before the first usage report.'
     }
-    if ($success.FirstCodeBurnCount -ne 2) { throw "First snapshot required $($success.FirstCodeBurnCount) CodeBurn calls instead of two." }
+    if (-not $success.FirstUsage -or @($success.FirstUsage.periods).Count -ne 1 -or $success.FirstUsage.periods[0] -ne '30days') {
+      throw 'First usage snapshot did not contain only the default period.'
+    }
+    if ($success.FirstUsageCodeBurnCount -ne 2) {
+      throw "First usage snapshot required $($success.FirstUsageCodeBurnCount) CodeBurn calls instead of two."
+    }
+    if ($success.CodexCalls.Count -ne 0) { throw 'Codex was started without a ChatGPT login.' }
+    if ($success.Final.limits.codexQuota.reason -ne 'official_account' -or
+        $success.Final.limits.codex.reason -ne 'not_logged_in') {
+      throw 'An unrecognized Codex login consulted the relay or misstated its quota state.'
+    }
     if ($success.CodeBurnCalls[0] -ne 'report|30days|claude' -or $success.CodeBurnCalls[1] -ne 'report|30days|codex') {
       throw 'Default provider reports were not the first CodeBurn operations.'
     }
@@ -2963,12 +3292,20 @@ namespace AiUsage {
     Assert-SnapshotRejected $reasonlessCodexFailure 'reasonless-codex-quota-failure'
 
     $uppercasePeriod = Invoke-Scenario 'uppercase-period' '' 0 $false 'before' '' $false 'ALL'
-    if ($uppercasePeriod.First.period -cne 'all' -or $uppercasePeriod.First.periods[0] -cne 'all' -or
+    if ($uppercasePeriod.First.period -cne 'all' -or $uppercasePeriod.FirstUsage.periods[0] -cne 'all' -or
         $uppercasePeriod.CodeBurnCalls[0] -cne 'report|all|claude') {
       throw 'A case-insensitive PowerShell period was not normalized before CodeBurn or publication.'
     }
 
-    $failure = Invoke-Scenario 'failure' 'report|week|claude' 17
+    $prepareApiKeyLogin = {
+      param($ProfilePath, $AppDataPath)
+      $codexHome = Join-Path $ProfilePath '.codex'
+      New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
+      [IO.File]::WriteAllText((Join-Path $codexHome 'auth.json'), '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-stub-relay-key"}', [Text.Encoding]::ASCII)
+    }
+    # An API-key login is the only one that consults the relay, so this degraded run
+    # still proves that a relay read that never ran ends as not_collected.
+    $failure = Invoke-Scenario 'failure' 'report|week|claude' 17 $false 'before' '' $false '' '' $prepareApiKeyLogin
     Assert-ProgressiveContract $failure 'Degraded generator scenario'
     if ($failure.Final.complete -ne $true) { throw 'Degraded generator scenario did not publish a terminal snapshot.' }
     if ($failure.Final.generationError.reason -ne 'partial_generation_failed' -or $failure.Final.generationError.stage -ne 'remaining_usage') {
@@ -2977,13 +3314,151 @@ namespace AiUsage {
     if (@($failure.Final.periods).Count -ne 1 -or $failure.Final.periods[0] -ne '30days') {
       throw 'Degraded generator scenario lost or overstated the usable default period.'
     }
-    if ($failure.Final.limits.claudeQuota.reason -ne 'not_collected' -or $failure.Final.limits.codexQuota.reason -ne 'not_collected') {
+    # Credential and login checks are local and finish at startup, so their real
+    # reasons survive; only the relay read that never ran is not_collected.
+    if ($failure.Final.limits.claudeQuota.reason -ne 'no_credentials' -or
+        $failure.Final.limits.codexQuota.reason -ne 'not_collected' -or
+        $failure.Final.limits.codex.reason -ne 'api_key_login' -or $failure.CodexCalls.Count -ne 0) {
       throw 'Degraded generator scenario did not terminate pending quota states.'
+    }
+    if ([IO.File]::ReadAllText($failure.DataPath) -match 'sk-stub-relay-key') {
+      throw 'A Codex API key from auth.json reached the snapshot.'
     }
     if ($failure.Final.limits.claudeBlocks) { throw 'Nonzero ccusage output was accepted as valid block data.' }
     if (-not (Test-Path -LiteralPath $failure.DataPath)) { throw 'Degraded generator scenario deleted its usable snapshot.' }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $failure.DataPath | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Degraded generated snapshot failed contract verification.' }
+
+    $env:AI_USAGE_STUB_RECONCILED = '1'
+    try {
+      $reconciled = Invoke-Scenario 'reconciled-status-skip' '' 0
+    } finally {
+      $env:AI_USAGE_STUB_RECONCILED = ''
+    }
+    Assert-ProgressiveContract $reconciled 'Reconciled generator scenario'
+    if (@($reconciled.CodeBurnCalls | Where-Object { $_ -like 'status|*' }).Count -ne 0 -or
+        $reconciled.CodeBurnCalls.Count -ne 6 -or $reconciled.Final.generationError) {
+      throw 'Reports whose live models already reconcile still ran durable status passes.'
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $reconciled.DataPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Reconciled generated snapshot failed contract verification.' }
+
+    # Status is also the only public source of the exchange rate: a reconciled
+    # non-USD run still needs exactly one completed status call.
+    $env:AI_USAGE_STUB_RECONCILED = '1'
+    try {
+      $cnyReconciled = Invoke-Scenario 'cny-reconciled' '' 0 $false 'cny-rate'
+    } finally {
+      $env:AI_USAGE_STUB_RECONCILED = ''
+    }
+    $cnyStatus = @($cnyReconciled.CodeBurnCalls | Where-Object { $_ -like 'status|*' })
+    if ($cnyStatus.Count -ne 1 -or $cnyStatus[0] -ne 'status|30days|claude' -or $cnyReconciled.Final.generationError -or
+        $cnyReconciled.Final.currency.code -ne 'CNY' -or [double]$cnyReconciled.Final.currency.rate -ne 7.1) {
+      throw 'A reconciled non-USD run skipped the status call that supplies its exchange rate.'
+    }
+
+    $apiKeyRun = Invoke-Scenario 'codex-apikey' '' 0 $false 'before' '' $false '' '' $prepareApiKeyLogin
+    if ($apiKeyRun.Final.limits.codexQuota.reason -ne 'no_ccswitch' -or
+        $apiKeyRun.Final.limits.codex.reason -ne 'api_key_login' -or $apiKeyRun.CodexCalls.Count -ne 0) {
+      throw 'An API-key Codex login did not consult its relay.'
+    }
+
+    $prepareCodexLogin = {
+      param($ProfilePath, $AppDataPath)
+      $codexHome = Join-Path $ProfilePath '.codex'
+      New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
+      [IO.File]::WriteAllText((Join-Path $codexHome 'auth.json'),
+        '{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"refresh_token":"stub-refresh-token"}}', [Text.Encoding]::ASCII)
+    }
+    $prepareCodexSession = {
+      param($ProfilePath, $AppDataPath)
+      & $prepareCodexLogin $ProfilePath $AppDataPath
+      $day = Join-Path $ProfilePath '.codex\sessions\2026\09\30'
+      New-Item -ItemType Directory -Force -Path $day | Out-Null
+      $line = '{"timestamp":"' + [DateTimeOffset]::UtcNow.AddHours(-2).ToString('o') + '","type":"event_msg","payload":{"type":"token_count",' +
+        '"rate_limits":{"limit_id":"codex","primary":{"used_percent":64.0,"window_minutes":10080,"resets_at":' +
+        [DateTimeOffset]::UtcNow.AddDays(2).ToUnixTimeSeconds() + '},"secondary":null}}}'
+      $other = '{"timestamp":"' + [DateTimeOffset]::UtcNow.AddHours(-1).ToString('o') + '","type":"event_msg","payload":{"type":"token_count",' +
+        '"rate_limits":{"limit_id":"base_model_inference","primary":{"used_percent":0.0,"window_minutes":10080,"resets_at":' +
+        [DateTimeOffset]::UtcNow.AddDays(6).ToUnixTimeSeconds() + '},"secondary":null}}}'
+      [IO.File]::WriteAllText((Join-Path $day 'rollout-2026-09-30T12-15-32-stub.jsonl'), $line + "`n" + $other + "`n", [Text.Encoding]::ASCII)
+    }
+
+    $official = Invoke-Scenario 'codex-official' '' 0 $false 'before' '' $false '' '' $prepareCodexLogin
+    $officialQuota = $official.Final.limits.codex
+    $officialRaw = [IO.File]::ReadAllText($official.DataPath)
+    if (-not $officialQuota.ok -or $officialQuota.source -ne 'app_server' -or $officialQuota.planType -ne 'plus' -or
+        [int]$officialQuota.primary.used_percent -ne 37 -or [int]$officialQuota.primary.window_minutes -ne 300 -or
+        [int]$officialQuota.secondary.window_minutes -ne 10080 -or
+        $official.Final.limits.codexQuota.reason -ne 'official_account' -or
+        $official.CodexCalls.Count -ne 1 -or $official.CodexCalls[0] -ne 'app-server' -or
+        $officialRaw -match 'stub-token|stub-refresh-token|Bearer|gpt-reserve') {
+      throw 'A ChatGPT Codex login did not publish its live official quota through codex app-server.'
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $official.DataPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Official Codex quota snapshot failed contract verification.' }
+
+    $env:AI_USAGE_CODEX_MODE = 'hang'
+    $env:AI_USAGE_CODEX_TIMEOUT_MS = '1500'
+    try {
+      $officialTimeout = Invoke-Scenario 'codex-official-timeout' '' 0 $false 'before' '' $false '' '' $prepareCodexSession
+    } finally {
+      $env:AI_USAGE_CODEX_MODE = ''
+      $env:AI_USAGE_CODEX_TIMEOUT_MS = ''
+    }
+    $timeoutQuota = $officialTimeout.Final.limits.codex
+    if (-not $timeoutQuota.ok -or $timeoutQuota.source -ne 'session' -or $timeoutQuota.stale -ne $true -or
+        $timeoutQuota.staleReason -ne 'request_timed_out' -or [int]$timeoutQuota.primary.used_percent -ne 64) {
+      throw 'A hung codex app-server did not fall back to the labelled local plan-bucket record.'
+    }
+    $stubLeft = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { [string]$_.CommandLine -match 'codex-stub\.ps1' })
+    if ($stubLeft.Count) { throw 'A hung codex app-server outlived its generator.' }
+
+    $env:AI_USAGE_CODEX_MODE = 'error'
+    try {
+      $officialError = Invoke-Scenario 'codex-official-error' '' 0 $false 'before' '' $false '' '' $prepareCodexLogin
+    } finally {
+      $env:AI_USAGE_CODEX_MODE = ''
+    }
+    if ($officialError.Final.limits.codex.ok -ne $false -or $officialError.Final.limits.codex.reason -ne 'not_logged_in' -or
+        $officialError.Final.limits.codexQuota.reason -ne 'official_account') {
+      throw 'A Codex account error was not stated as a classified official-quota reason.'
+    }
+    foreach ($codexCase in @(
+      @{ Mode = 'exit'; Reason = 'app_server_unavailable' },
+      @{ Mode = 'garbage'; Reason = 'no_rate_limits' }
+    )) {
+      $env:AI_USAGE_CODEX_MODE = $codexCase.Mode
+      try {
+        $codexRun = Invoke-Scenario ('codex-official-' + $codexCase.Mode) '' 0 $false 'before' '' $false '' '' $prepareCodexLogin
+      } finally {
+        $env:AI_USAGE_CODEX_MODE = ''
+      }
+      if ($codexRun.Final.limits.codex.ok -ne $false -or $codexRun.Final.limits.codex.reason -ne $codexCase.Reason) {
+        throw "A Codex app-server '$($codexCase.Mode)' reply was not classified as $($codexCase.Reason)."
+      }
+    }
+
+    $prepareClaudeDesktop = {
+      param($ProfilePath, $AppDataPath)
+      [IO.File]::WriteAllText((Join-Path $ProfilePath '.claude.json'),
+        '{"oauthAccount":{"accountUuid":"account-a","organizationUuid":"org-a"}}', [Text.Encoding]::ASCII)
+      $claudeDirectory = Join-Path $AppDataPath 'Claude'
+      New-Item -ItemType Directory -Force -Path $claudeDirectory | Out-Null
+      $samples = '{"version":2,"samples":[{"t":' + [DateTimeOffset]::UtcNow.AddMinutes(-20).ToUnixTimeMilliseconds() +
+        ',"org":"org-a","u":{"fh":22,"sd":7}}]}'
+      [IO.File]::WriteAllText((Join-Path $claudeDirectory 'plan-usage-history.json'), $samples, [Text.Encoding]::ASCII)
+    }
+    $desktopRun = Invoke-Scenario 'claude-desktop-record' '' 0 $false 'before' '' $false '' '' $prepareClaudeDesktop
+    $desktopFinal = $desktopRun.Final.limits.claudeQuota
+    if (-not $desktopFinal.ok -or $desktopFinal.source -ne 'claude_desktop' -or $desktopFinal.stale -ne $true -or
+        $desktopFinal.staleReason -ne 'no_credentials' -or [int]$desktopFinal.fiveHour.utilization -ne 22 -or
+        -not $desktopRun.First.limits.claudeQuota.ok -or @($desktopRun.First.periods).Count -ne 0) {
+      throw 'The Claude desktop plan-usage record was not shown from the quota-first revision onward.'
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $desktopRun.DataPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Claude desktop record snapshot failed contract verification.' }
   }
 
   if ($TestGroup -in @('all', 'optional')) {
@@ -3172,6 +3647,12 @@ namespace AiUsage {
   $env:TEMP = $oldTemp
   $env:TMP = $oldTmp
   $env:USERPROFILE = $oldUserProfile
+  $env:APPDATA = $oldAppData
+  $env:CODEX_HOME = $oldCodexHome
+  $env:AI_USAGE_CODEX_MODE = $oldCodexMode
+  $env:AI_USAGE_CODEX_LOG = $oldCodexLog
+  $env:AI_USAGE_CODEX_TIMEOUT_MS = $oldCodexTimeout
+  $env:AI_USAGE_STUB_RECONCILED = $oldStubReconciled
   $env:AI_USAGE_STUB_FAILURE = $oldFailure
   $env:AI_USAGE_STUB_FAILURE_MODE = $oldFailureMode
   $env:AI_USAGE_CCUSAGE_EXIT = $oldCCUsageExit
@@ -3193,6 +3674,7 @@ namespace AiUsage {
   $env:AI_USAGE_CODEBURN_BARRIER_MATCH = $oldCodeBurnBarrierMatch
   $env:AI_USAGE_CODEBURN_BARRIER_READY = $oldCodeBurnBarrierReady
   $env:AI_USAGE_CODEBURN_BARRIER_RELEASE = $oldCodeBurnBarrierRelease
+  $env:PSModuleAnalysisCachePath = $oldModuleAnalysisCache
   try {
     if ($env:AI_USAGE_KEEP_TEST_SANDBOX -eq '1') {
       Write-Warning "Retained generator test sandbox: $sandbox"

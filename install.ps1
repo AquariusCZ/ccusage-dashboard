@@ -335,7 +335,7 @@ function Set-FileAtomically([string]$Source, [string]$Destination) {
 function Test-StagedRuntime {
   Assert-NoReparseTree $stageRuntime
   $required = @(
-    'Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.html',
+    'Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.html', 'codex-rate-limits.mjs',
     'dashboard.bat', 'dashboard.vbs', 'icon.ico',
     'fonts\ark-pixel-12px-monospaced-zh_cn.woff2',
     'fonts\fusion-pixel-12px-monospaced-zh_hans.woff2'
@@ -1219,7 +1219,7 @@ try {
   }
   Test-PublishedRuntime
 
-  foreach ($name in @('Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.html', 'dashboard.bat', 'dashboard.vbs', 'icon.ico')) {
+  foreach ($name in @('Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.html', 'codex-rate-limits.mjs', 'dashboard.bat', 'dashboard.vbs', 'icon.ico')) {
     Unblock-File -LiteralPath (Join-Path $dest $name) -ErrorAction SilentlyContinue
   }
   Write-Host "  [ok] installed to $dest" -ForegroundColor Green

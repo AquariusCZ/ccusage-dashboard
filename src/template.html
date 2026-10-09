@@ -199,7 +199,7 @@
   .grid-2 { display: grid; gap: .85rem; grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr)); }
 
   /* ── quota card ── */
-  .quota { padding: 1rem 1.1rem; display: grid; gap: .85rem; }
+  .quota { padding: 1rem 1.1rem; display: grid; gap: .85rem; align-content: start; }
   .quota-head { display: flex; align-items: center; gap: .5rem; }
   .quota-head .dot { inline-size: 10px; block-size: 10px; border-radius: 1px; background: var(--p); flex: none; box-shadow: 2px 2px 0 color-mix(in oklab, var(--p) 35%, transparent); }
   .quota-head h3 { font-size: .75rem; }
@@ -246,6 +246,18 @@
     color: light-dark(#8a5406, #f0a72a);
   }
   .stale svg { inline-size: 14px; block-size: 14px; flex: none; }
+  .stale-hint { color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
+  /* A recorded window that has since rolled over says so instead of showing an old figure. */
+  .meter-reset { color: var(--muted); font: 600 .75rem/1.5 var(--mono); }
+  .meter-row.is-reset .blocks i { opacity: .5; }
+
+  /* Quota arrives before the first usage report; usage sections wait in one place. */
+  .usage-wait { margin-block-start: .85rem; padding: 1rem 1.1rem; display: grid; gap: .65rem; }
+  .usage-wait .boot-line { margin-block-start: 0; }
+  .usage-wait p { color: var(--muted); font-size: .75rem; }
+  .usage-wait.failed .boot-line { display: none; }
+  #app.usage-pending .usage-block { display: none; }
+  #app:not(.usage-pending) .usage-wait { display: none; }
 
   /* ── hero ── */
   .hero { margin-block-start: .85rem; padding: 1.15rem 1.25rem; display: grid; grid-template-columns: minmax(10rem, .75fr) minmax(18rem, 1.5fr) auto; align-items: center; gap: 1rem 1.4rem; }
@@ -520,7 +532,12 @@
     <div class="grid-2" id="quota"></div>
   </section>
 
-  <section class="card hero" aria-label="合计参考成本">
+  <section class="card usage-wait" role="status" aria-live="polite">
+    <div class="boot-line" aria-hidden="true"></div>
+    <p>正在读取本地用量…</p>
+  </section>
+
+  <section class="card hero usage-block" aria-label="合计参考成本">
     <div>
       <p class="hero-label" id="heroLabel">合计 · API 参考价</p>
       <span class="hero-figure" id="heroFigure"></span>
@@ -529,9 +546,9 @@
     <div class="hero-facts" id="heroFacts"></div>
   </section>
 
-  <section class="grid-2" id="split" aria-label="Claude 与 Codex 对比" style="margin-block-start:.75rem"></section>
+  <section class="grid-2 usage-block" id="split" aria-label="Claude 与 Codex 对比" style="margin-block-start:.75rem"></section>
 
-  <section class="section card" style="padding:1rem 1.1rem">
+  <section class="section card usage-block" style="padding:1rem 1.1rem">
     <div class="section-head">
       <h2 class="h2">每日参考成本</h2>
       <div class="tools">
@@ -547,7 +564,7 @@
     <div class="scroller hide" id="trendTable"></div>
   </section>
 
-  <section class="section card" style="padding:1rem 1.1rem">
+  <section class="section card usage-block" style="padding:1rem 1.1rem">
     <div class="section-head">
       <h2 class="h2">活跃度与时段</h2>
       <span class="total tools" id="heatRange"></span>
@@ -565,7 +582,7 @@
     </div>
   </section>
 
-  <section class="section grid-2">
+  <section class="section grid-2 usage-block">
     <div class="card" style="padding:1rem 1.1rem">
       <div class="section-head">
         <h2 class="h2">模型构成</h2>
@@ -583,7 +600,7 @@
     </div>
   </section>
 
-  <section class="section" id="details" aria-label="明细数据"></section>
+  <section class="section usage-block" id="details" aria-label="明细数据"></section>
 
   <footer><span id="source"></span><span class="grow" id="location"></span></footer>
 </main>
@@ -633,6 +650,11 @@ addEventListener("error", function (event) {
       var stamp = $("stamp");
       if (!stamp.textContent.includes("数据生成失败")) {
         stamp.textContent = stamp.textContent.replace(" · 更新中", " · 数据生成失败，请重新启动");
+      }
+      var wait = document.querySelector(".usage-wait");
+      if (wait) {
+        wait.classList.add("failed");
+        wait.querySelector("p").textContent = "本地用量读取失败，请重新启动";
       }
     } else {
       $("bootMessage").textContent = "数据生成失败，请重新启动";
@@ -951,16 +973,39 @@ addEventListener("error", function (event) {
     var map = {
       loading: "正在获取 Claude 额度",
       not_collected: "本次报告未完成额度查询",
-      no_credentials: "Claude 未登录",
-      malformed_credentials: "Claude 登录信息异常，请重新登录",
-      token_expired: "Claude 登录已过期，请重新登录",
+      no_credentials: "Claude CLI 未登录",
+      malformed_credentials: "Claude CLI 登录信息异常",
+      token_expired: "Claude CLI 登录已过期",
       rate_limited: "额度查询频繁，请稍后重试",
+      request_timed_out: "Claude 额度查询超时",
       failed_local: "暂时无法查询 Claude 额度",
       malformed_response: "Claude 额度数据异常"
     };
     if (map[code]) return map[code];
-    if (code && code.indexOf("token_rejected") === 0) return "Claude 登录失效，请重新登录";
+    if (code && code.indexOf("token_rejected") === 0) return "Claude CLI 登录已失效";
     return "Claude 额度暂不可用";
+  }
+  var CLAUDE_SOURCE = { claude_desktop: "Claude 桌面版", claude_code: "Claude Code", cache: "上次查询" };
+  function needsClaudeLogin(code) {
+    return ["no_credentials", "token_expired", "malformed_credentials"].indexOf(code) >= 0 ||
+      (typeof code === "string" && code.indexOf("token_rejected") === 0);
+  }
+  function staleLine(text) {
+    return '<p class="stale"><svg aria-hidden="true"><use href="#i-alert"/></svg>' + esc(text) + "</p>";
+  }
+  // A non-live record keeps its figure only while its own window is still open.
+  function windowExpired(resetsAt, observedAt, minutes) {
+    var now = Date.now();
+    var reset = resetsAt ? new Date(resetsAt).getTime() : NaN;
+    if (isFinite(reset)) return reset <= now;
+    var seen = observedAt ? new Date(observedAt).getTime() : NaN;
+    return isFinite(seen) && minutes > 0 && now - seen >= minutes * 60000;
+  }
+  function resetRow(label, resetsAt) {
+    return '<div class="meter-row is-reset">' +
+      '<div class="meter-top"><span class="meter-label">' + esc(label) + '</span><span class="meter-reset">已重置</span></div>' +
+      blockMeter(0) +
+      '<div class="meter-foot"><span>' + esc(resetsAt ? dayClock(resetsAt) + " 已重置，之后暂无记录" : "记录早于当前窗口，暂无新数据") + "</span></div></div>";
   }
 
   function codexQuotaReason(code) {
@@ -988,12 +1033,57 @@ addEventListener("error", function (event) {
       failed_local: "暂时无法查询 Codex 额度",
       request_timed_out: "Codex 额度查询超时",
       response_too_large: "Codex 额度响应过大",
-      malformed_response: "Codex 额度数据异常"
+      malformed_response: "Codex 额度数据异常",
+      codex_cli_missing: "未找到 Codex CLI",
+      app_server_unavailable: "当前 Codex CLI 不支持额度查询，请升级",
+      not_logged_in: "Codex 未登录 ChatGPT 账号",
+      account_unavailable: "ChatGPT 账号额度暂不可用",
+      no_rate_limits: "暂无 Codex 官方额度记录",
+      api_key_login: "Codex 使用 API Key 登录"
     };
     if (map[code]) return map[code];
     if (code && code.indexOf("key_rejected") === 0) return "服务商拒绝了额度查询";
     if (code && code.indexOf("http_") === 0) return "服务商额度接口异常";
     return "Codex 额度暂不可用";
+  }
+  var CODEX_PLAN = {
+    free: "Free", go: "Go", plus: "Plus", pro: "Pro", prolite: "Pro Lite", team: "Team",
+    business: "Business", enterprise: "Enterprise", edu: "Edu"
+  };
+  function codexWindowLabel(minutes) {
+    minutes = Number(minutes);
+    if (minutes === 300) return "5 小时额度";
+    if (minutes === 10080) return "周额度";
+    if (minutes === 1440) return "日额度";
+    if (minutes > 0 && minutes % 1440 === 0) return (minutes / 1440) + " 天额度";
+    if (minutes > 0 && minutes % 60 === 0) return (minutes / 60) + " 小时额度";
+    return "额度";
+  }
+  // The signed-in ChatGPT account's own plan quota: live from Codex, or its last
+  // local record when Codex could not be asked.
+  function renderCodexOfficial(off) {
+    var live = off.source === "app_server" && off.stale !== true;
+    var note = CODEX_PLAN[off.planType] || (off.planType ? String(off.planType) : null);
+    var rows = "";
+    [off.primary, off.secondary].forEach(function (w) {
+      if (!w || typeof w !== "object" || w.used_percent == null) return;
+      var label = codexWindowLabel(w.window_minutes);
+      if (!live && windowExpired(w.resets_at, off.observedAt, n(w.window_minutes))) {
+        rows += resetRow(label, w.resets_at);
+      } else {
+        rows += meterRow(label, n(w.used_percent), w.resets_at, note);
+        note = null;
+      }
+    });
+    var head = "";
+    if (off.stale === true) {
+      head = staleLine(off.staleReason === "loading"
+        ? "正在刷新，先显示 " + dayClock(off.observedAt) + " 的本地记录"
+        : codexQuotaReason(off.staleReason) + "，显示 " + dayClock(off.observedAt) + " 的本地记录");
+    } else if (off.source === "session") {
+      head = '<p class="stale-hint">本地记录 · ' + esc(dayClock(off.observedAt)) + "</p>";
+    }
+    return head + rows;
   }
 
   function renderQuota() {
@@ -1001,18 +1091,25 @@ addEventListener("error", function (event) {
     var q = (data.limits && data.limits.claudeQuota) || {};
 
     if (filter !== "codex") {
-      var rows = "", alarm = "";
+      var rows = "", alarm = "", hint = "";
       if (q.ok) {
+        var recorded = q.stale === true;
+        var nowMs = Date.now();
+        // A recorded limit whose window has rolled over no longer blocks anything.
+        var openLimits = list(q.limits).filter(function (l) {
+          return !(recorded && l.resetsAt && new Date(l.resetsAt).getTime() <= nowMs);
+        });
         var byKind = {};
-        list(q.limits).forEach(function (l) { byKind[l.kind] = l; });
+        openLimits.forEach(function (l) { byKind[l.kind] = l; });
         var session = byKind.session, weekly = byKind.weekly_all, scoped = byKind.weekly_scoped;
+        var claudeWindow = function (label, w, minutes) {
+          if (!w || w.utilization == null) return "";
+          if (recorded && windowExpired(w.resetsAt, q.cachedAt, minutes)) return resetRow(label, w.resetsAt);
+          return meterRow(label, n(w.utilization), w.resetsAt, null);
+        };
 
-        if (q.fiveHour && q.fiveHour.utilization != null) {
-          rows += meterRow("5 小时会话额度", n(q.fiveHour.utilization), q.fiveHour.resetsAt, null);
-        }
-        if (q.sevenDay && q.sevenDay.utilization != null) {
-          rows += meterRow("7 天总额度", n(q.sevenDay.utilization), q.sevenDay.resetsAt, null);
-        }
+        rows += claudeWindow("5 小时会话额度", q.fiveHour, 300);
+        rows += claudeWindow("7 天总额度", q.sevenDay, 10080);
         if (scoped && scoped.percent != null) {
           rows += meterRow((scoped.model ? scoped.model : "按模型") + " 专项额度", n(scoped.percent), scoped.resetsAt, scoped.isActive ? "正在生效" : null);
         }
@@ -1024,11 +1121,16 @@ addEventListener("error", function (event) {
             (q.stale ? "缓存显示 " + esc(names.join("、")) + "已用尽，当前状态待刷新" : esc(names.join("、")) + "已用尽，相关请求会被拒绝") + "</p>";
         }
       } else {
-        rows = '<p class="empty">' + esc(quotaReason(q.reason)) + "，本地用量统计仍可查看。</p>";
+        rows = '<p class="empty">' + esc(quotaReason(q.reason)) + (usageReady() ? "，本地用量统计仍可查看。" : "") + "</p>";
       }
       if (q.ok && q.stale) {
-        rows = '<p class="stale"><svg aria-hidden="true"><use href="#i-alert"/></svg>' +
-          esc(quotaReason(q.staleReason)) + "，当前显示 " + esc(clock(q.cachedAt)) + " 的缓存</p>" + rows;
+        var source = CLAUDE_SOURCE[q.source] || "缓存";
+        rows = staleLine(q.staleReason === "loading"
+          ? "正在刷新，先显示" + source + " " + dayClock(q.cachedAt) + " 的记录"
+          : quotaReason(q.staleReason) + "，显示" + source + " " + dayClock(q.cachedAt) + " 的记录") + rows;
+      }
+      if (needsClaudeLogin(q.ok ? q.staleReason : q.reason)) {
+        hint = '<p class="stale-hint">在终端运行 claude auth login 可显示实时额度</p>';
       }
 
       // ccusage still supplies burn rate and projected spend, which the quota endpoint does not
@@ -1046,11 +1148,11 @@ addEventListener("error", function (event) {
 
       out.push('<article class="card quota" style="--p:var(--claude)">' +
         '<div class="quota-head"><span class="dot"></span><h3>Claude 额度</h3></div>' +
-        alarm + rows + extra + "</article>");
+        alarm + rows + hint + extra + "</article>");
     }
 
     if (filter !== "claude") {
-      var cx = (data.limits && data.limits.codex) || {};
+      var off = (data.limits && data.limits.codex) || {};
       var cq = (data.limits && data.limits.codexQuota) || {};
       var body, populated = false;
 
@@ -1094,18 +1196,18 @@ addEventListener("error", function (event) {
             : "") +
           rows + stats;
         populated = true;
-      } else if (cx.primary && cx.primary.used_percent != null) {
-        // Official Codex still issues rate_limits through the session record.
-        body = meterRow("主限额", n(cx.primary.used_percent), cx.primary.resets_at, null) +
-          (cx.secondary && cx.secondary.used_percent != null ? meterRow("次限额", n(cx.secondary.used_percent), cx.secondary.resets_at, null) : "");
+      } else if (off.ok === true && (off.primary || off.secondary)) {
+        body = renderCodexOfficial(off);
         populated = true;
       } else {
-        var quotaLoading = cq.reason === "loading" && data.complete === false;
+        // A ChatGPT login never consults the relay, so its own reason is the one to show.
+        var codexReason = cq.reason === "official_account" || !cq.reason ? off.reason : cq.reason;
+        var quotaLoading = codexReason === "loading" && data.complete === false;
         body = '<div class="quota-offline" role="status">' +
           '<span class="quota-port" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' +
           '<span class="quota-offline-copy"><b>' + (quotaLoading ? "正在获取额度" : "暂无额度数据") +
-          "</b><span>" + (quotaLoading ? "本地用量统计已就绪" : esc(codexQuotaReason(cq.reason))) + "</span></span>" +
-          '<span class="quota-local-ok">本地统计正常</span></div>';
+          "</b><span>" + (quotaLoading ? "稍候自动更新" : esc(codexQuotaReason(codexReason))) + "</span></span>" +
+          (usageReady() ? '<span class="quota-local-ok">本地统计正常</span>' : "") + "</div>";
       }
       out.push('<article class="card quota' + (populated ? "" : " quota-unavailable") + '" style="--p:var(--codex)">' +
         '<div class="quota-head"><span class="dot"></span><h3>Codex 额度</h3></div>' + body + "</article>");
@@ -1600,9 +1702,20 @@ addEventListener("error", function (event) {
     restoreDetailsState(detailState);
     restoreChartFocus(chartFocus);
   }
+  function usageReady() {
+    var slot = data && data.reports && data.reports[period];
+    return !!(slot && slot.claude && slot.codex);
+  }
+  // Quota can be published before the first usage report; usage sections then wait
+  // behind one status card instead of rendering zeros.
+  function syncUsage() {
+    var ready = usageReady();
+    $("app").classList.toggle("usage-pending", !ready);
+    if (ready) renderUsage(true);
+  }
   function render() {
     renderQuota();
-    renderUsage(true);
+    syncUsage();
   }
 
   /* ─────────────────────────────────── wiring ── */
@@ -1735,11 +1848,13 @@ addEventListener("error", function (event) {
       setTimeout(function () { $("loader").style.display = "none"; }, 340);
     } else {
       var currencyChanged = JSON.stringify(previousCurrency) !== JSON.stringify(data.currency);
-      if (currencyChanged || JSON.stringify(previousLimits) !== JSON.stringify(data.limits)) renderQuota();
       var nextReport = data.reports ? data.reports[period] : null;
-      if (currencyChanged || previousPeriod !== period || JSON.stringify(previousReport) !== JSON.stringify(nextReport)) {
-        renderUsage(true);
-      }
+      var wasPending = $("app").classList.contains("usage-pending");
+      var usageChanged = currencyChanged || previousPeriod !== period || wasPending ||
+        JSON.stringify(previousReport) !== JSON.stringify(nextReport);
+      if (currencyChanged || (wasPending && usageReady()) ||
+          JSON.stringify(previousLimits) !== JSON.stringify(data.limits)) renderQuota();
+      if (usageChanged) syncUsage();
     }
   };
 

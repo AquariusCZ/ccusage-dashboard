@@ -20,8 +20,14 @@ $RequiredCodeBurnVersion = '0.9.19'
 $RequiredCCUsageVersion = '20.0.20'
 $MaxCollectorOutputBytes = [int64](16 * 1024 * 1024)
 $MaxQuotaResponseBytes = [int64](1024 * 1024)
+$MaxLocalDocumentBytes = [int64](16 * 1024 * 1024)
 $CCUsageTimeoutMilliseconds = 120000
+$CodexQuotaTimeoutMilliseconds = 30000
+$ClaudeQuotaTimeoutSeconds = 20
+$LocalQuotaMaxAgeMilliseconds = [int64](7 * 24 * 60 * 60 * 1000)
+$CodexHelperScript = Join-Path $AppDir 'codex-rate-limits.mjs'
 $RuntimeRoot = Join-Path $env:TEMP 'ClaudeUsage'
+$NodeCompileCacheDirectory = Join-Path $RuntimeRoot 'node-compile-cache'
 $InstallPendingPaths = @(
   (Join-Path $AppDir '.install-pending'),
   (Join-Path (Join-Path $env:LOCALAPPDATA 'ClaudeUsage') '.install-pending')
@@ -54,7 +60,8 @@ $FontNames = @(
 $OutFonts = @($FontNames | ForEach-Object { Join-Path $OutDir $_ })
 $ManagedPeriodKeys = @('today', 'week', '30days', 'month', 'all', 'lifetime')
 $ManagedScratchNames = @(
-  '_claude-blocks.json', 'data.js.tmp', 'data.js.bak', 'failure.js.tmp', 'failure.js.bak'
+  '_claude-blocks.json', '_codex-rate-limits.json',
+  'data.js.tmp', 'data.js.bak', 'failure.js.tmp', 'failure.js.bak'
 )
 foreach ($managedPeriod in $ManagedPeriodKeys) {
   foreach ($managedProvider in @('claude', 'codex')) {
@@ -99,213 +106,637 @@ function Read-JsonFile([string]$Path) {
   return $null
 }
 
-function Read-LatestRateLimitFromFile([string]$Path) {
+function Read-FileTailLines([string]$Path, [int64]$MaxBytes) {
   try {
     $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
     try {
-      $size = [Math]::Min([int64]8388608, $stream.Length)
+      $size = [Math]::Min($MaxBytes, $stream.Length)
       $null = $stream.Seek(-$size, [IO.SeekOrigin]::End)
       $buffer = New-Object byte[] $size
       $read = $stream.Read($buffer, 0, $buffer.Length)
-      $text = [Text.Encoding]::UTF8.GetString($buffer, 0, $read)
-      $lines = $text -split "`r?`n"
-      for ($i = $lines.Count - 1; $i -ge 0; $i--) {
-        if ($lines[$i] -notmatch '"rate_limits"') { continue }
-        try {
-          $entry = $lines[$i] | ConvertFrom-Json
-          if ($entry.payload.rate_limits) { return $entry.payload.rate_limits }
-        } catch {}
-      }
+      return ,([Text.Encoding]::UTF8.GetString($buffer, 0, $read) -split "`r?`n")
     } finally {
       $stream.Dispose()
     }
   } catch {}
-  return $null
+  return ,([string[]]@())
+}
+
+# Claude Code's ~/.claude.json repeats project keys that differ only in case, which
+# ConvertFrom-Json in Windows PowerShell rejects. The serializer keeps them apart and
+# parses the whole document in milliseconds.
+function Read-JsonDocument([string]$Path, [int64]$MaxBytes = $MaxLocalDocumentBytes) {
+  try {
+    $file = [IO.FileInfo]::new($Path)
+    if (-not $file.Exists -or $file.Length -le 0 -or $file.Length -gt $MaxBytes) { return $null }
+    Add-Type -AssemblyName System.Web.Extensions
+    $serializer = New-Object Web.Script.Serialization.JavaScriptSerializer
+    $serializer.MaxJsonLength = [int]::MaxValue
+    $serializer.RecursionLimit = 256
+    $document = $serializer.DeserializeObject([IO.File]::ReadAllText($Path))
+    if (-not ($document -is [Collections.IDictionary])) { return $null }
+    return ,$document
+  } catch {
+    return $null
+  }
+}
+
+function Get-DocumentField($Document, [string]$Name) {
+  if (-not ($Document -is [Collections.IDictionary]) -or -not ([Collections.IDictionary]$Document).Contains($Name)) { return $null }
+  return ,$Document[$Name]
+}
+
+function Get-RoamingAppDataPath {
+  if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) { return $env:APPDATA }
+  return Join-Path $env:USERPROFILE 'AppData\Roaming'
+}
+
+function Get-CodexHomePath {
+  $configured = $env:CODEX_HOME
+  if (-not [string]::IsNullOrWhiteSpace($configured) -and [IO.Path]::IsPathRooted($configured)) { return $configured }
+  return Join-Path $env:USERPROFILE '.codex'
 }
 
 <#
-  Real Claude quota, from the same endpoint Claude Code itself uses.
+  Real Claude quota.
 
   ccusage blocks only describe a rolling 5-hour *cost* window; they say nothing
   about how much of the plan is left, so a gauge built on them can only show
-  elapsed time. The authoritative source is GET /api/oauth/usage.
+  elapsed time. The authoritative source is GET /api/oauth/usage, called with the
+  token the Claude Code CLI keeps in .credentials.json - the call Claude Code makes.
+
+  The CLI is not always signed in. The Claude desktop app keeps its own encrypted
+  credentials and never refreshes the CLI's, so a desktop-only user has no usable
+  CLI token at all. Their quota is still on disk, written by the official clients:
+  Claude Code's copy of the last endpoint response (~/.claude.json,
+  `cachedUsageUtilization`) and the desktop app's plan-usage samples. When no live
+  answer is possible the newest of those is shown, labelled with its age. Neither
+  needs a credential or a network request, and the desktop's encrypted token store
+  is never touched.
 
   Red lines (mirrored from the AI Resume implementation, which learned them the
   hard way on 2026-08-08):
     1. the token is read-only - never refreshed, never written back;
     2. the token never reaches a log, an exception message, or the payload;
     3. under 60s of remaining life counts as expired - no request is made;
-    4. any failure degrades to the ccusage window, and never throws;
+    4. any failure degrades to a stated reason, and never throws;
     5. `limits[]` is authoritative for "am I actually blocked" - five_hour and
        seven_day alone miss it. Measured that day: weekly_all 93% read as fine
        while weekly_scoped was already 100% and requests were being refused.
 #>
-function Get-ClaudeOAuthUsage {
-  # The endpoint rate-limits (observed 429 under repeated calls), and the app is
-  # launched on demand, so a short cache keeps rapid relaunches from hammering it
-  # and keeps the most important card populated when a call fails.
-  $cachePath = $QuotaCachePath
-  $FreshSeconds = 120      # reuse without calling at all
-  $StaleSeconds = 3600     # reuse, clearly labelled, only if the live call fails
-  $cached = $null
+# An opaque digest of who the quota belongs to: the CLI login's organization and the
+# account Claude Code reports as signed in. It binds the app's own quota cache so a
+# logout or account switch can never show the previous account's figures.
+function Get-ClaudeIdentityFingerprint([string[]]$Parts) {
+  if (-not @($Parts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count) { return $null }
+  $hash = $null
   try {
-    if (Test-Path $cachePath) {
-      $raw = [IO.File]::ReadAllText($cachePath) | ConvertFrom-Json
-      if (-not ($raw -is [pscustomobject]) -or
-          -not (Test-OutputRecordProperty $raw 'cachedAt') -or
-          -not (Test-OutputRecordProperty $raw 'cachedAtUnix') -or
-          -not (Test-OutputRecordProperty $raw 'payload') -or
-          -not (Test-JsonDateValue (Get-OutputRecordValue $raw 'cachedAt')) -or
-          -not (Test-JsonInt64Value (Get-OutputRecordValue $raw 'cachedAtUnix'))) {
-        throw 'Malformed Claude quota cache envelope.'
-      }
-      $safeCachedPayload = Select-ClaudeQuotaFields (Get-OutputRecordValue $raw 'payload')
-      if (-not $safeCachedPayload.ok) { throw 'Malformed Claude quota cache payload.' }
-      $age = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$raw.cachedAtUnix)
-      if ($age -ge 0 -and $age -lt $StaleSeconds) {
-        $cached = [pscustomobject][ordered]@{
-          cachedAt = [string]$raw.cachedAt
-          cachedAtUnix = [int64]$raw.cachedAtUnix
-          payload = $safeCachedPayload
-        }
-      }
-      if ($cached -and $age -lt $FreshSeconds) {
-        $hit = $cached.payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-        Add-Member -InputObject $hit -NotePropertyName 'cachedAt' -NotePropertyValue $cached.cachedAt -Force
-        $safeHit = Select-ClaudeQuotaFields $hit
-        if ($safeHit.ok) { return $safeHit }
-        $cached = $null
-      }
-    }
-  } catch { $cached = $null }
-
-  function Use-CachedQuota([string]$Reason) {
-    if (-not $cached) { return [ordered]@{ ok = $false; reason = $Reason } }
-    try {
-      $hit = $cached.payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-      Add-Member -InputObject $hit -NotePropertyName 'cachedAt' -NotePropertyValue $cached.cachedAt -Force
-      Add-Member -InputObject $hit -NotePropertyName 'stale' -NotePropertyValue $true -Force
-      Add-Member -InputObject $hit -NotePropertyName 'staleReason' -NotePropertyValue $Reason -Force
-      $safeHit = Select-ClaudeQuotaFields $hit
-      if (-not $safeHit.ok) { return [ordered]@{ ok = $false; reason = $Reason } }
-      return $safeHit
-    } catch {
-      return [ordered]@{ ok = $false; reason = $Reason }
-    }
-  }
-
-  $credentials = Join-Path $env:USERPROFILE '.claude\.credentials.json'
-  if (-not (Test-Path $credentials)) { return Use-CachedQuota 'no_credentials' }
-
-  $token = $null
-  try {
-    $parsed = [IO.File]::ReadAllText($credentials) | ConvertFrom-Json
-    $token = $parsed.claudeAiOauth.accessToken
-    $expiresAt = $parsed.claudeAiOauth.expiresAt
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((@($Parts | ForEach-Object { [string]$_ }) -join ([char]0)))
+    return -join @($hash.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
   } catch {
-    return Use-CachedQuota 'no_credentials'
-  }
-  if (-not $token) { return Use-CachedQuota 'no_credentials' }
-  if ($expiresAt) {
-    $expiresAtMilliseconds = [int64]0
-    if (-not [int64]::TryParse([string]$expiresAt, [ref]$expiresAtMilliseconds)) {
-      return Use-CachedQuota 'malformed_credentials'
-    }
-    if (($expiresAtMilliseconds - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) -lt 60000) {
-      return Use-CachedQuota 'token_expired'
-    }
-  }
-
-  $response = $null
-  try {
-    $response = Invoke-RestMethod -Uri 'https://api.anthropic.com/api/oauth/usage' `
-      -Headers @{ Authorization = "Bearer $token" } -Method Get -TimeoutSec 20
-  } catch {
-    # Deliberately does not surface the exception text: a failed request can echo
-    # the Authorization header back in its message.
-    $status = $null
-    try { $status = [int]$_.Exception.Response.StatusCode } catch {}
-    $reason = if ($status -in @(401, 403)) { "token_rejected_$status" }
-              elseif ($status -eq 429) { 'rate_limited' }
-              elseif ($status) { "http_$status" }
-              else { 'failed_local' }
-    return Use-CachedQuota $reason
+    return $null
   } finally {
-    $token = $null
+    if ($hash) { $hash.Dispose() }
   }
-  if (-not $response) { return Use-CachedQuota 'malformed_response' }
-
-  try {
-    if ((-not ($response -is [pscustomobject]) -and -not ($response -is [Collections.IDictionary])) -or
-        -not (Test-OutputRecordProperty $response 'five_hour') -or
-        -not (Test-OutputRecordProperty $response 'seven_day') -or
-        -not (Test-OutputRecordProperty $response 'limits')) {
-      return Use-CachedQuota 'malformed_response'
-    }
-
-    function ConvertTo-Window($window) {
-      if (-not $window) { return $null }
-      return [ordered]@{
-        utilization = Get-OutputRecordValue $window 'utilization'
-        resetsAt    = Get-OutputRecordValue $window 'resets_at'
-      }
-    }
-
-    $responseLimits = Get-OutputRecordValue $response 'limits'
-    if (-not (Test-OutputRecordArray $responseLimits)) {
-      return Use-CachedQuota 'malformed_response'
-    }
-    $limits = @()
-    foreach ($limit in $responseLimits) {
-      $model = $null
-      try { $model = $limit.scope.model.display_name } catch {}
-      $limits += [ordered]@{
-        kind     = Get-OutputRecordValue $limit 'kind'
-        group    = Get-OutputRecordValue $limit 'group'
-        percent  = Get-OutputRecordValue $limit 'percent'
-        severity = Get-OutputRecordValue $limit 'severity'
-        resetsAt = Get-OutputRecordValue $limit 'resets_at'
-        isActive = Get-OutputRecordValue $limit 'is_active'
-        model    = $model
-      }
-    }
-
-    $payload = [ordered]@{
-      ok       = $true
-      reason   = $null
-      fiveHour = ConvertTo-Window (Get-OutputRecordValue $response 'five_hour')
-      sevenDay = ConvertTo-Window (Get-OutputRecordValue $response 'seven_day')
-      limits   = $limits
-    }
-    $payload = Select-ClaudeQuotaFields $payload
-  } catch {
-    return Use-CachedQuota 'malformed_response'
-  }
-  if (-not $payload.ok) { return Use-CachedQuota 'malformed_response' }
-
-  # Quota state only - no credential material reaches this file.
-  try {
-    [IO.File]::WriteAllText($cachePath, ([ordered]@{
-      cachedAt     = [DateTimeOffset]::Now.ToString('o')
-      cachedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-      payload      = $payload
-    } | ConvertTo-Json -Depth 20 -Compress), (New-Object Text.UTF8Encoding($false)))
-  } catch {}
-
-  return $payload
 }
 
-function Get-LatestCodexRateLimit {
-  $sessions = Join-Path $env:USERPROFILE '.codex\sessions'
-  if (-not (Test-Path $sessions)) { return $null }
-  $files = Get-ChildItem -LiteralPath $sessions -Filter '*.jsonl' -File -Recurse -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTimeUtc -Descending |
-    Select-Object -First 6
-  foreach ($file in $files) {
-    $limits = Read-LatestRateLimitFromFile $file.FullName
-    if ($limits) { return $limits }
+function Read-ClaudeCodeConfig {
+  $config = [pscustomobject][ordered]@{ AccountUuid = $null; OrganizationUuid = $null; UsageCache = $null }
+  $document = Read-JsonDocument (Join-Path $env:USERPROFILE '.claude.json')
+  $account = Get-DocumentField $document 'oauthAccount'
+  $accountUuid = Get-DocumentField $account 'accountUuid'
+  $organizationUuid = Get-DocumentField $account 'organizationUuid'
+  if ($accountUuid -is [string] -and $accountUuid.Length -le 128) { $config.AccountUuid = $accountUuid }
+  if ($organizationUuid -is [string] -and $organizationUuid.Length -le 128) { $config.OrganizationUuid = $organizationUuid }
+  $config.UsageCache = Get-DocumentField $document 'cachedUsageUtilization'
+  return $config
+}
+
+function Read-ClaudeQuotaCache([string]$Fingerprint) {
+  # The endpoint rate-limits (observed 429 under repeated calls), and the app is
+  # launched on demand, so a two-minute answer is reused without a request and an
+  # hour-old one is the oldest the app's own cache may offer - for the same account.
+  try {
+    if ([string]::IsNullOrWhiteSpace($Fingerprint) -or -not (Test-Path -LiteralPath $QuotaCachePath)) { return $null }
+    $raw = [IO.File]::ReadAllText($QuotaCachePath) | ConvertFrom-Json
+    if (-not ($raw -is [pscustomobject]) -or
+        -not (Test-OutputRecordProperty $raw 'cachedAt') -or
+        -not (Test-OutputRecordProperty $raw 'cachedAtUnix') -or
+        -not (Test-OutputRecordProperty $raw 'accountFingerprint') -or
+        -not (Test-OutputRecordProperty $raw 'payload') -or
+        -not (Test-JsonDateValue (Get-OutputRecordValue $raw 'cachedAt')) -or
+        -not (Test-JsonInt64Value (Get-OutputRecordValue $raw 'cachedAtUnix')) -or
+        [string](Get-OutputRecordValue $raw 'accountFingerprint') -cne $Fingerprint) {
+      return $null
+    }
+    $payload = Select-ClaudeQuotaFields (Get-OutputRecordValue $raw 'payload')
+    if (-not $payload.ok -or (Test-OutputRecordProperty $payload 'stale')) { return $null }
+    $cachedAtUnix = [int64]$raw.cachedAtUnix
+    $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $cachedAtUnix
+    if ($age -lt 0 -or $age -ge 3600) { return $null }
+    return [pscustomobject][ordered]@{
+      Fresh = ($age -lt 120)
+      Candidate = [pscustomobject][ordered]@{
+        source = 'cache'
+        observedAtMilliseconds = $cachedAtUnix * 1000
+        payload = $payload
+      }
+    }
+  } catch {
+    return $null
   }
+}
+
+function Read-ClaudeCliCredential {
+  $credential = [pscustomobject][ordered]@{ Token = $null; OrganizationUuid = $null; Reason = $null }
+  $path = Join-Path $env:USERPROFILE '.claude\.credentials.json'
+  if (-not (Test-Path -LiteralPath $path)) {
+    $credential.Reason = 'no_credentials'
+    return $credential
+  }
+  $parsed = $null
+  try {
+    $parsed = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+  } catch {
+    $credential.Reason = 'no_credentials'
+    return $credential
+  }
+  $token = $null
+  $expiresAt = $null
+  try {
+    if ((Test-OutputRecordProperty $parsed 'organizationUuid') -and $parsed.organizationUuid -is [string]) {
+      $credential.OrganizationUuid = $parsed.organizationUuid
+    }
+    $oauth = Get-OutputRecordValue $parsed 'claudeAiOauth'
+    $token = Get-OutputRecordValue $oauth 'accessToken'
+    $expiresAt = Get-OutputRecordValue $oauth 'expiresAt'
+  } catch {}
+  $parsed = $null
+  if (-not ($token -is [string]) -or [string]::IsNullOrWhiteSpace($token)) {
+    $credential.Reason = 'no_credentials'
+  } elseif ($null -ne $expiresAt) {
+    $expiresAtMilliseconds = [int64]0
+    if (-not [int64]::TryParse([string]$expiresAt, [ref]$expiresAtMilliseconds)) {
+      $credential.Reason = 'malformed_credentials'
+    } elseif (($expiresAtMilliseconds - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) -lt 60000) {
+      $credential.Reason = 'token_expired'
+    }
+  }
+  if (-not $credential.Reason) { $credential.Token = $token }
+  $token = $null
+  return $credential
+}
+
+<#
+  One authenticated GET that never blocks the caller. `ResponseContentRead` with
+  `MaxResponseContentBufferSize` lets HttpClient buffer the whole bounded body
+  before the task completes, so polling `IsCompleted` between collector slices
+  can never stall on a trickling body.
+#>
+function Start-AsyncJsonRequest {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)][string]$Uri,
+    [Collections.IDictionary]$Headers,
+    [ValidateRange(1, 60)][int]$TimeoutSeconds,
+    [ValidateRange(1, [int]::MaxValue)][int64]$MaxBytes = $MaxQuotaResponseBytes,
+    [object]$Handler = $null
+  )
+
+  Add-Type -AssemblyName System.Net.Http
+  $request = [pscustomobject][ordered]@{
+    Client = $null; Handler = $null; OwnsHandler = $false; Message = $null
+    Cancellation = $null; Task = $null; MaxBytes = $MaxBytes; Failure = $null
+  }
+  try {
+    if ($null -eq $Handler) {
+      $Handler = New-Object Net.Http.HttpClientHandler
+      $Handler.AllowAutoRedirect = $false
+      $Handler.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
+      $request.OwnsHandler = $true
+    }
+    $request.Handler = $Handler
+    $request.Client = [Net.Http.HttpClient]::new($Handler, $false)
+    $request.Client.Timeout = [Threading.Timeout]::InfiniteTimeSpan
+    $request.Client.MaxResponseContentBufferSize = $MaxBytes
+    $request.Message = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, [Uri]$Uri)
+    foreach ($name in @($Headers.Keys)) {
+      if (-not $request.Message.Headers.TryAddWithoutValidation([string]$name, [string]$Headers[$name])) {
+        $request.Failure = 'failed_local'
+        return $request
+      }
+    }
+    $request.Cancellation = [Threading.CancellationTokenSource]::new()
+    $request.Cancellation.CancelAfter([TimeSpan]::FromSeconds($TimeoutSeconds))
+    $request.Task = $request.Client.SendAsync(
+      $request.Message,
+      [Net.Http.HttpCompletionOption]::ResponseContentRead,
+      $request.Cancellation.Token
+    )
+  } catch {
+    # Never surface the exception text: it can echo a request header.
+    $request.Failure = 'failed_local'
+  }
+  return $request
+}
+
+function Test-AsyncJsonRequestDone($Request) {
+  if (-not $Request -or $Request.Failure -or -not $Request.Task) { return $true }
+  return [bool]$Request.Task.IsCompleted
+}
+
+function Complete-AsyncJsonRequest($Request) {
+  $response = $null
+  try {
+    if (-not $Request -or $Request.Failure -or -not $Request.Task) {
+      $reason = if ($Request -and $Request.Failure) { $Request.Failure } else { 'failed_local' }
+      return [pscustomobject][ordered]@{ ok = $false; reason = $reason; status = $null; value = $null }
+    }
+    try {
+      $response = $Request.Task.GetAwaiter().GetResult()
+    } catch {
+      $reason = if ($Request.Cancellation -and $Request.Cancellation.IsCancellationRequested) { 'request_timed_out' } else { 'failed_local' }
+      return [pscustomobject][ordered]@{ ok = $false; reason = $reason; status = $null; value = $null }
+    }
+    $status = [int]$response.StatusCode
+    if (-not $response.IsSuccessStatusCode) {
+      return [pscustomobject][ordered]@{ ok = $false; reason = 'http_error'; status = $status; value = $null }
+    }
+    $bytes = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+    if ($bytes.Length -gt $Request.MaxBytes) {
+      return [pscustomobject][ordered]@{ ok = $false; reason = 'response_too_large'; status = $status; value = $null }
+    }
+    try {
+      $value = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
+    } catch {
+      return [pscustomobject][ordered]@{ ok = $false; reason = 'malformed_response'; status = $status; value = $null }
+    }
+    if ($null -eq $value) {
+      return [pscustomobject][ordered]@{ ok = $false; reason = 'malformed_response'; status = $status; value = $null }
+    }
+    return [pscustomobject][ordered]@{ ok = $true; reason = $null; status = $status; value = $value }
+  } catch {
+    return [pscustomobject][ordered]@{ ok = $false; reason = 'failed_local'; status = $null; value = $null }
+  } finally {
+    if ($response) { try { $response.Dispose() } catch {} }
+    if ($Request) {
+      if ($Request.Message) { try { $Request.Message.Dispose() } catch {} }
+      if ($Request.Cancellation) { try { $Request.Cancellation.Dispose() } catch {} }
+      if ($Request.Client) { try { $Request.Client.Dispose() } catch {} }
+      if ($Request.OwnsHandler -and $Request.Handler) { try { $Request.Handler.Dispose() } catch {} }
+      $Request.Message = $null
+      $Request.Task = $null
+    }
+  }
+}
+
+function Start-ClaudeUsageRequest([string]$Authorization) {
+  return Start-AsyncJsonRequest -Uri 'https://api.anthropic.com/api/oauth/usage' `
+    -Headers @{ Authorization = $Authorization } -TimeoutSeconds $ClaudeQuotaTimeoutSeconds `
+    -MaxBytes $MaxQuotaResponseBytes
+}
+
+function Start-ClaudeLiveQuota {
+  $script:ClaudeLive = [pscustomobject][ordered]@{
+    Request = $null; Result = $null; Reason = $null; OrganizationUuid = $null; Fingerprint = $null
+  }
+  $credential = Read-ClaudeCliCredential
+  $script:ClaudeConfig = Read-ClaudeCodeConfig
+  $script:ClaudeLive.OrganizationUuid = $credential.OrganizationUuid
+  $script:ClaudeLive.Fingerprint = Get-ClaudeIdentityFingerprint @(
+    $credential.OrganizationUuid, $script:ClaudeConfig.AccountUuid, $script:ClaudeConfig.OrganizationUuid
+  )
+  $cache = Read-ClaudeQuotaCache $script:ClaudeLive.Fingerprint
+  $script:ClaudeCacheCandidate = if ($cache) { $cache.Candidate } else { $null }
+  try {
+    # A fresh answer stands in for a request only while the CLI login it came from is
+    # still valid; otherwise it is merely a labelled local record.
+    if ($cache -and $cache.Fresh -and -not $credential.Reason) {
+      $hit = $cache.Candidate.payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+      Add-Member -InputObject $hit -NotePropertyName 'cachedAt' -NotePropertyValue (
+        [DateTimeOffset]::FromUnixTimeMilliseconds($cache.Candidate.observedAtMilliseconds).ToLocalTime().ToString('o')
+      ) -Force
+      Add-Member -InputObject $hit -NotePropertyName 'source' -NotePropertyValue 'cache' -Force
+      $safeHit = Select-ClaudeQuotaFields $hit
+      if ($safeHit.ok) {
+        $script:ClaudeLive.Result = $safeHit
+        return
+      }
+    }
+    if ($credential.Reason) {
+      $script:ClaudeLive.Reason = $credential.Reason
+      return
+    }
+    $script:ClaudeLive.Request = Start-ClaudeUsageRequest ('Bearer ' + $credential.Token)
+  } finally {
+    $credential.Token = $null
+    Step-QuotaState
+  }
+}
+
+function Receive-ClaudeLiveQuota([bool]$WaitForCompletion = $false) {
+  $live = $script:ClaudeLive
+  if (-not $live -or -not $live.Request) { return }
+  if (-not $WaitForCompletion -and -not (Test-AsyncJsonRequestDone $live.Request)) { return }
+  $request = $live.Request
+  $live.Request = $null
+  Step-QuotaState
+  $http = Complete-AsyncJsonRequest $request
+  if (-not $http.ok) {
+    # Only a real HTTP error maps to a status reason; a 200 with an unusable body is
+    # malformed_response, never http_200.
+    $status = if ($http.reason -eq 'http_error') { $http.status } else { $null }
+    $live.Reason = if ($status -in @(401, 403)) { "token_rejected_$status" }
+                   elseif ($status -eq 429) { 'rate_limited' }
+                   elseif ($status) { "http_$status" }
+                   else { $http.reason }
+    return
+  }
+  $payload = $null
+  try { $payload = Select-ClaudeQuotaFields (ConvertTo-ClaudeQuotaPayload $http.value) } catch {}
+  if (-not $payload -or -not $payload.ok) {
+    $live.Reason = 'malformed_response'
+    return
+  }
+
+  # Quota state and an opaque account digest only - no credential or identifier
+  # reaches this file.
+  if ($live.Fingerprint) {
+    try {
+      [IO.File]::WriteAllText($QuotaCachePath, ([ordered]@{
+        cachedAt           = [DateTimeOffset]::Now.ToString('o')
+        cachedAtUnix       = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        accountFingerprint = $live.Fingerprint
+        payload            = $payload
+      } | ConvertTo-Json -Depth 20 -Compress), (New-Object Text.UTF8Encoding($false)))
+    } catch {}
+  }
+  Add-Member -InputObject $payload -NotePropertyName 'source' -NotePropertyValue 'oauth' -Force
+  $live.Result = $payload
+}
+
+function Stop-ClaudeLiveQuota {
+  $live = $script:ClaudeLive
+  if (-not $live -or -not $live.Request) { return }
+  $request = $live.Request
+  $live.Request = $null
+  try { if ($request.Cancellation) { $request.Cancellation.Cancel() } } catch {}
+  if (Test-AsyncJsonRequestDone $request) {
+    [void](Complete-AsyncJsonRequest $request)
+    return
+  }
+  # A cancelled send completes asynchronously; dispose without waiting for it.
+  foreach ($resource in @($request.Message, $request.Cancellation, $request.Client)) {
+    if ($resource) { try { $resource.Dispose() } catch {} }
+  }
+  if ($request.OwnsHandler -and $request.Handler) { try { $request.Handler.Dispose() } catch {} }
+}
+
+function Update-ClaudeLocalQuota {
+  if ($null -ne $script:ClaudeLocalCandidates) { return }
+  $candidates = New-Object Collections.Generic.List[object]
+  try {
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $config = if ($script:ClaudeConfig) { $script:ClaudeConfig } else { Read-ClaudeCodeConfig }
+    $organizationUuid = $config.OrganizationUuid
+    if ([string]::IsNullOrWhiteSpace($organizationUuid) -and $script:ClaudeLive) {
+      $organizationUuid = $script:ClaudeLive.OrganizationUuid
+    }
+    if ($config.AccountUuid) {
+      $codeRecord = ConvertTo-ClaudeCodeCachedQuota -Cache $config.UsageCache `
+        -AccountUuid $config.AccountUuid -NowMilliseconds $now -MaxAgeMilliseconds $LocalQuotaMaxAgeMilliseconds
+      if ($codeRecord) { $candidates.Add($codeRecord) }
+    }
+    $history = Read-JsonDocument (Join-Path (Get-RoamingAppDataPath) 'Claude\plan-usage-history.json') ([int64](2 * 1024 * 1024))
+    $desktopRecord = ConvertTo-ClaudeDesktopQuota -History $history -OrganizationUuid ([string]$organizationUuid) `
+      -NowMilliseconds $now -MaxAgeMilliseconds $LocalQuotaMaxAgeMilliseconds
+    if ($desktopRecord) { $candidates.Add($desktopRecord) }
+  } catch {}
+  $script:ClaudeLocalCandidates = $candidates.ToArray()
+  Step-QuotaState
+}
+
+function Resolve-ClaudeQuotaState {
+  $live = $script:ClaudeLive
+  if ($live -and $live.Result) { return $live.Result }
+  $reason = if (-not $live -or $live.Request) {
+    if ($script:QuotaCollectionStopped) { 'not_collected' } else { 'loading' }
+  } elseif ($live.Reason) { $live.Reason } else { 'loading' }
+  $best = Select-NewestQuotaCandidate -Candidates (@($script:ClaudeLocalCandidates) + @($script:ClaudeCacheCandidate))
+  if (-not $best) { return [ordered]@{ ok = $false; reason = $reason } }
+  try {
+    $copy = $best.payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $observed = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$best.observedAtMilliseconds).ToLocalTime().ToString('o')
+    Add-Member -InputObject $copy -NotePropertyName 'cachedAt' -NotePropertyValue $observed -Force
+    Add-Member -InputObject $copy -NotePropertyName 'stale' -NotePropertyValue $true -Force
+    Add-Member -InputObject $copy -NotePropertyName 'staleReason' -NotePropertyValue $reason -Force
+    Add-Member -InputObject $copy -NotePropertyName 'source' -NotePropertyValue ([string]$best.source) -Force
+    $safe = Select-ClaudeQuotaFields $copy
+    if ($safe.ok) { return $safe }
+  } catch {}
+  return [ordered]@{ ok = $false; reason = $reason }
+}
+
+# Synchronous form of the live-then-local resolution, used by direct boundary tests.
+function Get-ClaudeOAuthUsage {
+  $script:ClaudeLocalCandidates = $null
+  $script:ClaudeConfig = $null
+  Start-ClaudeLiveQuota
+  Receive-ClaudeLiveQuota $true
+  Update-ClaudeLocalQuota
+  return Resolve-ClaudeQuotaState
+}
+
+<#
+  Official Codex quota for a ChatGPT login.
+
+  Codex writes `rate_limits` into each session transcript, but only as of its last
+  turn, and since 2026-09 every turn carries several buckets of which only
+  `limit_id` `codex` is the plan quota. A live answer comes from the official CLI
+  itself: `codex app-server` serves `account/rateLimits/read`, the call behind
+  Codex's own /status view. Codex owns, refreshes, and sends its credential; this
+  app never reads it. The helper runs inside the same kill-on-close Job Object as
+  every other collector and is bounded by its own absolute deadline.
+#>
+function Get-CodexAuthMode {
+  $document = Read-JsonDocument (Join-Path (Get-CodexHomePath) 'auth.json') ([int64](1024 * 1024))
+  try {
+    return Get-CodexAuthModeFromDocument $document
+  } finally {
+    $document = $null
+  }
+}
+
+function Get-CodexSessionQuota {
+  $sessions = Join-Path (Get-CodexHomePath) 'sessions'
+  if (-not (Test-Path -LiteralPath $sessions)) { return $null }
+  $files = @(Get-ChildItem -LiteralPath $sessions -Filter '*.jsonl' -File -Recurse -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTimeUtc -Descending |
+    Select-Object -First 6)
+  $best = $null
+  foreach ($file in $files) {
+    # A file last written before the best snapshot cannot hold a newer one.
+    if ($best -and $file.LastWriteTimeUtc -lt $best.observedAt.UtcDateTime) { break }
+    $found = Select-CodexSessionRateLimit -Lines (Read-FileTailLines $file.FullName 8388608)
+    if ($found -and (-not $best -or $found.observedAt -gt $best.observedAt)) { $best = $found }
+  }
+  if (-not $best) { return $null }
+  $safe = Select-CodexOfficialFields (ConvertTo-CodexOfficialQuota -Snapshot $best.snapshot -Source 'session' -ObservedAt $best.observedAt)
+  if ($safe.ok) { return $safe }
   return $null
+}
+
+function Start-CodexOfficialQuota {
+  $official = $script:CodexOfficial
+  $official.Mode = Get-CodexAuthMode
+  if ($official.Mode -ne 'chatgpt') { return }
+  $codex = Resolve-CommandPath @('codex.cmd', 'codex.exe')
+  if (-not $codex) {
+    $official.Reason = 'codex_cli_missing'
+    return
+  }
+  $node = Resolve-CommandPath @('node.exe')
+  if (-not $node -or -not (Test-Path -LiteralPath $CodexHelperScript) -or
+      -not (Remove-FileWithRetry $codexQuotaOutput)) {
+    $official.Reason = 'failed_local'
+    return
+  }
+  $official.DeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($CodexQuotaTimeoutMilliseconds)
+  $official.Job = Start-OptionalJsonCommand $node @($CodexHelperScript, $codex) $codexQuotaOutput
+  if (-not $official.Job) {
+    $official.DeadlineUtc = $null
+    $official.Reason = 'failed_local'
+  }
+}
+
+function Update-CodexSessionQuota {
+  if ($script:CodexOfficial.SessionLoaded) { return }
+  $script:CodexOfficial.SessionLoaded = $true
+  try { $script:CodexOfficial.Session = Get-CodexSessionQuota } catch {}
+  Step-QuotaState
+}
+
+function Set-CodexHelperResult($Parsed) {
+  $official = $script:CodexOfficial
+  if (-not ($Parsed -is [pscustomobject]) -or -not (Test-OutputRecordProperty $Parsed 'ok') -or
+      -not ($Parsed.ok -is [bool])) {
+    $official.Reason = 'malformed_response'
+    return
+  }
+  if (-not $Parsed.ok) {
+    $reason = Get-OutputRecordValue $Parsed 'reason'
+    $official.Reason = if ($reason -is [string] -and $reason -in @(
+        'codex_cli_missing', 'app_server_unavailable', 'failed_local', 'not_logged_in', 'account_unavailable',
+        'malformed_response', 'no_rate_limits', 'request_timed_out', 'response_too_large')) { $reason } else { 'malformed_response' }
+    return
+  }
+  $fetchedAt = Get-OutputRecordValue $Parsed 'fetchedAt'
+  $observedAt = if (Test-JsonDateValue $fetchedAt) {
+    [DateTimeOffset]::Parse($fetchedAt, [Globalization.CultureInfo]::InvariantCulture)
+  } else {
+    [DateTimeOffset]::Now
+  }
+  $quota = ConvertTo-CodexOfficialQuota -Snapshot (Get-OutputRecordValue $Parsed 'snapshot') -Source 'app_server' -ObservedAt $observedAt
+  $safe = Select-CodexOfficialFields $quota
+  if ($safe.ok) {
+    $official.Result = $safe
+  } else {
+    $official.Reason = 'malformed_response'
+  }
+}
+
+function Test-CodexQuotaOutputOversized {
+  try {
+    $outputFile = [IO.FileInfo]::new($codexQuotaOutput)
+    return $outputFile.Exists -and $outputFile.Length -gt $MaxQuotaResponseBytes
+  } catch {
+    return $false
+  }
+}
+
+function Receive-CodexOfficialQuota([bool]$WaitForCompletion = $false) {
+  $official = $script:CodexOfficial
+  $job = $official.Job
+  if (-not $job) { return }
+  # Completion is the helper itself exiting. A descendant it could not stop must not
+  # hold a finished answer hostage until the deadline; the Job reaps it below.
+  $rootExited = $false
+  $inspectionFailed = $false
+  try { $rootExited = $job.RootHasExited } catch { $inspectionFailed = $true }
+  $timedOut = $official.DeadlineUtc -and [DateTime]::UtcNow -ge $official.DeadlineUtc
+  $oversized = Test-CodexQuotaOutputOversized
+  if (-not $WaitForCompletion -and -not $rootExited -and -not $inspectionFailed -and
+      -not $timedOut -and -not $oversized) {
+    return
+  }
+
+  try {
+    while ($WaitForCompletion -and -not $rootExited -and -not $inspectionFailed -and -not $oversized -and
+        $official.DeadlineUtc -and [DateTime]::UtcNow -lt $official.DeadlineUtc) {
+      [void]$job.WaitForExit(100)
+      try { $rootExited = $job.RootHasExited } catch { $inspectionFailed = $true }
+      $oversized = Test-CodexQuotaOutputOversized
+    }
+    $exitCode = $null
+    if (-not $job.HasExited -and -not (Stop-ProcessTree $job)) {
+      throw 'The Codex quota helper could not be terminated safely.'
+    }
+    if ($rootExited -and -not $inspectionFailed) { $exitCode = $job.ExitCode }
+    $oversized = $oversized -or (Test-CodexQuotaOutputOversized)
+    if ($oversized) {
+      $official.Reason = 'response_too_large'
+    } elseif ($null -ne $exitCode -and $exitCode -eq 0) {
+      Set-CodexHelperResult (Read-JsonFile $codexQuotaOutput)
+    } else {
+      $deadlinePassed = $official.DeadlineUtc -and [DateTime]::UtcNow -ge $official.DeadlineUtc
+      $official.Reason = if ($deadlinePassed -and -not $rootExited) { 'request_timed_out' } else { 'failed_local' }
+    }
+  } catch {
+    $official.Reason = 'failed_local'
+  } finally {
+    Close-CollectorProcess $job
+    $official.Job = $null
+    $official.DeadlineUtc = $null
+    [void](Remove-FileWithRetry $codexQuotaOutput)
+    Step-QuotaState
+  }
+  Assert-CollectorCleanupVerified
+}
+function Resolve-CodexOfficialQuota {
+  $official = $script:CodexOfficial
+  if ($official.Result) { return $official.Result }
+  $session = $official.Session
+  if ($official.Mode -eq 'chatgpt') {
+    $reason = if ($official.Job) {
+      if ($script:QuotaCollectionStopped) { 'not_collected' } else { 'loading' }
+    } elseif ($official.Reason) { $official.Reason } else { 'loading' }
+    if ($session) {
+      try {
+        $copy = $session | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        Add-Member -InputObject $copy -NotePropertyName 'stale' -NotePropertyValue $true -Force
+        Add-Member -InputObject $copy -NotePropertyName 'staleReason' -NotePropertyValue $reason -Force
+        $safe = Select-CodexOfficialFields $copy
+        if ($safe.ok) { return $safe }
+      } catch {}
+    }
+    return [ordered]@{ ok = $false; reason = $reason }
+  }
+  if ($session) { return $session }
+  return [ordered]@{ ok = $false; reason = $(if ($official.Mode -eq 'apikey') { 'api_key_login' } else { 'not_logged_in' }) }
+}
+
+function Receive-OptionalCollectors {
+  Receive-BlocksIfReady
+  Receive-CodexOfficialQuota
+  Receive-ClaudeLiveQuota
+  # Local quota files are read while the first CodeBurn process runs, one source per
+  # slice, so each reaches the page as soon as it is read and neither delays the other.
+  if ($null -eq $script:ClaudeLocalCandidates) {
+    Update-ClaudeLocalQuota
+  } elseif (-not $script:CodexOfficial.SessionLoaded) {
+    Update-CodexSessionQuota
+  }
 }
 
 <#
@@ -623,7 +1054,7 @@ function Get-CodexProviderQuota {
     $httpResult = Invoke-BoundedJsonRequest -Uri $request.url -Headers $request.headers `
       -Method $request.method -TimeoutSeconds $request.timeoutSeconds -MaxBytes $MaxQuotaResponseBytes
     if (-not $httpResult.ok) {
-      $status = $httpResult.status
+      $status = if ($httpResult.reason -eq 'http_error') { $httpResult.status } else { $null }
       $reason = if ($status -in @(401, 403)) { "key_rejected_$status" }
                 elseif ($status -eq 429) { 'rate_limited' }
                 elseif ($status) { "http_$status" }
@@ -763,6 +1194,18 @@ namespace AiUsage {
     public int Id { get { return processId; } }
 
     public bool HasExited { get { return Wait(0) == WAIT_OBJECT_0; } }
+
+    // The root alone, regardless of descendants still in the Job.
+    public bool RootHasExited {
+      get {
+        EnsureOpen();
+        uint result = WaitForSingleObject(processHandle, 0);
+        if (result != WAIT_OBJECT_0 && result != WAIT_TIMEOUT) {
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "Inspecting the usage collector root failed");
+        }
+        return result == WAIT_OBJECT_0;
+      }
+    }
 
     public bool WaitForExit(int timeoutMilliseconds) {
       if (timeoutMilliseconds < -1) throw new ArgumentOutOfRangeException("timeoutMilliseconds");
@@ -1236,6 +1679,10 @@ function Test-UsageCollectorProcess([string]$Name, [string]$CommandLine) {
        $CommandLine -match '(?i)(?:^|[\\/"\s])(?:codeburn|ccusage)\.cmd(?:["\s]|$)')) {
     return $true
   }
+  # The Codex quota helper and its cmd.exe launcher are ours; a Codex app-server
+  # started by anything else (the Codex app itself) is never matched.
+  if ($Name -eq 'node.exe' -and $CommandLine -match '(?i)[\\/"]codex-rate-limits\.mjs["\s]') { return $true }
+  if ($Name -eq 'cmd.exe' -and $CommandLine -match '(?i)AI_USAGE_CODEX_COMMAND') { return $true }
   return $CommandLine -match '(?i)[\\/]node_modules[\\/](?:codeburn|ccusage)[\\/]'
 }
 
@@ -1355,6 +1802,13 @@ function Start-JsonCommand([string]$CommandPath, [string[]]$Arguments, [string]$
   $environmentValues.Add($CommandPath)
   $environmentNames.Add('AI_USAGE_COLLECTOR_OUTPUT')
   $environmentValues.Add($OutputPath)
+  # Every collector is a Node program that compiles the same large bundle on each
+  # start. Node's own V8 code cache (22.1+) skips that compile; it holds bytecode
+  # for the collector's code only, never usage data.
+  if (Test-Path -LiteralPath $NodeCompileCacheDirectory -PathType Container) {
+    $environmentNames.Add('NODE_COMPILE_CACHE')
+    $environmentValues.Add($NodeCompileCacheDirectory)
+  }
   $commandLine = '"set "AI_USAGE_COLLECTOR_JOB=1" & "%AI_USAGE_COLLECTOR_COMMAND%"'
   for ($index = 0; $index -lt $Arguments.Count; $index++) {
     $variableName = 'AI_USAGE_COLLECTOR_ARG_' + $index
@@ -1398,7 +1852,7 @@ function Invoke-CodeBurnJson([string[]]$Arguments, [string]$Output, [string]$Lab
   $succeeded = $false
   try {
     $run = Start-JsonCommand $CodeBurn $Arguments $Output
-    $exitCode = Wait-ChildProcess $run 120000 $Output $MaxCollectorOutputBytes { Receive-BlocksIfReady }
+    $exitCode = Wait-ChildProcess $run 120000 $Output $MaxCollectorOutputBytes { Receive-CollectorSlice }
     if ($null -eq $exitCode) { throw "CodeBurn timed out while building $Label." }
     if ($exitCode -ne 0) { throw ("CodeBurn failed for {0} with exit code {1}." -f $Label, $exitCode) }
     $succeeded = $true
@@ -1423,6 +1877,7 @@ $FailureEvent = $null
 $RunCompleted = $false
 $PreserveFinal = $RetainedRun
 $blocksOutput = Join-Path $OutDir '_claude-blocks.json'
+$codexQuotaOutput = Join-Path $OutDir '_codex-rate-limits.json'
 $temporaryData = "$OutData.tmp"
 $backupData = "$OutData.bak"
 $temporaryFailure = "$OutFailure.tmp"
@@ -1437,9 +1892,20 @@ $OwnerProcessStartUtcTicks = [string]$OwnerProcess.StartTime.ToUniversalTime().T
 $Revision = 0
 $reports = [ordered]@{}
 $claudeBlocks = $null
-$codexLimits = $null
-$claudeQuota = [ordered]@{ ok = $false; reason = 'loading' }
 $codexQuota = [ordered]@{ ok = $false; reason = 'loading' }
+$script:ClaudeLive = $null
+$script:ClaudeCacheCandidate = $null
+$script:ClaudeLocalCandidates = $null
+$script:ClaudeConfig = $null
+$script:StatusCurrencies = @{}
+$script:QuotaCollectionStopped = $false
+$script:QuotaStateVersion = 0
+$script:PublishedQuotaVersion = -1
+$script:QuotaPublishRetryAfterUtc = $null
+$script:CodexOfficial = [pscustomobject][ordered]@{
+  Mode = 'unknown'; Job = $null; DeadlineUtc = $null; Result = $null; Reason = $null
+  Session = $null; SessionLoaded = $false
+}
 $GenerationError = $null
 $GenerationStage = 'startup'
 $GenerationFailed = $false
@@ -1459,7 +1925,7 @@ $KeepFields = @(
 
 function Test-OutputRecordProperty($Record, [string]$Name) {
   if ($null -eq $Record) { return $false }
-  if ($Record -is [Collections.IDictionary]) { return $Record.Contains($Name) }
+  if ($Record -is [Collections.IDictionary]) { return ([Collections.IDictionary]$Record).Contains($Name) }
   foreach ($property in $Record.PSObject.Properties) {
     if ($property.Name -eq $Name) { return $true }
   }
@@ -1653,7 +2119,7 @@ function New-MalformedQuotaState {
 }
 
 function Test-OutputReasonCode($Value) {
-  return $null -eq $Value -or ($Value -is [string] -and $Value -match '\A[a-z0-9_]+\z')
+  return $null -eq $Value -or ($Value -is [string] -and $Value.Length -le 128 -and $Value -cmatch '\A[a-z0-9_]+\z')
 }
 
 function Select-ClaudeQuotaFields($Quota) {
@@ -1662,10 +2128,14 @@ function Select-ClaudeQuotaFields($Quota) {
     -OptionalNullableStrings @('reason') `
     -OptionalDates @('cachedAt') `
     -OptionalBooleans @('stale') `
-    -OptionalStrings @('staleReason')
+    -OptionalStrings @('staleReason', 'source')
   if ($null -eq $safe -or
       -not (Test-OutputReasonCode (Get-OutputRecordValue $safe 'reason')) -or
       -not (Test-OutputReasonCode (Get-OutputRecordValue $safe 'staleReason'))) {
+    return New-MalformedQuotaState
+  }
+  if ((Test-OutputRecordProperty $safe 'source') -and
+      $safe.source -cnotin @('oauth', 'cache', 'claude_code', 'claude_desktop')) {
     return New-MalformedQuotaState
   }
 
@@ -1695,7 +2165,7 @@ function Select-ClaudeQuotaFields($Quota) {
         -OptionalNullableDates @('resetsAt') `
         -OptionalNullableBooleans @('isActive')
       if ($null -eq $safeLimit) { return New-MalformedQuotaState }
-      if ($safeLimit.kind.Length -gt 64 -or $safeLimit.kind -notmatch '\A[a-z0-9_]+\z') {
+      if ($safeLimit.kind.Length -gt 64 -or $safeLimit.kind -cnotmatch '\A[a-z0-9_]+\z') {
         return New-MalformedQuotaState
       }
       foreach ($textField in @('group', 'severity', 'model')) {
@@ -1712,6 +2182,16 @@ function Select-ClaudeQuotaFields($Quota) {
     }
     if ($null -ne $safe.reason) { return New-MalformedQuotaState }
   } elseif (-not (Test-OutputRecordProperty $safe 'reason') -or $null -eq $safe.reason) {
+    return New-MalformedQuotaState
+  }
+  # A recorded quota must say it is recorded: stale needs its reason, observation
+  # time, and source, and the two on-disk sources are never live.
+  $stale = (Test-OutputRecordProperty $safe 'stale') -and $safe.stale
+  $source = Get-OutputRecordValue $safe 'source'
+  if (($stale -and (-not $safe.ok -or -not (Test-OutputRecordProperty $safe 'staleReason') -or
+        -not (Test-OutputRecordProperty $safe 'cachedAt') -or $null -eq $source)) -or
+      (-not $stale -and (Test-OutputRecordProperty $safe 'staleReason')) -or
+      ($source -cin @('claude_code', 'claude_desktop') -and -not $stale)) {
     return New-MalformedQuotaState
   }
   return $safe
@@ -1773,38 +2253,66 @@ function Select-CodexQuotaFields($Quota) {
   return $safe
 }
 
-function Select-CodexRateLimits($Limits) {
-  if ($null -eq $Limits -or
-      (-not ($Limits -is [Collections.IDictionary]) -and -not ($Limits -is [pscustomobject]))) {
-    return $null
+<#
+  Official Codex quota as published. Upstream Unix-second resets are converted to
+  ISO text exactly once, in ConvertTo-CodexOfficialQuota; this validator accepts only
+  that browser form, so running it again on its own output is a no-op instead of a
+  silent rejection.
+#>
+function Select-CodexOfficialFields($Quota) {
+  $safe = Select-TypedOutputRecord -Record $Quota `
+    -RequiredBooleans @('ok') `
+    -OptionalNullableStrings @('reason', 'planType') `
+    -OptionalStrings @('source', 'staleReason') `
+    -OptionalDates @('observedAt') `
+    -OptionalBooleans @('stale')
+  if ($null -eq $safe -or
+      -not (Test-OutputReasonCode (Get-OutputRecordValue $safe 'reason')) -or
+      -not (Test-OutputReasonCode (Get-OutputRecordValue $safe 'staleReason'))) {
+    return New-MalformedQuotaState
   }
-  $safe = [ordered]@{}
+  if ((Test-OutputRecordProperty $safe 'source') -and $safe.source -cnotin @('app_server', 'session')) {
+    return New-MalformedQuotaState
+  }
+  $plan = Get-OutputRecordValue $safe 'planType'
+  if ($null -ne $plan -and $plan -cnotmatch '\A[a-z0-9_]{1,64}\z') { return New-MalformedQuotaState }
+
+  $windowCount = 0
   foreach ($windowName in @('primary', 'secondary')) {
-    if (-not (Test-OutputRecordProperty $Limits $windowName)) { continue }
-    $window = Get-OutputRecordValue $Limits $windowName
-    if ($null -eq $window) { continue }
-    $safeWindow = Select-TypedOutputRecord -Record $window `
-      -RequiredPercents @('used_percent')
-    if ($null -eq $safeWindow) { return $null }
-    if (Test-OutputRecordProperty $window 'resets_at') {
-      $resetsAt = Get-OutputRecordValue $window 'resets_at'
-      if ($null -eq $resetsAt) {
-        Add-Member -InputObject $safeWindow -NotePropertyName 'resets_at' -NotePropertyValue $null -Force
-      } elseif (Test-JsonInt64Value $resetsAt) {
-        try {
-          $resetIso = [DateTimeOffset]::FromUnixTimeSeconds([int64]$resetsAt).ToString('o')
-          Add-Member -InputObject $safeWindow -NotePropertyName 'resets_at' -NotePropertyValue $resetIso -Force
-        } catch {
-          return $null
-        }
-      } else {
-        return $null
-      }
+    if (-not (Test-OutputRecordProperty $Quota $windowName)) { continue }
+    $window = Get-OutputRecordValue $Quota $windowName
+    if ($null -eq $window) {
+      Add-Member -InputObject $safe -NotePropertyName $windowName -NotePropertyValue $null -Force
+      continue
     }
-    $safe[$windowName] = $safeWindow
+    $safeWindow = Select-TypedOutputRecord -Record $window `
+      -RequiredPercents @('used_percent') `
+      -RequiredNullableDates @('resets_at')
+    if ($null -eq $safeWindow -or -not (Test-OutputRecordProperty $window 'window_minutes')) {
+      return New-MalformedQuotaState
+    }
+    $minutes = Get-OutputRecordValue $window 'window_minutes'
+    if ($null -ne $minutes -and (-not (Test-JsonInt64Value $minutes) -or [double]$minutes -le 0)) {
+      return New-MalformedQuotaState
+    }
+    Add-Member -InputObject $safeWindow -NotePropertyName 'window_minutes' -NotePropertyValue $minutes -Force
+    Add-Member -InputObject $safe -NotePropertyName $windowName -NotePropertyValue $safeWindow -Force
+    $windowCount += 1
   }
-  if (-not $safe.Count) { return $null }
-  return [pscustomobject]$safe
+  if ($safe.ok) {
+    foreach ($requiredField in @('reason', 'source', 'observedAt', 'planType', 'primary', 'secondary')) {
+      if (-not (Test-OutputRecordProperty $safe $requiredField)) { return New-MalformedQuotaState }
+    }
+    if ($null -ne $safe.reason -or $windowCount -lt 1) { return New-MalformedQuotaState }
+  } elseif (-not (Test-OutputRecordProperty $safe 'reason') -or $null -eq $safe.reason) {
+    return New-MalformedQuotaState
+  }
+  $stale = (Test-OutputRecordProperty $safe 'stale') -and $safe.stale
+  $hasStaleReason = Test-OutputRecordProperty $safe 'staleReason'
+  if (($stale -and (-not $safe.ok -or -not $hasStaleReason)) -or (-not $stale -and $hasStaleReason)) {
+    return New-MalformedQuotaState
+  }
+  return $safe
 }
 
 function Select-StatusCurrent($Status) {
@@ -2139,6 +2647,7 @@ function Receive-BlocksIfReady([bool]$WaitForCompletion = $false) {
     Close-CollectorProcess $job
     $script:blocksJob = $null
     $script:blocksDeadlineUtc = $null
+    Step-QuotaState
   }
   Assert-CollectorCleanupVerified
 }
@@ -2187,17 +2696,34 @@ function Write-TerminalFailureSignal([string]$Reason) {
   Write-FailureScript "window.__GENERATION_FAILURE__ = $json; if (window.__fail__) window.__fail__();"
 }
 
+function Get-PublishedLimits {
+  return [ordered]@{
+    claudeQuota = Select-ClaudeQuotaFields (Resolve-ClaudeQuotaState)
+    claudeBlocks = Select-UsableBlocks $claudeBlocks
+    codexQuota = Select-CodexQuotaFields $codexQuota
+    codex = Select-CodexOfficialFields (Resolve-CodexOfficialQuota)
+  }
+}
+
 function Write-Snapshot([bool]$Complete) {
   $availablePeriods = @($PeriodKeys | Where-Object { $reports.Contains($_) })
-  $reportCurrencies = @($availablePeriods | ForEach-Object {
-    @($reports[$_].claude.currency, $reports[$_].codex.currency)
-  })
-  $statusCurrencies = @($availablePeriods | ForEach-Object {
-    foreach ($provider in @('claude', 'codex')) {
-      Select-StatusCurrency (Select-UsableStatus (Read-JsonFile $scratch["$_/$provider/status"]))
-    }
-  })
-  $displayCurrency = Resolve-DisplayCurrency -ReportCurrencies $reportCurrencies -StatusCurrencies $statusCurrencies
+  if ($availablePeriods.Count) {
+    $reportCurrencies = @($availablePeriods | ForEach-Object {
+      @($reports[$_].claude.currency, $reports[$_].codex.currency)
+    })
+    # Only completed status calls count: a status file still being written by a
+    # running process must never contribute a currency to a revision.
+    $statusCurrencies = @($availablePeriods | ForEach-Object {
+      foreach ($provider in @('claude', 'codex')) { $script:StatusCurrencies["$_/$provider"] }
+    })
+    $displayCurrency = Resolve-DisplayCurrency -ReportCurrencies $reportCurrencies -StatusCurrencies $statusCurrencies
+  } else {
+    # A quota-only revision has no report currency yet; the quota amounts it can
+    # show (ccusage windows, relay balances) are USD-denominated.
+    $displayCurrency = [pscustomobject][ordered]@{ code = 'USD'; rate = 1.0; symbol = '$' }
+  }
+  $quotaVersion = $script:QuotaStateVersion
+  $limits = Get-PublishedLimits
   $script:Revision += 1
 
   $payload = [ordered]@{
@@ -2215,17 +2741,74 @@ function Write-Snapshot([bool]$Complete) {
     }
     periods = $availablePeriods
     reports = $reports
-    limits = [ordered]@{
-      claudeQuota = Select-ClaudeQuotaFields $claudeQuota
-      claudeBlocks = Select-UsableBlocks $claudeBlocks
-      codexQuota = Select-CodexQuotaFields $codexQuota
-      codex = Select-CodexRateLimits $codexLimits
-    }
+    limits = $limits
     appDir = $AppDir
   }
 
   $json = $payload | ConvertTo-Json -Depth 100 -Compress
   Write-DataScript "window.__DATA__ = $json; if (window.__render__) window.__render__();"
+  $script:PublishedQuotaVersion = $quotaVersion
+}
+
+<#
+  Quota states change while CodeBurn runs: local records load during the first
+  collector, and the live reads finish whenever their providers answer. Between
+  collector slices, a changed quota state is published on top of the last committed
+  usage - before the first report that is a quota-only revision, which lets the
+  page show the quota cards within about a second. It is never called while a
+  period candidate is being committed, so an uncommitted period cannot leak into
+  a revision. A failed write only skips this early update.
+#>
+function Step-QuotaState { $script:QuotaStateVersion += 1 }
+
+function Publish-QuotaUpdate {
+  if ($GenerationFailed -or $script:QuotaStateVersion -eq $script:PublishedQuotaVersion) { return }
+  if ($script:QuotaPublishRetryAfterUtc -and [DateTime]::UtcNow -lt $script:QuotaPublishRetryAfterUtc) { return }
+  try {
+    Write-Snapshot $false
+    $script:QuotaPublishRetryAfterUtc = $null
+  } catch {
+    # A locked data.js already cost this slice its bounded retries. Back off so later
+    # slices keep checking collector deadlines; the next main-line publish retries.
+    $script:QuotaPublishRetryAfterUtc = [DateTime]::UtcNow.AddSeconds(2)
+    throw
+  }
+}
+
+function Receive-CollectorSlice {
+  Receive-OptionalCollectors
+  Publish-QuotaUpdate
+}
+
+# A report whose live model rows already sum exactly to its headline cost has nothing
+# for durable status attribution to add: every session is still readable, so the
+# merge would name the same models with the same costs (and, past the 20-row status
+# cap, the live rows are the more complete list). Status stays required whenever any
+# remainder or a contradictory allocation remains, which is where historical model
+# detail actually lives.
+#
+# Status is also the only public source of CodeBurn's exchange rate, so a non-USD
+# report keeps requesting it until one completed status call has supplied that rate.
+function Test-StatusRateKnown([string]$Code) {
+  foreach ($currency in @($script:StatusCurrencies.Values)) {
+    if ($currency -and [string]$currency.code -ieq $Code -and (Test-JsonNumberValue $currency.rate $false)) { return $true }
+  }
+  return $false
+}
+
+function Test-StatusReconciliationNeeded([string]$PeriodKey, [string]$Provider) {
+  if (-not $reports.Contains($PeriodKey)) { return $true }
+  $report = $reports[$PeriodKey][$Provider]
+  if (-not $report -or -not (Test-OutputRecordProperty $report 'costReconciliation')) { return $true }
+  $currency = [string]$report.currency
+  if ($currency -ine 'USD' -and -not (Test-StatusRateKnown $currency)) { return $true }
+  $reconciliation = $report.costReconciliation
+  if ([string]$reconciliation.modelSource -ne 'live_report_fallback' -or
+      [double]$reconciliation.unattributedCost -gt 0) { return $true }
+  # Within the reconciliation tolerance a small remainder is folded into the largest
+  # live row, while durable status would still name the model it belongs to. Only an
+  # exact match makes the status pass redundant.
+  return [Math]::Abs([double]$reconciliation.referenceCost - [double]$reconciliation.modelSourceCost) -gt 0.000001
 }
 
 function Publish-PeriodCandidate([string]$PeriodKey) {
@@ -2234,7 +2817,7 @@ function Publish-PeriodCandidate([string]$PeriodKey) {
   $candidate = Build-PeriodReports $PeriodKey
   $reports[$PeriodKey] = $candidate
   try {
-    Receive-BlocksIfReady
+    Receive-OptionalCollectors
     Write-Snapshot $false
   } catch {
     if ($hadPrevious) {
@@ -2599,6 +3182,12 @@ try {
     }
   }
 
+  try {
+    if (-not (Test-Path -LiteralPath $NodeCompileCacheDirectory)) {
+      New-Item -ItemType Directory -Path $NodeCompileCacheDirectory | Out-Null
+    }
+  } catch {}
+
   # ccusage is a separate tool over the same read-only session files, so it may
   # overlap with CodeBurn.
   if ($CCUsage) {
@@ -2606,6 +3195,20 @@ try {
     $blocksJob = Start-OptionalJsonCommand $CCUsage @('blocks', '--json', '--offline') $blocksOutput
     if (-not $blocksJob) { $blocksDeadlineUtc = $null }
   }
+
+  # Quota reads start now and finish in the background: the Claude request is an
+  # async HttpClient task and the Codex helper is another Job-contained process. A
+  # slow provider can update its card later but can never delay a usage publish.
+  $GenerationStage = 'startup'
+  Start-ClaudeLiveQuota
+  Start-CodexOfficialQuota
+  if ($script:CodexOfficial.Mode -ne 'apikey') {
+    # Only an API-key login can be billed through a relay. A ChatGPT login is limited
+    # by its own plan, and an unrecognized login (no auth.json, a keyring store, an
+    # unknown mode) is no evidence of a relay, so the replay is never attempted.
+    $codexQuota = [ordered]@{ ok = $false; reason = 'official_account' }
+  }
+  Step-QuotaState
 
   # CodeBurn is NOT concurrency-safe: overlapping invocations leak each other's
   # rows, so a `--provider codex` run can come back holding the union of both
@@ -2627,29 +3230,37 @@ try {
       Publish-PeriodCandidate $periodKey
       $HasPublishedSnapshot = $true
 
+      $statusCollected = $false
       foreach ($provider in @('claude', 'codex')) {
+        if (-not (Test-StatusReconciliationNeeded $periodKey $provider)) { continue }
         try {
           Invoke-CodeBurnJson `
             @('status', '--format', 'menubar-json', '--scope', 'local', '--provider', $provider,
               '--period', $periodKey, '--no-optimize', '--no-timeline') `
             $scratch["$periodKey/$provider/status"] "$periodKey/$provider durable models"
+          $script:StatusCurrencies["$periodKey/$provider"] = Select-StatusCurrency (Select-UsableStatus (Read-JsonFile $scratch["$periodKey/$provider/status"]))
+          $statusCollected = $true
         } catch { Assert-CollectorCleanupVerified }
       }
-      Publish-PeriodCandidate $periodKey
+      if ($statusCollected) { Publish-PeriodCandidate $periodKey }
     }
 
     $GenerationStage = 'local_limits'
     Receive-BlocksIfReady $true
+    Update-ClaudeLocalQuota
+    Update-CodexSessionQuota
+    Write-Snapshot $false
 
-    # Quota reads happen after every local report is available. Slow or failed
-    # provider networks can update their cards, but can no longer block the page.
-    $codexLimits = Select-CodexRateLimits (Get-LatestCodexRateLimit)
-    Write-Snapshot $false
+    # Both live reads have been running since startup; these waits only use what is
+    # left of their own budgets.
     $GenerationStage = 'claude_quota'
-    $claudeQuota = Get-ClaudeOAuthUsage
-    Write-Snapshot $false
+    Receive-ClaudeLiveQuota $true
     $GenerationStage = 'codex_quota'
-    $codexQuota = Get-CodexProviderQuota
+    Receive-CodexOfficialQuota $true
+    if ($script:CodexOfficial.Mode -eq 'apikey') {
+      Write-Snapshot $false
+      $codexQuota = Get-CodexProviderQuota
+    }
     $GenerationStage = 'final_publish'
     Write-Snapshot $true
   } catch {
@@ -2667,7 +3278,7 @@ try {
       throw $initialFailure
     }
     $GenerationError = [ordered]@{ reason = 'partial_generation_failed'; stage = $GenerationStage }
-    if ($claudeQuota.reason -eq 'loading') { $claudeQuota = [ordered]@{ ok = $false; reason = 'not_collected' } }
+    $script:QuotaCollectionStopped = $true
     if ($codexQuota.reason -eq 'loading') { $codexQuota = [ordered]@{ ok = $false; reason = 'not_collected' } }
     try {
       Write-Snapshot $true
@@ -2704,6 +3315,11 @@ try {
     if ($blocksJob) {
       Close-CollectorProcess $blocksJob
     }
+    if ($script:CodexOfficial.Job) {
+      Close-CollectorProcess $script:CodexOfficial.Job
+      $script:CodexOfficial.Job = $null
+    }
+    Stop-ClaudeLiveQuota
     $collectorDrainFailed = $false
     if ($script:CollectorCleanupUncertain) {
       try { Wait-AbandonedCollectorProcesses $userSid }
@@ -2713,7 +3329,7 @@ try {
     # Raw reports are never a debugging artifact: they include fields intentionally
     # excluded from data.js and must disappear on both success and failure.
     foreach ($path in @($scratch.Values) + @(
-      $blocksOutput, $temporaryData, $backupData, $temporaryFailure, $backupFailure
+      $blocksOutput, $codexQuotaOutput, $temporaryData, $backupData, $temporaryFailure, $backupFailure
     )) {
       if ($path -and -not (Remove-FileWithRetry $path)) {
         [void]$CleanupFailures.Add([IO.Path]::GetFileName($path))

@@ -239,15 +239,26 @@ async function measureRealStartup(generatorPath) {
   const budgetMilliseconds = Number(process.env.AI_USAGE_STARTUP_BUDGET_MS || 25000);
   assert.equal(visibleState.period, "30days");
   assert.equal(visibleState.complete, false);
-  assert.deepEqual(visibleState.periods, ["30days"]);
   assert.equal(visibleState.bootError, null);
   assert.equal(visibleState.overflow, 0);
+  // The page opens on quota alone; the default period's usage follows.
+  const usageState = await waitFor(
+    () => evaluate(`(function () {
+      if (!window.__DATA__ || !(window.__DATA__.periods || []).length) return null;
+      if (document.querySelector('#app').classList.contains('usage-pending')) return null;
+      return { periods: window.__DATA__.periods };
+    })()`),
+    "the first usage revision",
+    30000
+  );
+  const usageMilliseconds = Date.now() - startedAt;
+  assert.deepEqual(usageState.periods, ["30days"]);
   assert.deepEqual(runtimeErrors, [], `Browser runtime errors: ${runtimeErrors.join(" | ")}`);
   assert.ok(
-    visibleMilliseconds < budgetMilliseconds,
-    `Real process-to-app.show took ${visibleMilliseconds} ms, above the ${budgetMilliseconds} ms budget. ${generatorOutput.join("")}`
+    usageMilliseconds < budgetMilliseconds,
+    `Real process-to-usage took ${usageMilliseconds} ms, above the ${budgetMilliseconds} ms budget. ${generatorOutput.join("")}`
   );
-  console.log(`BrowserSmoke.mjs: REAL STARTUP PASS (process-to-app.show ${visibleMilliseconds} ms)`);
+  console.log(`BrowserSmoke.mjs: REAL STARTUP PASS (process-to-app.show ${visibleMilliseconds} ms, process-to-usage ${usageMilliseconds} ms)`);
 }
 
 async function main() {
@@ -263,6 +274,15 @@ async function main() {
   finalSnapshot.complete = true;
   const defaultPeriod = finalSnapshot.period;
 
+  // Quota is published before the first usage report.
+  const quotaOnlySnapshot = structuredClone(finalSnapshot);
+  quotaOnlySnapshot.runId = "previous-browser-smoke";
+  quotaOnlySnapshot.revision = 98;
+  quotaOnlySnapshot.complete = false;
+  quotaOnlySnapshot.periods = [];
+  quotaOnlySnapshot.reports = {};
+  quotaOnlySnapshot.currency = { code: "USD", rate: 1, symbol: "$" };
+
   const partialSnapshot = structuredClone(finalSnapshot);
   partialSnapshot.runId = "previous-browser-smoke";
   partialSnapshot.revision = 99;
@@ -271,7 +291,7 @@ async function main() {
   partialSnapshot.reports = { [defaultPeriod]: partialSnapshot.reports[defaultPeriod] };
   partialSnapshot.limits.claudeQuota = { ok: false, reason: "loading" };
   partialSnapshot.limits.codexQuota = { ok: false, reason: "loading" };
-  partialSnapshot.limits.codex = null;
+  partialSnapshot.limits.codex = { ok: false, reason: "loading" };
 
   const chartSnapshot = structuredClone(partialSnapshot);
   chartSnapshot.runId = "browser-smoke";
@@ -289,6 +309,7 @@ async function main() {
   detailSnapshot.reports[defaultPeriod].codex.overview.calls += 2;
   detailSnapshot.limits.claudeQuota = { ok: false, reason: "loading" };
   detailSnapshot.limits.codexQuota = { ok: false, reason: "loading" };
+  // Older snapshots carried no official quota object at all; the page must cope.
   detailSnapshot.limits.codex = null;
 
   const expandedSnapshot = structuredClone(finalSnapshot);
@@ -296,7 +317,7 @@ async function main() {
   expandedSnapshot.complete = false;
   expandedSnapshot.limits.claudeQuota = { ok: false, reason: "loading" };
   expandedSnapshot.limits.codexQuota = { ok: false, reason: "loading" };
-  expandedSnapshot.limits.codex = null;
+  expandedSnapshot.limits.codex = { ok: false, reason: "loading" };
   fs.unlinkSync(dataPath);
 
   const edge = findEdge();
@@ -345,6 +366,33 @@ async function main() {
   assert.equal(waitingState.protocol, "file:");
   assert.equal(waitingState.bootError, null);
 
+  writeSnapshot(quotaOnlySnapshot);
+  await waitFor(
+    () => evaluate("window.__DATA__ && window.__DATA__.revision === 98 && document.querySelector('#app').classList.contains('show')"),
+    "the quota-only first revision"
+  );
+  const quotaOnlyState = await evaluate(`({
+    pending: document.querySelector('#app').classList.contains('usage-pending'),
+    waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
+    heroHidden: getComputedStyle(document.querySelector('.hero')).display === 'none',
+    detailsHidden: getComputedStyle(document.querySelector('#details')).display === 'none',
+    quotaCards: document.querySelectorAll('#quota .quota').length,
+    codexPlan: document.querySelector('#quota').textContent.includes('Pro'),
+    loaderHidden: getComputedStyle(document.querySelector('#loader')).display === 'none' ||
+      document.querySelector('#loader').classList.contains('done'),
+    bootError: window.__BOOT_ERROR__ || null,
+    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+  })`);
+  assert.equal(quotaOnlyState.pending, true);
+  assert.equal(quotaOnlyState.waitVisible, true);
+  assert.equal(quotaOnlyState.heroHidden, true);
+  assert.equal(quotaOnlyState.detailsHidden, true);
+  assert.equal(quotaOnlyState.quotaCards, 1, "Only the Codex card belongs to the codex filter.");
+  assert.equal(quotaOnlyState.codexPlan, true);
+  assert.equal(quotaOnlyState.loaderHidden, true);
+  assert.equal(quotaOnlyState.bootError, null);
+  assert.equal(quotaOnlyState.overflow, 0);
+
   writeSnapshot(partialSnapshot);
 
   await waitFor(
@@ -358,10 +406,14 @@ async function main() {
       provider: document.querySelector('[data-filter][aria-pressed="true"]')?.dataset.filter,
       updating: document.querySelector('#stamp').textContent.includes('\u66f4\u65b0\u4e2d'),
       quotaLoading: document.querySelector('#quota').textContent.includes('\u6b63\u5728\u83b7\u53d6\u989d\u5ea6'),
+      usagePending: document.querySelector('#app').classList.contains('usage-pending'),
+      heroShown: getComputedStyle(document.querySelector('.hero')).display !== 'none',
       bootError: window.__BOOT_ERROR__ || null,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
     };
   })()`);
+  assert.equal(partialState.usagePending, false);
+  assert.equal(partialState.heroShown, true);
   assert.equal(partialState.complete, false);
   assert.equal(partialState.period, defaultPeriod);
   assert.equal(partialState.provider, "codex");
@@ -506,9 +558,12 @@ async function main() {
     detailOpen: document.querySelector('#details details:nth-of-type(2)').open,
     completed: document.querySelector('#stamp').textContent.includes('\u66f4\u65b0\u5b8c\u6210'),
     quotaLoaded: !document.querySelector('#quota').textContent.includes('\u6b63\u5728\u83b7\u53d6\u989d\u5ea6'),
+    codexWindows: document.querySelector('#quota').textContent.includes('5 \u5c0f\u65f6\u989d\u5ea6') &&
+      document.querySelector('#quota').textContent.includes('\u5468\u989d\u5ea6'),
     bootError: window.__BOOT_ERROR__ || null,
     overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
   })`);
+  assert.equal(finalState.codexWindows, true, "The official Codex card did not label its plan windows.");
   assert.equal(finalState.period, "week");
   assert.equal(finalState.chartFocused, true);
   assert.equal(finalState.chartPreserved, true);
@@ -586,6 +641,43 @@ async function main() {
   })()`);
   assert.ok(degradedState.includes("\u90e8\u5206\u66f4\u65b0\u5931\u8d25\uff0c\u8bf7\u91cd\u65b0\u542f\u52a8"));
 
+  // Recorded quota: a signed-out CLI shows the desktop app's sample with its source,
+  // and a recorded Codex window that has since rolled over says so.
+  const recordedSnapshot = structuredClone(finalSnapshot);
+  recordedSnapshot.runId = "recorded-browser-smoke";
+  recordedSnapshot.revision = 1;
+  recordedSnapshot.limits.claudeQuota = {
+    ok: true, reason: null, source: "claude_desktop", stale: true, staleReason: "no_credentials",
+    cachedAt: new Date(Date.now() - 20 * 60000).toISOString(),
+    fiveHour: { utilization: 22, resetsAt: null }, sevenDay: { utilization: 7, resetsAt: null }, limits: []
+  };
+  recordedSnapshot.limits.codex = {
+    ok: true, reason: null, source: "session", observedAt: new Date(Date.now() - 9 * 86400000).toISOString(),
+    planType: null, stale: true, staleReason: "request_timed_out",
+    primary: { used_percent: 64, resets_at: new Date(Date.now() - 2 * 86400000).toISOString(), window_minutes: 10080 },
+    secondary: null
+  };
+  const recordedState = await evaluate(`(function () {
+    document.querySelector('[data-filter="all"]').click();
+    window.__DATA__ = ${JSON.stringify(recordedSnapshot)};
+    window.__render__();
+    var text = document.querySelector('#quota').textContent;
+    return {
+      desktopSource: text.includes('Claude \u684c\u9762\u7248'),
+      loginHint: text.includes('claude auth login'),
+      claudeMeters: document.querySelectorAll('#quota .quota:first-child .meter-row:not(.is-reset)').length,
+      codexReset: text.includes('\u5df2\u91cd\u7f6e'),
+      codexStale: text.includes('\u672c\u5730\u8bb0\u5f55'),
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+    };
+  })()`);
+  assert.equal(recordedState.desktopSource, true, JSON.stringify(recordedState));
+  assert.equal(recordedState.loginHint, true);
+  assert.equal(recordedState.claudeMeters, 2);
+  assert.equal(recordedState.codexReset, true);
+  assert.equal(recordedState.codexStale, true);
+  assert.equal(recordedState.overflow, 0);
+
   const staleIncompleteSnapshot = structuredClone(finalSnapshot);
   staleIncompleteSnapshot.runId = "stale-incomplete-browser-smoke";
   staleIncompleteSnapshot.revision = 1;
@@ -630,6 +722,39 @@ async function main() {
   assert.equal(staleFailureState.failure?.runId, "stale-incomplete-browser-smoke");
   assert.equal(staleFailureState.bootError, null);
   assert.equal(coordinationRequests(), staleFailureRequests, "Polling continued after a terminal failure over existing data.");
+
+  // A startup failure after the quota-only revision: the quota stays, the usage card
+  // says it failed, and polling stops.
+  fs.unlinkSync(failurePath);
+  const quotaFailureSnapshot = structuredClone(quotaOnlySnapshot);
+  quotaFailureSnapshot.runId = "quota-failure-browser-smoke";
+  quotaFailureSnapshot.revision = 1;
+  writeSnapshot(quotaFailureSnapshot);
+  const quotaFailureUrl = pathToFileURL(path.join(work, "report.html"));
+  quotaFailureUrl.searchParams.set("failure", "quota-only");
+  await client.send("Page.navigate", { url: quotaFailureUrl.href });
+  await waitFor(
+    () => evaluate("window.__DATA__?.runId === 'quota-failure-browser-smoke' && document.querySelector('#app')?.classList.contains('usage-pending')"),
+    "a quota-only page before its startup failure"
+  );
+  writeFailure("default_usage", "quota-failure-browser-smoke");
+  await waitFor(
+    () => evaluate("document.querySelector('.usage-wait')?.classList.contains('failed')"),
+    "the startup failure over a quota-only page"
+  );
+  const quotaFailureRequests = coordinationRequests();
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  const quotaFailureState = await evaluate(`({
+    stamp: document.querySelector('#stamp').textContent,
+    wait: document.querySelector('.usage-wait p').textContent,
+    quotaCards: document.querySelectorAll('#quota .quota').length,
+    bootError: window.__BOOT_ERROR__ || null
+  })`);
+  assert.ok(quotaFailureState.stamp.includes("数据生成失败"));
+  assert.ok(quotaFailureState.wait.includes("读取失败"));
+  assert.ok(quotaFailureState.quotaCards >= 1);
+  assert.equal(quotaFailureState.bootError, null);
+  assert.equal(coordinationRequests(), quotaFailureRequests, "Polling continued after a startup failure over a quota-only page.");
 
   fs.unlinkSync(dataPath);
   fs.unlinkSync(failurePath);

@@ -11,6 +11,7 @@ ehthumbs.db
 /Generate-ClaudeReport.ps1
 /ReportData.psm1
 /template.html
+/codex-rate-limits.mjs
 /dashboard.bat
 /dashboard.vbs
 /fonts/

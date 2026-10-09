@@ -180,6 +180,7 @@ $payload = [ordered]@{
     claudeQuota = [ordered]@{
       ok = $true
       reason = $null
+      source = 'oauth'
       fiveHour = [ordered]@{ utilization = 38; resetsAt = (At 2.75) }
       sevenDay = [ordered]@{ utilization = 64; resetsAt = (At 78) }
       limits = @(
@@ -196,24 +197,16 @@ $payload = [ordered]@{
       [ordered]@{ startTime = (At -50); endTime = (At -45); actualEndTime = (At -45.2); costUSD = 38.2; isActive = $false; isGap = $false },
       [ordered]@{ startTime = (At -2.25); endTime = (At 2.75); actualEndTime = (At 0); costUSD = 12.5; isActive = $true; isGap = $false; burnRate = [ordered]@{ costPerHour = 2.4 }; projection = [ordered]@{ totalCost = 18.8 } }
     ) }
-    codexQuota = [ordered]@{
+    # A ChatGPT login reads its own plan quota; the relay replay is not consulted.
+    codexQuota = [ordered]@{ ok = $false; reason = 'official_account' }
+    codex = [ordered]@{
       ok = $true
       reason = $null
-      provider = 'Demo Relay'
-      planName = 'Weekly 500 Plan'
-      mode = 'unrestricted'
-      isValid = $true
-      unit = 'USD'
-      remaining = 231.60
-      expiresAt = (At 528)
-      windows = @(
-        [ordered]@{ kind = 'weekly'; limit = 500; used = 268.40; percent = 53.68; startsAt = (At -74); resetsAt = (At 94) },
-        [ordered]@{ kind = 'daily'; limit = 0; used = 96.20; percent = $null; startsAt = $null; resetsAt = $null }
-      )
-    }
-    codex = [ordered]@{
-      primary = [ordered]@{ used_percent = 44; resets_at = (At 1.75) }
-      secondary = [ordered]@{ used_percent = 18; resets_at = (At 156) }
+      source = 'app_server'
+      observedAt = (At 0)
+      planType = 'pro'
+      primary = [ordered]@{ used_percent = 44; resets_at = (At 1.75); window_minutes = 300 }
+      secondary = [ordered]@{ used_percent = 18; resets_at = (At 156); window_minutes = 10080 }
     }
   }
   appDir = 'C:\Demo\AIUsage'

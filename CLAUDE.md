@@ -10,7 +10,10 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 - Local HTML, bundled pixel webfonts, CSS, and vanilla JavaScript dashboard
 - CodeBurn for normalized Claude/Codex usage and API reference-price estimates
 - ccusage for the active window's burn rate, projection, and hour-of-day profile
-- Claude's OAuth usage endpoint for the real plan quota
+- Claude's OAuth usage endpoint for the real plan quota, with Claude Code's cached response and
+  the Claude desktop app's plan-usage samples as labelled local fallbacks
+- The official Codex CLI (`codex app-server`, through `src/codex-rate-limits.mjs`) for a ChatGPT
+  login's plan quota, with session `rate_limits` as the labelled local fallback
 
 ## Commands
 
@@ -30,7 +33,10 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 ## Rules
 
 - `CLAUDE.md` is the only project rule source. Do not add `AGENTS.md` or duplicate rule files.
-- Treat Claude and Codex session stores, and the CC Switch database, as read-only inputs.
+- Treat Claude and Codex session stores, Claude Code's `~/.claude.json`, the Claude desktop app's
+  `plan-usage-history.json`, Codex's `auth.json`, and the CC Switch database as read-only inputs.
+  Read only `auth_mode` from Codex's `auth.json`, and never open the desktop app's encrypted
+  login (`oauth:tokenCache`, Electron safeStorage).
 - Keep every PowerShell file pure ASCII. Windows PowerShell reads a BOM-less script in the
   system ANSI code page, so a non-ASCII literal is mojibake before it can reach a snapshot
   or match a file on disk. All visible copy belongs in `template.html`, which is served as
@@ -47,12 +53,37 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 
 ## Quota, network, and concurrency
 
-- The app makes exactly two authenticated network requests, both quota reads against a
-  provider the user already configured: Claude's OAuth usage endpoint, and the Codex
-  relay usage call replayed from CC Switch. Keep every credential read-only, out of the
-  payload, out of logs, and out of exception text. Any failure degrades with a stated
-  reason; it never throws and never blanks the dashboard. A third authenticated
-  destination is a change to the product's premise, not an implementation detail.
+- The app itself makes at most two authenticated network requests, both quota reads against a
+  provider the user already configured: Claude's OAuth usage endpoint with a valid Claude Code
+  CLI token, and - only for an API-key Codex login - the relay usage call replayed from CC
+  Switch. For a ChatGPT Codex login it never replays the relay; it asks the official Codex CLI
+  for the plan quota instead (`codex app-server`, `account/rateLimits/read`), and Codex sends
+  its own credential. Keep every credential read-only, out of the payload, out of logs, and out
+  of exception text. Any failure degrades with a stated reason; it never throws and never
+  blanks the dashboard. A third authenticated destination, or reading another client's
+  credential, is a change to the product's premise, not an implementation detail.
+- When the Claude CLI has no valid token (the desktop app keeps its own login and never
+  refreshes the CLI's), show the newest local official record instead: Claude Code's
+  `cachedUsageUtilization` only for the signed-in `oauthAccount.accountUuid`, or the desktop
+  app's plan-usage samples only for the signed-in organization (a mixed-organization history
+  with no known account is rejected). Label `source`, `cachedAt`, and `staleReason`; never
+  invent reset times the record does not carry. Parse `~/.claude.json` with
+  `JavaScriptSerializer`: it repeats project keys that differ only in case, which Windows
+  PowerShell `ConvertFrom-Json` rejects.
+- Official Codex quota uses only the plan bucket, `limit_id` `codex` (or a pre-bucket record
+  without `limit_id`); `base_model_inference` and other buckets are not the plan. Convert
+  Unix-second resets to ISO exactly once in `ConvertTo-CodexOfficialQuota`; the published DTO
+  validator must accept its own output unchanged.
+- Bind the Claude quota cache to a SHA-256 digest of the CLI login's organization and Claude
+  Code's signed-in account; never reuse it across a digest change or as a live answer while the
+  CLI token is missing or expired. Only an API-key Codex login replays the relay; a ChatGPT or
+  unrecognized login never does. The official Codex CLI may refresh its own `auth.json` when it
+  answers; that is its normal behavior, and this app never writes the file.
+- The Codex helper never reads Codex credentials or `auth.json`; it starts the CLI with the
+  command path passed through the environment so `cmd.exe` cannot expand a literal percent
+  pair, whitelists the snapshot fields it prints, and stops the whole child tree on timeout.
+  It is a Job-contained optional collector with one absolute 30-second budget and a 1 MiB
+  output cap.
 - Codex quota on a relay provider comes from CC Switch's `usage_script`, read read-only
   from `.cc-switch\cc-switch.db` through the Windows-supplied `winsqlite3.dll`. Reuse the
   script's declared request only; never evaluate its JavaScript extractor, never replay a
@@ -89,11 +120,16 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   period and provider, displayed model costs must sum to that headline. Represent any
   unresolved remainder explicitly as unattributed cost, and mark incomplete per-model
   token counts as lower bounds instead of presenting them as complete totals.
+- Run the CodeBurn durable status pass only when a period's live report leaves any remainder or a
+  contradictory allocation, or when a non-USD report still lacks CodeBurn's exchange rate (status
+  is its only public source). A report whose live models sum exactly to `overview.cost` names the
+  same models at the same costs, so it skips status. Collectors run with `NODE_COMPILE_CACHE` under
+  `%TEMP%\ClaudeUsage\node-compile-cache` (V8 bytecode of collector code only, never usage).
 - Run CodeBurn **one process at a time across launcher processes**. It is not
   concurrency-safe and overlapping runs silently mix providers' models and projects.
-  Create every CodeBurn and ccusage root atomically inside its own kill-on-close Windows
-  Job Object through `PROC_THREAD_ATTRIBUTE_JOB_LIST`, and retain the Job handle for the
-  collector lifetime. A normal Job handle is not a completion event on this Windows host;
+  Create every CodeBurn, ccusage, and Codex quota helper root atomically inside its own
+  kill-on-close Windows Job Object through `PROC_THREAD_ATTRIBUTE_JOB_LIST`, and retain the
+  Job handle for the collector lifetime. A normal Job handle is not a completion event on this Windows host;
   completion and forced cleanup must poll
   `JobObjectBasicAccountingInformation.ActiveProcesses` to a stable zero before another
   CodeBurn process starts. After a process is created but before ownership transfers, any
@@ -103,11 +139,16 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   must therefore lose every collector descendant before a
   replacement recovers its abandoned report mutex. See
   `docs/ARCHITECTURE.md`.
-- Keep the default period first and publish report-first snapshots with increasing
+- Keep the default period first and publish progressive snapshots with increasing
   `revision` and `complete:false`; identify each process with a unique `runId`. The browser
   remains on the requested period when it arrives and polls until the final `complete:true`
-  revision. Quota reads must stay after local reports so provider latency cannot block the
-  first usable page. After the first publish, later failures must terminate with a retained
+  revision. Quota reads start at launch and run concurrently - the Claude request as a
+  bounded async `HttpClient` task, the Codex helper as a Job-contained process - so provider
+  latency can never delay a usage publish. A changed quota state is published between
+  collector slices, which makes quota-only revisions (empty `periods`) precede the first usage
+  revision; never publish while a period candidate is being committed, and detect changes with
+  the quota state counter rather than re-serializing every slice. After the first usage
+  publish, later failures must terminate with a retained
   `generationError` snapshot rather than blanking an already usable dashboard. A failure
   before the first usage snapshot must atomically publish a terminal, credential-free
   `failure.js` sidecar so the loader stops immediately instead of polling until its timeout.

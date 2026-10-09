@@ -341,4 +341,114 @@ $overflowingWeeklyDate = [pscustomobject]@{
 }
 Assert-True ((ConvertTo-CodexQuota -Response $overflowingWeeklyDate -ProviderName 'Relay').reason -eq 'malformed_response') 'an overflowing derived reset date must degrade instead of throwing'
 
+# --- Claude usage documents: live endpoint and Claude Code's cached copy share one shape.
+Add-Type -AssemblyName System.Web.Extensions
+function ConvertFrom-SerializerJson([string]$Json) {
+  $serializer = New-Object Web.Script.Serialization.JavaScriptSerializer
+  return ,$serializer.DeserializeObject($Json)
+}
+
+$usageJson = '{"five_hour":{"utilization":36,"resets_at":"2026-09-22T17:59:59.812569-07:00"},' +
+  '"seven_day":{"utilization":104.5,"resets_at":"2026-09-28T06:59:59.812589-07:00"},' +
+  '"limits":[{"kind":"session","group":"session","percent":36,"severity":"normal","resets_at":"2026-09-22T17:59:59.812569-07:00","scope":null,"is_active":false},' +
+  '{"kind":"weekly_scoped","group":"weekly","percent":43,"severity":"normal","resets_at":null,"scope":{"model":{"id":null,"display_name":"Fable"}},"is_active":true}],' +
+  '"extra_usage":{"is_enabled":false}}'
+foreach ($usage in @(($usageJson | ConvertFrom-Json), (ConvertFrom-SerializerJson $usageJson))) {
+  $payload = ConvertTo-ClaudeQuotaPayload $usage
+  Assert-True ($payload.ok -eq $true -and $null -eq $payload.reason) 'a complete Claude usage document must convert'
+  Assert-Close $payload.fiveHour.utilization 36 'five-hour utilization must survive conversion'
+  Assert-Close $payload.sevenDay.utilization 100 'an overage must clamp to 100 instead of failing the card'
+  Assert-True ($payload.fiveHour.resetsAt -match '\A2026-09-22T17:59:59\.8125690-07:00\z') 'reset timestamps must normalize to round-trip ISO text'
+  Assert-True (@($payload.limits).Count -eq 2 -and $payload.limits[1].model -eq 'Fable' -and $payload.limits[1].isActive -eq $true) 'per-model limits must keep their model and active flag'
+  Assert-True ($null -eq $payload.limits[1].resetsAt) 'a null limit reset must stay null'
+  Assert-True (-not (($payload | ConvertTo-Json -Depth 10 -Compress) -match '"(extra_usage|is_enabled|scope)"')) 'fields outside the card contract must be dropped'
+}
+Assert-True ($null -eq (ConvertTo-ClaudeQuotaPayload ('{"five_hour":null,"seven_day":null}' | ConvertFrom-Json))) 'a usage document without limits[] must be rejected'
+Assert-True ($null -eq (ConvertTo-ClaudeQuotaPayload ('{"five_hour":{"utilization":"36"},"seven_day":null,"limits":[]}' | ConvertFrom-Json))) 'string utilization must be rejected'
+Assert-True ($null -eq (ConvertTo-ClaudeQuotaPayload ('{"five_hour":{"utilization":36,"resets_at":"tomorrow"},"seven_day":null,"limits":[]}' | ConvertFrom-Json))) 'a non-ISO reset must be rejected'
+Assert-True ($null -eq (ConvertTo-ClaudeQuotaPayload ('{"five_hour":null,"seven_day":null,"limits":[{"kind":"Bad Kind","percent":1}]}' | ConvertFrom-Json))) 'a limit kind outside the reason-code alphabet must be rejected'
+
+$now = [int64]1791468922277
+$cacheJson = '{"fetchedAtMs":' + ($now - 3600000) + ',"accountUuid":"account-a","utilization":' + $usageJson + '}'
+$cached = ConvertTo-ClaudeCodeCachedQuota -Cache (ConvertFrom-SerializerJson $cacheJson) -AccountUuid 'account-a' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000
+Assert-True ($cached.source -eq 'claude_code' -and $cached.observedAtMilliseconds -eq ($now - 3600000) -and $cached.payload.ok) 'a matching Claude Code cache must become a dated candidate'
+Assert-True ($null -eq (ConvertTo-ClaudeCodeCachedQuota -Cache (ConvertFrom-SerializerJson $cacheJson) -AccountUuid 'account-b' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000)) 'another account''s cached usage must never be shown'
+Assert-True ($null -eq (ConvertTo-ClaudeCodeCachedQuota -Cache (ConvertFrom-SerializerJson $cacheJson) -AccountUuid '' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000)) 'an unknown signed-in account must not trust the cache'
+Assert-True ($null -eq (ConvertTo-ClaudeCodeCachedQuota -Cache (ConvertFrom-SerializerJson $cacheJson) -AccountUuid 'account-a' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 1000)) 'a cache older than the age limit must be ignored'
+Assert-True ($null -eq (ConvertTo-ClaudeCodeCachedQuota -Cache (ConvertFrom-SerializerJson $cacheJson) -AccountUuid 'account-a' `
+  -NowMilliseconds ($now - 7200000) -MaxAgeMilliseconds 604800000)) 'a cache from the future must be ignored'
+
+$historyJson = '{"version":2,"samples":[' +
+  '{"t":' + ($now - 7200000) + ',"org":"org-a","u":{"fh":10,"sd":20}},' +
+  '{"t":' + ($now - 3600000) + ',"org":"org-a","u":{"fh":22,"sd":7,"xu":0}},' +
+  '{"t":' + ($now - 60000) + ',"org":"org-b","u":{"fh":90,"sd":90}},' +
+  '{"t":"bad","org":"org-a","u":{"fh":1,"sd":1}}]}'
+$desktop = ConvertTo-ClaudeDesktopQuota -History (ConvertFrom-SerializerJson $historyJson) -OrganizationUuid 'org-a' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000
+Assert-True ($desktop.source -eq 'claude_desktop' -and $desktop.observedAtMilliseconds -eq ($now - 3600000)) 'the newest sample of the signed-in organization must win'
+Assert-Close $desktop.payload.fiveHour.utilization 22 'desktop five-hour utilization must be read'
+Assert-Close $desktop.payload.sevenDay.utilization 7 'desktop seven-day utilization must be read'
+Assert-True ($null -eq $desktop.payload.fiveHour.resetsAt -and @($desktop.payload.limits).Count -eq 0) 'desktop samples carry no reset time or per-model limit'
+Assert-True ($null -eq (ConvertTo-ClaudeDesktopQuota -History (ConvertFrom-SerializerJson $historyJson) -OrganizationUuid '' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000)) 'a mixed-organization history must be rejected when the account is unknown'
+$singleOrg = '{"samples":[{"t":' + ($now - 1000) + ',"org":"org-a","u":{"fh":5}}]}'
+$singleOrgQuota = ConvertTo-ClaudeDesktopQuota -History (ConvertFrom-SerializerJson $singleOrg) -OrganizationUuid '' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000
+Assert-True ($singleOrgQuota.payload.fiveHour.utilization -eq 5 -and $null -eq $singleOrgQuota.payload.sevenDay) 'a single-organization history may be used without an account and may lack a window'
+Assert-True ($null -eq (ConvertTo-ClaudeDesktopQuota -History (ConvertFrom-SerializerJson $historyJson) -OrganizationUuid 'org-a' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 1000)) 'samples older than the age limit must be ignored'
+Assert-True ($null -eq (ConvertTo-ClaudeDesktopQuota -History (ConvertFrom-SerializerJson '{"samples":{}}') -OrganizationUuid 'org-a' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000)) 'a non-array sample list must be rejected'
+$tailOnly = ConvertTo-ClaudeDesktopQuota -History (ConvertFrom-SerializerJson $historyJson) -OrganizationUuid 'org-a' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000 -MaxSamples 3
+Assert-True ($tailOnly.observedAtMilliseconds -eq ($now - 3600000)) 'only the bounded newest tail of a history is scanned'
+Assert-True ($null -eq (ConvertTo-ClaudeDesktopQuota -History (ConvertFrom-SerializerJson $historyJson) -OrganizationUuid 'org-a' `
+  -NowMilliseconds $now -MaxAgeMilliseconds 604800000 -MaxSamples 2)) 'samples outside the bounded tail are never read'
+Assert-True ($null -eq (ConvertTo-ClaudeQuotaPayload ('{"five_hour":null,"seven_day":null,"limits":[{"kind":"Session","percent":1}]}' | ConvertFrom-Json))) 'limit kinds are case-sensitive reason codes'
+
+$newest = Select-NewestQuotaCandidate -Candidates @($cached, $null, $desktop)
+Assert-True ($newest.observedAtMilliseconds -eq ($now - 3600000)) 'the newest local quota record must be selected'
+Assert-True ($null -eq (Select-NewestQuotaCandidate -Candidates @($null))) 'no candidate must select nothing'
+
+# --- Codex login mode and official quota.
+Assert-True ((Get-CodexAuthModeFromDocument (ConvertFrom-SerializerJson '{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{}}')) -eq 'chatgpt') 'a ChatGPT login must be recognized'
+Assert-True ((Get-CodexAuthModeFromDocument (ConvertFrom-SerializerJson '{"auth_mode":"apikey","OPENAI_API_KEY":"sk-test"}')) -eq 'apikey') 'an API-key login must be recognized'
+Assert-True ((Get-CodexAuthModeFromDocument (ConvertFrom-SerializerJson '{"OPENAI_API_KEY":null,"tokens":{"refresh_token":"r"}}')) -eq 'unknown') 'credential slots must never be read to infer a login mode'
+Assert-True ((Get-CodexAuthModeFromDocument (ConvertFrom-SerializerJson '{"auth_mode":["chatgpt"]}')) -eq 'unknown') 'a non-string auth_mode must stay unknown'
+Assert-True ((Get-CodexAuthModeFromDocument $null) -eq 'unknown') 'a missing auth file must stay unknown'
+Assert-True ((Get-CodexAuthModeFromDocument (ConvertFrom-SerializerJson '{"auth_mode":"something_new"}')) -eq 'unknown') 'an unrecognized mode must not be guessed'
+
+$observed = [DateTimeOffset]::Parse('2026-10-09T02:26:20.774Z', [Globalization.CultureInfo]::InvariantCulture)
+$appServer = ConvertTo-CodexOfficialQuota -Snapshot ('{"limitId":"codex","planType":"prolite","primary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":1792117580},"secondary":null,"credits":{"balance":"0"}}' | ConvertFrom-Json) `
+  -Source 'app_server' -ObservedAt $observed
+Assert-True ($appServer.ok -and $appServer.source -eq 'app_server' -and $appServer.planType -eq 'prolite') 'an app-server codex bucket must convert'
+Assert-True ($appServer.primary.used_percent -eq 12 -and $appServer.primary.window_minutes -eq 10080 -and $null -eq $appServer.secondary) 'app-server windows must keep percent and duration'
+Assert-True ([DateTimeOffset]::Parse($appServer.primary.resets_at).ToUnixTimeSeconds() -eq 1792117580) 'Unix-second resets must become ISO text exactly once'
+Assert-True (-not (($appServer | ConvertTo-Json -Depth 10 -Compress) -match 'credits|balance')) 'credit balances are outside the card contract'
+$session = ConvertTo-CodexOfficialQuota -Snapshot ('{"limit_id":"codex","primary":{"used_percent":64.0,"window_minutes":300,"resets_at":1791349897},"secondary":{"used_percent":20.5,"window_minutes":10080,"resets_at":null},"plan_type":null}' | ConvertFrom-Json) `
+  -Source 'session' -ObservedAt $observed
+Assert-True ($session.ok -and $session.primary.used_percent -eq 64 -and $session.secondary.window_minutes -eq 10080 -and $null -eq $session.secondary.resets_at) 'session snake_case windows must convert'
+Assert-True ($null -eq (ConvertTo-CodexOfficialQuota -Snapshot ('{"limit_id":"base_model_inference","primary":{"used_percent":0}}' | ConvertFrom-Json) -Source 'session' -ObservedAt $observed)) 'a non-plan bucket must be skipped'
+Assert-True ($null -eq (ConvertTo-CodexOfficialQuota -Snapshot ('{"primary":{"used_percent":"5"}}' | ConvertFrom-Json) -Source 'session' -ObservedAt $observed)) 'a string percent must be rejected'
+Assert-True ($null -eq (ConvertTo-CodexOfficialQuota -Snapshot ('{"primary":{"used_percent":5,"resets_at":"2026-10-01T00:00:00Z"}}' | ConvertFrom-Json) -Source 'session' -ObservedAt $observed)) 'an ISO reset is not the upstream Unix-second type'
+Assert-True ($null -eq (ConvertTo-CodexOfficialQuota -Snapshot ('{"primary":null,"secondary":null}' | ConvertFrom-Json) -Source 'session' -ObservedAt $observed)) 'a snapshot without windows must be rejected'
+Assert-True ($null -eq (ConvertTo-CodexOfficialQuota -Snapshot ('{"primary":{"used_percent":5},"planType":"Bad Plan"}' | ConvertFrom-Json) -Source 'session' -ObservedAt $observed).planType) 'an unexpected plan label must be dropped'
+Assert-True ((ConvertTo-CodexOfficialQuota -Snapshot ('{"primary":{"used_percent":5},"plan_type":"Plus"}' | ConvertFrom-Json) -Source 'session' -ObservedAt $observed).planType -ceq 'plus') 'a plan label differing only in case must normalize instead of failing the snapshot'
+
+$transcript = @(
+  '{"timestamp":"2026-09-30T19:55:41.405Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":60.0,"window_minutes":10080,"resets_at":1791349897},"secondary":null}}}',
+  '{broken "rate_limits"',
+  '{"timestamp":"2026-09-30T20:16:10.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"base_model_inference","primary":{"used_percent":0.0,"window_minutes":10080,"resets_at":1791404157}}}}',
+  '{"timestamp":"2026-09-30T20:17:00.000Z","type":"event_msg","payload":{"type":"agent_message"}}'
+)
+$selected = Select-CodexSessionRateLimit -Lines $transcript
+Assert-True ($selected -and $selected.snapshot.limit_id -eq 'codex' -and $selected.observedAt.ToUnixTimeSeconds() -eq [DateTimeOffset]::Parse('2026-09-30T19:55:41.405Z').ToUnixTimeSeconds()) 'the newest plan bucket must win over a later non-plan bucket'
+$legacy = Select-CodexSessionRateLimit -Lines @('{"timestamp":"2026-08-01T00:00:00Z","payload":{"rate_limits":{"primary":{"used_percent":5,"resets_at":1790000000}}}}')
+Assert-True ($legacy -and $null -eq $legacy.snapshot.limit_id) 'a pre-bucket rate-limit record must still be read'
+Assert-True ($null -eq (Select-CodexSessionRateLimit -Lines @('{"payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":5}}}}'))) 'a record without its own timestamp cannot be dated'
+
 Write-Output 'ReportData.Tests.ps1: PASS'

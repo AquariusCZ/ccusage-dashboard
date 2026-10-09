@@ -1,3 +1,5 @@
+# Validates a terminal (complete:true) snapshot. Quota-only and other incomplete
+# revisions are transitional and are checked by the progressive-contract tests.
 param([Parameter(Mandatory = $true)][string]$DataPath)
 $ErrorActionPreference = 'Stop'
 
@@ -73,7 +75,7 @@ function Test-Percent($Value) {
 }
 
 function Test-ReasonCode($Value) {
-  return $null -eq $Value -or ($Value -is [string] -and $Value -match '\A[a-z0-9_]+\z')
+  return $null -eq $Value -or ($Value -is [string] -and $Value.Length -le 128 -and $Value -cmatch '\A[a-z0-9_]+\z')
 }
 
 function Test-HasField($Record, [string]$Name) {
@@ -219,9 +221,13 @@ function Assert-Report($Report, [string]$Path) {
 
 function Assert-ClaudeQuota($Quota, [string]$Path) {
   Assert-Fields $Quota $Path @('ok') @(
-    'ok', 'reason', 'cachedAt', 'stale', 'staleReason', 'fiveHour', 'sevenDay', 'limits'
+    'ok', 'reason', 'cachedAt', 'stale', 'staleReason', 'source', 'fiveHour', 'sevenDay', 'limits'
   )
   if (-not ($Quota.ok -is [bool])) { throw "$Path.ok is not a boolean." }
+  if ((Test-HasField $Quota 'source') -and
+      $Quota.source -cnotin @('oauth', 'cache', 'claude_code', 'claude_desktop')) {
+    throw "$Path.source is not a known Claude quota source."
+  }
   foreach ($field in @('reason', 'staleReason')) {
     if ((Test-HasField $Quota $field) -and -not (Test-ReasonCode $Quota.$field)) { throw "$Path.$field is invalid." }
   }
@@ -246,6 +252,11 @@ function Assert-ClaudeQuota($Quota, [string]$Path) {
     }
   } elseif (Test-HasField $Quota 'staleReason') {
     throw "$Path has staleReason without stale:true."
+  }
+  $recorded = (Test-HasField $Quota 'stale') -and $Quota.stale
+  if (($recorded -and -not (Test-HasField $Quota 'source')) -or
+      ((Test-HasField $Quota 'source') -and $Quota.source -cin @('claude_code', 'claude_desktop') -and -not $recorded)) {
+    throw "$Path does not label a recorded quota with its source."
   }
   foreach ($windowName in @('fiveHour', 'sevenDay')) {
     if (-not (Test-HasField $Quota $windowName) -or $null -eq $Quota.$windowName) { continue }
@@ -342,19 +353,49 @@ function Assert-CodexQuota($Quota, [string]$Path) {
   }
 }
 
-function Assert-CodexRateLimits($Limits, [string]$Path) {
-  if ($null -eq $Limits) { return }
-  Assert-Fields $Limits $Path @() @('primary', 'secondary')
-  if (-not (Test-HasField $Limits 'primary') -and -not (Test-HasField $Limits 'secondary')) {
-    throw "$Path has no rate-limit window."
+function Assert-CodexOfficial($Quota, [string]$Path) {
+  Assert-Fields $Quota $Path @('ok') @(
+    'ok', 'reason', 'source', 'observedAt', 'planType', 'stale', 'staleReason', 'primary', 'secondary'
+  )
+  if (-not ($Quota.ok -is [bool])) { throw "$Path.ok is not a boolean." }
+  foreach ($field in @('reason', 'staleReason')) {
+    if ((Test-HasField $Quota $field) -and -not (Test-ReasonCode $Quota.$field)) { throw "$Path.$field is invalid." }
+  }
+  if ($Quota.ok) {
+    foreach ($field in @('reason', 'source', 'observedAt', 'planType', 'primary', 'secondary')) {
+      if (-not (Test-HasField $Quota $field)) { throw "$Path is missing $field for a successful quota result." }
+    }
+    if ($null -ne $Quota.reason) { throw "$Path.reason must be null for a successful quota result." }
+    if ($Quota.source -cnotin @('app_server', 'session')) { throw "$Path.source is not a known Codex quota source." }
+    if (-not (Test-IsoTimestamp $Quota.observedAt)) { throw "$Path.observedAt is invalid." }
+    if ($null -ne $Quota.planType -and
+        (-not ($Quota.planType -is [string]) -or $Quota.planType -cnotmatch '\A[a-z0-9_]{1,64}\z')) {
+      throw "$Path.planType is invalid."
+    }
+    if ($null -eq $Quota.primary -and $null -eq $Quota.secondary) { throw "$Path has no rate-limit window." }
+  } elseif (-not (Test-HasField $Quota 'reason') -or
+      -not (Test-BoundedString $Quota.reason 128 $false) -or
+      $Quota.reason -notmatch '\A[a-z0-9_]+\z') {
+    throw "$Path.reason must be a non-empty reason code for a failed quota result."
+  }
+  if ((Test-HasField $Quota 'stale') -and $Quota.stale) {
+    if (-not $Quota.ok -or -not (Test-HasField $Quota 'staleReason') -or $null -eq $Quota.staleReason) {
+      throw "$Path stale quota result is incomplete."
+    }
+  } elseif (Test-HasField $Quota 'staleReason') {
+    throw "$Path has staleReason without stale:true."
   }
   foreach ($windowName in @('primary', 'secondary')) {
-    if (-not (Test-HasField $Limits $windowName)) { continue }
-    $window = $Limits.$windowName
+    if (-not (Test-HasField $Quota $windowName) -or $null -eq $Quota.$windowName) { continue }
+    $window = $Quota.$windowName
     $windowPath = "$Path.$windowName"
-    Assert-Fields $window $windowPath @('used_percent') @('used_percent', 'resets_at')
+    Assert-Fields $window $windowPath @('used_percent', 'resets_at', 'window_minutes') @('used_percent', 'resets_at', 'window_minutes')
     if (-not (Test-Percent $window.used_percent)) { throw "$windowPath.used_percent is invalid." }
-    if ((Test-HasField $window 'resets_at')) { Assert-NullableTimestamp $window.resets_at "$windowPath.resets_at" }
+    Assert-NullableTimestamp $window.resets_at "$windowPath.resets_at"
+    if ($null -ne $window.window_minutes -and
+        (-not (Test-JsonInt64 $window.window_minutes) -or [double]$window.window_minutes -le 0)) {
+      throw "$windowPath.window_minutes is invalid."
+    }
   }
 }
 
@@ -467,7 +508,7 @@ Assert-Fields $data.limits 'limits' @('claudeQuota', 'claudeBlocks', 'codexQuota
 Assert-ClaudeQuota $data.limits.claudeQuota 'limits.claudeQuota'
 Assert-ClaudeBlocks $data.limits.claudeBlocks 'limits.claudeBlocks'
 Assert-CodexQuota $data.limits.codexQuota 'limits.codexQuota'
-Assert-CodexRateLimits $data.limits.codex 'limits.codex'
+Assert-CodexOfficial $data.limits.codex 'limits.codex'
 
 function Assert-NoSensitiveFields($Value, [string]$Path = '$') {
   if ($null -eq $Value) { return }
@@ -476,6 +517,7 @@ function Assert-NoSensitiveFields($Value, [string]$Path = '$') {
       throw "Credential-like value found at $Path"
     }
     if ($Value -match '(?i)https?://') { throw "Provider endpoint found at $Path" }
+    if ($Value -match '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}') { throw "Token-shaped value found at $Path" }
     return
   }
   if ($Value -is [Collections.IEnumerable] -and $Value -isnot [Management.Automation.PSCustomObject]) {
@@ -486,7 +528,9 @@ function Assert-NoSensitiveFields($Value, [string]$Path = '$') {
   foreach ($property in $Value.PSObject.Properties) {
     if ($property.Name -in @(
       'accessToken', 'claudeAiOauth', 'shellCommands', 'authorization',
-      'toolArguments', 'prompt', 'providerId'
+      'toolArguments', 'prompt', 'providerId', 'providerFingerprint', 'accountFingerprint',
+      'accountUuid', 'organizationUuid', 'oauthAccount', 'emailAddress', 'access_token',
+      'refresh_token', 'id_token', 'OPENAI_API_KEY'
     )) {
       throw "Sensitive field found at $Path.$($property.Name)"
     }
