@@ -16,7 +16,8 @@ Desktop shortcut
        2. after owning Global, recheck the marker before taking Local or reading any collector
        3. copy template.html and bundled pixel fonts to %TEMP%\ClaudeUsage
        4. after uncontended preflight, open the loader before starting collectors
-       5. start ccusage blocks --offline for Claude window metadata (may overlap)
+       5. start ccusage blocks for Claude window metadata, priced from the current public
+          catalogue (may overlap)
        6. start the quota reads: the Claude OAuth request as an async HttpClient task when
           the CLI token is valid, and the Job-contained Codex helper for a ChatGPT login
        7. run the default period's two CodeBurn reports sequentially; between 100 ms wait
@@ -99,10 +100,27 @@ the same quota without any credential:
   file's own `oauthAccount.accountUuid`. Windows PowerShell's `ConvertFrom-Json` rejects this
   file because project keys repeat with different case, so it is parsed with
   `JavaScriptSerializer`, which also parses the 88 KB document in about 3 ms.
-- The desktop app's `%APPDATA%\Claude\plan-usage-history.json` keeps `{ t, org, u: { fh, sd } }`
+- The desktop app's `plan-usage-history.json` keeps `{ t, org, u: { fh, sd } }`
   samples: five-hour and seven-day utilization without reset times. Only samples for the
   signed-in organization are used; an unknown account with a mixed-organization history is
-  rejected.
+  rejected. The file lives in the app's user data folder, `%APPDATA%\Claude`, but for the
+  packaged build (MSIX package `Claude`, family `Claude_pzs8sxrjxfjjc`, signed by Anthropic, PBC;
+  `SignatureKind` Developer on the target host) Windows redirects that folder's new files into
+  `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude`. Only the app's own
+  process tree sees them at `%APPDATA%\Claude`; an ordinary process does not, while a file that
+  existed before packaging is updated in place. The samples of both paths are judged together:
+  the newest wins, and with no known organization a disagreement between the files is rejected
+  like a mixed file. The family name is the package name plus a hash of the signing publisher,
+  so another publisher's package called `Claude` cannot match it; a Store-signed variant would
+  carry a different family name and is not read.
+
+The first release of this fallback read only `%APPDATA%\Claude`. Every real-data check passed
+because it ran inside the Claude desktop app's own process tree, where the redirected file is
+visible at that path; launched from the desktop shortcut, the generator found nothing and the card
+said the CLI was signed out. A process started outside the package (through WMI) confirmed
+`%APPDATA%\Claude\plan-usage-history.json` absent and the package copy present. Checks of file
+visibility must therefore run, or be simulated, outside the Claude app: running the generator with
+`APPDATA` pointed at an empty folder reproduces the shortcut's view.
 
 The newest of these and the app's own one-hour quota cache wins and is published with
 `stale:true`, `staleReason` (why live failed, or `loading` while it is pending), `cachedAt`
@@ -112,6 +130,13 @@ older than the window itself, renders as rolled over rather than with its old fi
 recorded per-model limit past its reset no longer raises the blocked alarm. The desktop app
 samples only while its own usage view refreshes, so its record can lag; the card states the
 time and suggests `claude auth login` for live figures.
+
+A desktop sample measures only the five-hour and seven-day windows, so a newer sample would
+otherwise drop the per-model limits an older Claude Code record or quota cache carried. Usage
+inside a window only grows until that window resets, so when a desktop sample wins, an older
+record's limit other than `session` and `weekly_all` that was exhausted with its reset still
+ahead is kept, and the card still says the limit is used up. An endpoint answer is never
+supplemented this way; its `limits[]` stays authoritative even when empty.
 
 ### Network boundary
 
@@ -139,12 +164,32 @@ the pin. Any new app-owned upload remains a change to the product's premise.
 
 CodeBurn is a local reader apart from that shared public catalogue refresh; status
 reconciliation does not introduce another destination or send usage aggregates anywhere.
-ccusage `20.0.20` normally refreshes public LiteLLM data and may query models.dev for
-missing models. AI Usage invokes `blocks --offline`, which skips both paths and uses the
-package's embedded catalogues. On the audited Windows x64 package, three offline runs
-averaged 356.7 ms versus 2313.7 ms online, and a recursive comparison found no value-level
-difference in the parsed block payload. Both the installer and generator pin that audited
-version; an unreviewed global upgrade is rejected before session data is read.
+ccusage `20.0.20` is a Node launcher around a native `ccusage.exe`. Without `--offline`, its
+blocks command GETs the public LiteLLM catalogue
+(`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`) and, only
+for a model LiteLLM lacks, `models.dev/api.json`. Neither request carries a credential, session
+content, or usage aggregate; each has a 10-second timeout and a 64 MiB body limit upstream, so a
+stalled network ends long before the 120-second budget. The native client honours
+`HTTP(S)_PROXY`/`ALL_PROXY`, not the Windows system proxy. AI Usage invokes `blocks --json` and
+accepts that cost. It originally used
+`--offline` to save about two seconds, and on 2026-08-29 the two modes were value-identical.
+By 2026-10-08 the embedded snapshot predated `claude-opus-5-5`: the active window held 945
+entries and 340.7 million tokens priced at $0, while CodeBurn's refreshed catalogue priced the
+same model. Online, the same window read $118.34 with a $39.95/hour burn rate, and the run took
+7.0 s instead of 0.4 s. ccusage runs alongside CodeBurn, so this delays only what the blocks
+feed: the window card and the 24-hour profile, which now arrive about when the first usage
+revision does. Because they can arrive after it, a change to `claudeBlocks` redraws the usage
+sections as well as the quota cards.
+
+When the catalogue fetch fails, ccusage silently falls back to its embedded snapshot and still
+exits 0. With an unreachable proxy the run took 4.6 s and priced the window at $0 again. A model
+the snapshot does not know adds nothing to a block's cost, and the JSON names models without a
+per-model cost or an unpriced marker. Each block's `totalTokens` therefore travels to the page:
+an active window with tokens but zero cost renders as unpriced rather than as $0.00, and the
+24-hour profile is hidden when any block in range is unpriced or the profile has no cost at all.
+A window that mixes priced and unpriced models after a failed fetch still shows only its priced
+part; nothing in the output can tell the two apart. Both the installer and generator pin the
+audited version; an unreviewed global upgrade is rejected before session data is read.
 
 CodeBurn has one conditional public network path: if the user configured a non-USD
 display currency and its 24-hour exchange-rate cache is absent or stale, `loadCurrency()`
@@ -559,8 +604,9 @@ removed its owner, state, and data files and left zero CodeBurn or ccusage proce
   `http_<status>`) and the UI states it in plain Chinese.
   The token and the account identifiers are never present in this file.
 - `limits.claudeBlocks`: optional ccusage block data, including `startTime`,
-  `burnRate`, and `projection` for the active window - still the only source of
-  burn rate and projected spend
+  `totalTokens`, `burnRate`, and `projection` for the active window - still the only source of
+  burn rate and projected spend. An active window with tokens but zero cost is shown as
+  unpriced.
 - `limits.codexQuota`: `{ ok, reason, provider, planName, mode, isValid, unit,
   remaining, expiresAt, windows[] }` replayed from the current CC Switch provider's
   usage script, where each window is `{ kind, limit, used, percent, startsAt, resetsAt }`
@@ -890,8 +936,9 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 - Run `tests/Static.Tests.ps1` to parse the PowerShell scripts and module and syntax-check
   the dashboard JavaScript with Node.
 - Run `tests/Generator.Integration.Tests.ps1` to execute the generator against deterministic
-  stub CLIs. It verifies the two-call first publish, legacy mutex migration, ccusage offline
-  ingestion, literal-percent paths, nonzero-output rejection, zero-exit schema validation,
+  stub CLIs. It verifies the two-call first publish, legacy mutex migration, ccusage
+  invocation without `--offline` and its token count reaching the snapshot, literal-percent paths,
+  nonzero-output rejection, zero-exit schema validation,
   empty and one-row DTO arrays, strict currency/date boundaries including non-USD/no-rate
   fallback, monotonic producer revisions, transactional currency-conflict
   rejection, the pending-marker recheck after a Global wait, `-KeepFile`, active page
@@ -908,8 +955,14 @@ than a fixed `foreignObject`, which silently clipped wider totals.
   revisions precede the first usage revision, that reconciled reports skip status (six calls),
   that a ChatGPT login publishes the stub app-server's `codex` bucket without credentials or
   other buckets and never consults the relay, that a hung app-server falls back to the labelled
-  session record and leaves no process behind, that an account error is classified, and that a
-  signed-out CLI shows the desktop record from the first revision. Direct tests cover the async
+  session record and leaves no process behind, that an account error is classified, that a
+  signed-out CLI shows the desktop record from the first revision, and that a newer record in the
+  MSIX package folder outranks an older one in `%APPDATA%\Claude`. Every scenario points
+  `APPDATA` and `LOCALAPPDATA` into the sandbox, so the host's real record is never read. Direct
+  tests read a package-only record, let a newer `%APPDATA%` sample win, reject another
+  organization's package sample and two files that disagree with no known organization, and
+  keep an older record's exhausted model limit on a newer desktop sample only until its reset.
+  Direct tests cover the async
   Claude transport (pending, 401, redirect, malformed, timeout, oversized, unsendable header),
   Claude Code and desktop records including another account's data, and idempotent official
   Codex DTO validation.
@@ -939,14 +992,19 @@ than a fixed `foreignObject`, which silently clipped wider totals.
   also the only permitted source for the committed README screenshots.
 - Run `node tests/BrowserSmoke.mjs` to exercise local `file://` incomplete-to-complete
   revisions in real headless Edge, including a quota-only first revision, official Codex window
-  labels, recorded-quota labelling and rolled-over windows, cross-run revision reset, deferred URL selection,
+  labels, recorded-quota labelling and rolled-over windows, an unpriced active window shown as
+  unpriced rather than $0.00 while a priced one keeps its cost, a 24-hour profile that appears
+  when ccusage blocks arrive after the usage revision and hides when a block in range is
+  unpriced, cross-run revision reset, deferred URL selection,
   focus/state preservation, completion polling stop, desktop/mobile overflow, screenshots,
   mismatched failure run IDs, independent startup/partial terminal sidecars, rejection of missing
   or malformed sidecar fields without stopping polling, terminal polling stop, and runtime exceptions.
 - Run `node tests/BrowserSmoke.mjs --real-generator <generator-path>` for the optional
   process-to-Edge `#app.show` budget. It consumes the generator's captured launch URL and verifies
   `active` owner/lease state, but deliberately does not claim Windows ShellExecute coverage.
-- Generate a real snapshot with `-NoLaunch -KeepFile`.
+- Generate a real snapshot with `-NoLaunch -KeepFile`. A shell inside the Claude desktop app
+  sees its redirected `%APPDATA%\Claude`; to check what the shortcut sees, run the generator
+  with `APPDATA` pointed at an empty folder.
 - Run `tests/Verify-Snapshot.ps1` against `data.js`; confirm the exact field whitelist and
   scalar types/ranges for reports, both quota sources, official limits, and ccusage blocks;
   each period/provider model sum equals `overview.cost`; sensitive markers are absent; and

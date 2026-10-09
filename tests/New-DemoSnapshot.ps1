@@ -195,7 +195,7 @@ $payload = [ordered]@{
       [ordered]@{ startTime = (At -260); endTime = (At -255); actualEndTime = (At -255.6); costUSD = 31.8; isActive = $false; isGap = $false },
       [ordered]@{ startTime = (At -140); endTime = (At -135); actualEndTime = (At -135.5); costUSD = 26.6; isActive = $false; isGap = $false },
       [ordered]@{ startTime = (At -50); endTime = (At -45); actualEndTime = (At -45.2); costUSD = 38.2; isActive = $false; isGap = $false },
-      [ordered]@{ startTime = (At -2.25); endTime = (At 2.75); actualEndTime = (At 0); costUSD = 12.5; isActive = $true; isGap = $false; burnRate = [ordered]@{ costPerHour = 2.4 }; projection = [ordered]@{ totalCost = 18.8 } }
+      [ordered]@{ startTime = (At -2.25); endTime = (At 2.75); actualEndTime = (At 0); costUSD = 12.5; totalTokens = 18400000; isActive = $true; isGap = $false; burnRate = [ordered]@{ costPerHour = 2.4 }; projection = [ordered]@{ totalCost = 18.8 } }
     ) }
     # A ChatGPT login reads its own plan quota; the relay replay is not consulted.
     codexQuota = [ordered]@{ ok = $false; reason = 'official_account' }

@@ -126,7 +126,14 @@ if (-not $generator.Contains('function Select-TypedOutputRecord') -or
   throw 'The generator is not enforcing typed render-only DTO fields.'
 }
 if (-not $generator.Contains("`$RequiredCCUsageVersion = '20.0.20'")) { throw 'The generator does not pin the audited ccusage version.' }
-if (-not $generator.Contains("Start-OptionalJsonCommand `$CCUsage @('blocks', '--json', '--offline')")) { throw 'ccusage blocks is not isolated from public pricing refreshes or launch failures.' }
+if (-not $generator.Contains("Start-OptionalJsonCommand `$CCUsage @('blocks', '--json')")) { throw 'ccusage blocks is not an optional collector isolated from launch failures.' }
+if ($generator -cmatch '[''"](--offline|-O)[''"]') {
+  throw 'ccusage must price the window from the current public catalogue; its embedded snapshot leaves newer models at zero cost.'
+}
+if (-not $generator.Contains("`$ClaudeDesktopPackageFamily = 'Claude_pzs8sxrjxfjjc'") -or
+    -not $generator.Contains('"Packages\$ClaudeDesktopPackageFamily\LocalCache\Roaming\Claude\plan-usage-history.json"')) {
+  throw 'The Claude desktop record is not read from the MSIX package folder that ordinary processes see.'
+}
 $staleSnapshotDeleteIndex = $generator.IndexOf('foreach ($previousOutput in @($OutData, $OutFailure))')
 $readLeaseIndex = $generator.IndexOf("if (-not (Touch-ReadLease)) { throw 'Could not establish the dashboard read lease.' }")
 $primaryLaunchIndex = $generator.LastIndexOf('Start-Process (Get-ReportLaunchTarget $OutHtml $Period)')
@@ -210,7 +217,7 @@ if (-not $generator.Contains('$request.Client.MaxResponseContentBufferSize = $Ma
   throw 'The non-blocking Claude quota request is not bounded and redirect-free.'
 }
 $blocksDeadlineIndex = $generator.IndexOf('$blocksDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($CCUsageTimeoutMilliseconds)')
-$blocksStartIndex = $generator.IndexOf("`$blocksJob = Start-OptionalJsonCommand `$CCUsage @('blocks', '--json', '--offline')")
+$blocksStartIndex = $generator.IndexOf("`$blocksJob = Start-OptionalJsonCommand `$CCUsage @('blocks', '--json')")
 if (-not $generator.Contains('$CCUsageTimeoutMilliseconds = 120000') -or
     $blocksDeadlineIndex -lt 0 -or $blocksStartIndex -lt 0 -or $blocksDeadlineIndex -gt $blocksStartIndex -or
     -not $generator.Contains('($script:blocksDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds') -or

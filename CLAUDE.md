@@ -34,7 +34,8 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 
 - `CLAUDE.md` is the only project rule source. Do not add `AGENTS.md` or duplicate rule files.
 - Treat Claude and Codex session stores, Claude Code's `~/.claude.json`, the Claude desktop app's
-  `plan-usage-history.json`, Codex's `auth.json`, and the CC Switch database as read-only inputs.
+  `plan-usage-history.json` (in `%APPDATA%\Claude` or the packaged MSIX build's package folder),
+  Codex's `auth.json`, and the CC Switch database as read-only inputs.
   Read only `auth_mode` from Codex's `auth.json`, and never open the desktop app's encrypted
   login (`oauth:tokenCache`, Electron safeStorage).
 - Keep every PowerShell file pure ASCII. Windows PowerShell reads a BOM-less script in the
@@ -69,7 +70,16 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   with no known account is rejected). Label `source`, `cachedAt`, and `staleReason`; never
   invent reset times the record does not carry. Parse `~/.claude.json` with
   `JavaScriptSerializer`: it repeats project keys that differ only in case, which Windows
-  PowerShell `ConvertFrom-Json` rejects.
+  PowerShell `ConvertFrom-Json` rejects. Read the desktop samples from both `%APPDATA%\Claude`
+  and the MSIX package folder `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude`
+  (Anthropic-signed package `Claude`; another signer gives another family name) and judge
+  them together: Windows redirects the packaged app's new AppData files into the package
+  folder, which only the app's own process tree sees at `%APPDATA%`, while a file that existed
+  before packaging is updated in place. When a desktop sample is the newest record, keep an
+  older same-account record's model limits that were exhausted with a reset still ahead;
+  the sample measures only the five-hour and seven-day windows. Verify file visibility outside
+  the Claude app (for example with `APPDATA` pointed at an empty folder), because a session
+  inside it sees the redirected view.
 - Official Codex quota uses only the plan bucket, `limit_id` `codex` (or a pre-bucket record
   without `limit_id`); `base_model_inference` and other buckets are not the plan. Convert
   Unix-second resets to ISO exactly once in `ConvertTo-CodexOfficialQuota`; the published DTO
@@ -105,11 +115,18 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   24-hour cache expires. Version `0.9.19` is the audited and required runtime; upgrades
   require re-auditing this boundary. It must never receive or upload credentials or
   rendered payloads.
-- Pin ccusage `20.0.20` and invoke `blocks --json --offline`. Its default blocks path may
-  refresh public LiteLLM/models.dev data; offline mode uses the audited embedded snapshots,
-  removes that startup network tail, and produced value-identical blocks on Windows. Give the
-  optional process one absolute 120-second budget and 16 MiB output cap from launch; every
-  CodeBurn wait slice must enforce them, and final collection may wait only the remaining budget.
+- Pin ccusage `20.0.20` and invoke `blocks --json` without `--offline`. It GETs the public
+  LiteLLM catalogue from GitHub, and `models.dev/api.json` only for a model LiteLLM lacks,
+  never with a credential or usage data; each request has its own 10-second timeout. Its
+  embedded offline snapshot lacked `claude-opus-5-5` and priced current windows at $0, so
+  offline mode is not used. A failed fetch silently falls back to that snapshot with exit code
+  0, and an unknown model then adds nothing to a block's cost, so pass `totalTokens`: render an
+  active window with tokens but zero cost as unpriced, never as $0.00, and hide the hour profile
+  when any block in range is unpriced. Redraw the usage sections when `claudeBlocks` arrives
+  after the first usage revision. ccusage honours `HTTP(S)_PROXY`/`ALL_PROXY` only, not the
+  Windows system proxy. Give the optional process one absolute 120-second budget and 16 MiB
+  output cap from launch; every CodeBurn wait slice must enforce them, and final collection may
+  wait only the remaining budget.
 - When the user has selected a non-USD CodeBurn display currency, CodeBurn may refresh
   its public Frankfurter exchange-rate cache. Convert durable status USD amounts with
   the reported rate before merging, and keep CodeBurn plus ccusage costs in one currency.

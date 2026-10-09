@@ -1140,8 +1140,10 @@ addEventListener("error", function (event) {
         var liveCost = convertUsd(live.costUSD);
         var burn = convertUsd(live.burnRate && live.burnRate.costPerHour);
         var projected = convertUsd(live.projection && live.projection.totalCost);
+        // Tokens with no cost mean ccusage had no price for the model, not a free window.
+        var unpriced = live.costUSD === 0 && live.totalTokens > 0;
         extra = '<div class="prov-stats" style="border-block-start:1px solid var(--line);padding-block-start:.65rem">' +
-          '<div><span>窗口成本</span><b>' + (liveCost == null ? "-" : money(liveCost)) + "</b></div>" +
+          '<div><span>窗口成本</span><b>' + (unpriced ? "未定价" : liveCost == null ? "-" : money(liveCost)) + "</b></div>" +
           "<div><span>燃烧率</span><b>" + (burn ? money(burn) + "/时" : "-") + "</b></div>" +
           "<div><span>窗口预计</span><b>" + (projected ? money(projected) : "-") + "</b></div></div>";
       }
@@ -1485,12 +1487,13 @@ addEventListener("error", function (event) {
 
     var from = new Date(rows[0].date + "T00:00:00").getTime();
     var to = new Date(rows[rows.length - 1].date + "T23:59:59").getTime();
-    var hours = new Array(24).fill(0), used = 0;
+    var hours = new Array(24).fill(0), used = 0, unpriced = false;
     blocks.forEach(function (b) {
       if (b.isGap || !b.startTime) return;
       var s = new Date(b.startTime).getTime(), e = new Date(b.actualEndTime || b.endTime).getTime();
       if (!(e > s) || e < from || s > to) return;
       used++;
+      if (b.costUSD === 0 && b.totalTokens > 0) unpriced = true;
       var span = e - s, c = n(convertUsd(b.costUSD));
       for (var t = s; t < e; ) {                     // spread across the hours it actually spanned
         var slot = new Date(t), next = new Date(slot);
@@ -1500,7 +1503,8 @@ addEventListener("error", function (event) {
         t += chunk;
       }
     });
-    if (!used) { wrap.classList.add("hide"); return; }
+    // A cost profile with unpriced windows, or with no cost at all, has no true peak.
+    if (!used || unpriced || !(Math.max.apply(null, hours) > 0)) { wrap.classList.add("hide"); return; }
     wrap.classList.remove("hide");
 
     var max = Math.max.apply(null, hours.concat([0.01]));
@@ -1850,7 +1854,10 @@ addEventListener("error", function (event) {
       var currencyChanged = JSON.stringify(previousCurrency) !== JSON.stringify(data.currency);
       var nextReport = data.reports ? data.reports[period] : null;
       var wasPending = $("app").classList.contains("usage-pending");
-      var usageChanged = currencyChanged || previousPeriod !== period || wasPending ||
+      // ccusage can finish after the first usage revision; its blocks feed the hour chart.
+      var blocksChanged = JSON.stringify(previousLimits && previousLimits.claudeBlocks) !==
+        JSON.stringify(data.limits && data.limits.claudeBlocks);
+      var usageChanged = currencyChanged || previousPeriod !== period || wasPending || blocksChanged ||
         JSON.stringify(previousReport) !== JSON.stringify(nextReport);
       if (currencyChanged || (wasPending && usageReady()) ||
           JSON.stringify(previousLimits) !== JSON.stringify(data.limits)) renderQuota();

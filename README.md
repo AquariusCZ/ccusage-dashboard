@@ -29,13 +29,19 @@ or provider bills.
 - Light and dark themes, responsive layouts, keyboard navigation, and reduced motion.
 
 Model costs always reconcile to the headline estimate. Any unresolved difference appears
-as **unattributed cost**, and incomplete token totals are marked as lower bounds.
+as **unattributed cost**, and incomplete token totals are marked as lower bounds. The current
+5-hour window is priced from the latest public catalogue. When the catalogue cannot be fetched,
+ccusage falls back to its built-in prices: a window whose models are all unknown to them reads
+unpriced instead of $0.00, and a window that mixes known and unknown models shows only the part
+it could price. ccusage reaches the catalogue through the `HTTP_PROXY`/`HTTPS_PROXY` environment
+variables, not the Windows system proxy.
 
 Claude quota is read live when the Claude Code CLI is signed in. The Claude desktop app keeps
 its own login, so a desktop-only user has no CLI token; the card then shows the newest record
 the official apps already keep on disk (Claude Code's last usage response, or the desktop app's
-plan-usage samples) and labels its source and age. Running `claude auth login` once in a
-terminal brings back live figures.
+plan-usage samples, including those the packaged (MSIX) build keeps in its package folder) and
+labels its source and age. Running `claude auth login` once in a terminal brings back live
+figures.
 
 Codex quota follows how Codex is signed in. With a ChatGPT login, AI Usage asks the official
 Codex CLI for the account's plan quota (`codex app-server`, the same call behind Codex's own
@@ -77,8 +83,9 @@ cannot disappear with the console window.
 ## Privacy
 
 - Claude Code and Codex session stores, Claude Code's `~/.claude.json`, the Claude desktop
-  app's plan-usage history, Codex's `auth.json` (its login mode only), and the CC Switch
-  database are read-only inputs. The desktop app's encrypted login is never opened.
+  app's plan-usage history (including the packaged MSIX build's package folder), Codex's
+  `auth.json` (its login mode only), and the CC Switch database are read-only inputs. The
+  desktop app's encrypted login is never opened.
 - Prompt text, tool arguments, provider URLs, authorization headers, and credentials are
   excluded from the browser payload and logs.
 - Normal launches keep temporary report files for a short read window, then delete them
@@ -105,7 +112,7 @@ CodeBurn uses its default USD display currency.
 | Read the real Claude quota | Anthropic OAuth usage endpoint | Existing Claude Code OAuth token in the authorization header; no session content or usage aggregate |
 | Read a ChatGPT login's Codex quota | OpenAI, by the official Codex CLI (`codex app-server`) | Codex's own request with its own login; AI Usage never reads or forwards that credential |
 | Read a relay's Codex quota | The relay endpoint CC Switch already queries | Existing Codex API key in a provider-declared, allowlisted credential header; no session content or usage aggregate |
-| Refresh public model prices | GitHub raw content | Public catalogue request; no credential or usage data |
+| Refresh public model prices | GitHub raw content and models.dev | Public catalogue requests from CodeBurn (when its daily cache expires) and ccusage (each launch); no credential or usage data |
 | Refresh a non-USD exchange rate | Frankfurter public API | Target ISO currency code only |
 
 Every credential stays read-only and never enters a snapshot, log, or error message, and no
@@ -120,8 +127,9 @@ not prevent the local dashboard from rendering.
 1. The hidden launcher starts `Generate-ClaudeReport.ps1`.
 2. On an uncontended launch with healthy dependency preflight, the browser opens before
    collection. Quota reads start at once and run alongside CodeBurn, which builds the selected
-   period first while ccusage reads its local window data offline. A report-lock wait or a
-   cold public price/exchange-rate cache can add latency and is not hidden by the page.
+   period first while ccusage reads its local window data and prices it from the current public
+   catalogue. A report-lock wait or a cold public price/exchange-rate cache can add latency and
+   is not hidden by the page.
 3. The quota cards appear first, from local records within about a second and from live
    sources as they answer. After the two provider reports finish, the default period's usage
    follows; other periods and durable model attribution arrive as atomic updates. A durable

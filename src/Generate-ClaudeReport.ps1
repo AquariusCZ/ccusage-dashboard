@@ -25,6 +25,7 @@ $CCUsageTimeoutMilliseconds = 120000
 $CodexQuotaTimeoutMilliseconds = 30000
 $ClaudeQuotaTimeoutSeconds = 20
 $LocalQuotaMaxAgeMilliseconds = [int64](7 * 24 * 60 * 60 * 1000)
+$ClaudeDesktopPackageFamily = 'Claude_pzs8sxrjxfjjc'
 $CodexHelperScript = Join-Path $AppDir 'codex-rate-limits.mjs'
 $RuntimeRoot = Join-Path $env:TEMP 'ClaudeUsage'
 $NodeCompileCacheDirectory = Join-Path $RuntimeRoot 'node-compile-cache'
@@ -151,6 +152,29 @@ function Get-RoamingAppDataPath {
   return Join-Path $env:USERPROFILE 'AppData\Roaming'
 }
 
+function Get-LocalAppDataPath {
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { return $env:LOCALAPPDATA }
+  return Join-Path $env:USERPROFILE 'AppData\Local'
+}
+
+# The Claude desktop app keeps plan-usage-history.json in its user data folder. For
+# the packaged (MSIX) build, Windows writes the folder's new files into the package's
+# private LocalCache, which only the app's own process tree sees as %APPDATA%\Claude;
+# an ordinary process, such as this generator started from the desktop shortcut,
+# must read the package path. The family name is the package name plus a hash of
+# Anthropic's signing publisher, so another publisher's "Claude" package cannot match.
+# Each path is built on its own: Join-Path fails on an unmounted drive, and one
+# unusable variable must not hide the other copy.
+function Get-ClaudeDesktopHistoryPaths {
+  $paths = New-Object Collections.Generic.List[string]
+  try { $paths.Add([IO.Path]::Combine((Get-RoamingAppDataPath), 'Claude\plan-usage-history.json')) } catch {}
+  try {
+    $paths.Add([IO.Path]::Combine((Get-LocalAppDataPath),
+      "Packages\$ClaudeDesktopPackageFamily\LocalCache\Roaming\Claude\plan-usage-history.json"))
+  } catch {}
+  return $paths.ToArray()
+}
+
 function Get-CodexHomePath {
   $configured = $env:CODEX_HOME
   if (-not [string]::IsNullOrWhiteSpace($configured) -and [IO.Path]::IsPathRooted($configured)) { return $configured }
@@ -169,10 +193,11 @@ function Get-CodexHomePath {
   credentials and never refreshes the CLI's, so a desktop-only user has no usable
   CLI token at all. Their quota is still on disk, written by the official clients:
   Claude Code's copy of the last endpoint response (~/.claude.json,
-  `cachedUsageUtilization`) and the desktop app's plan-usage samples. When no live
-  answer is possible the newest of those is shown, labelled with its age. Neither
-  needs a credential or a network request, and the desktop's encrypted token store
-  is never touched.
+  `cachedUsageUtilization`) and the desktop app's plan-usage samples, which the
+  packaged (MSIX) build keeps in its package's private folder. When no live answer
+  is possible the newest of those is shown, labelled with its age. Neither needs a
+  credential or a network request, and the desktop's encrypted token store is never
+  touched.
 
   Red lines (mirrored from the AI Resume implementation, which learned them the
   hard way on 2026-08-08):
@@ -508,9 +533,22 @@ function Update-ClaudeLocalQuota {
         -AccountUuid $config.AccountUuid -NowMilliseconds $now -MaxAgeMilliseconds $LocalQuotaMaxAgeMilliseconds
       if ($codeRecord) { $candidates.Add($codeRecord) }
     }
-    $history = Read-JsonDocument (Join-Path (Get-RoamingAppDataPath) 'Claude\plan-usage-history.json') ([int64](2 * 1024 * 1024))
-    $desktopRecord = ConvertTo-ClaudeDesktopQuota -History $history -OrganizationUuid ([string]$organizationUuid) `
-      -NowMilliseconds $now -MaxAgeMilliseconds $LocalQuotaMaxAgeMilliseconds
+    # Samples from both locations are judged together, so the newest wins wherever it
+    # was written and the mixed-organization rule spans both files.
+    $desktopSamples = New-Object Collections.Generic.List[object]
+    foreach ($historyPath in @(Get-ClaudeDesktopHistoryPaths)) {
+      try {
+        $fileSamples = Get-DocumentField (Read-JsonDocument $historyPath ([int64](2 * 1024 * 1024))) 'samples'
+        if ($fileSamples -is [Collections.IList]) {
+          for ($index = [Math]::Max(0, $fileSamples.Count - 5000); $index -lt $fileSamples.Count; $index++) {
+            $desktopSamples.Add($fileSamples[$index])
+          }
+        }
+      } catch {}
+    }
+    $desktopRecord = ConvertTo-ClaudeDesktopQuota -History ([ordered]@{ samples = $desktopSamples.ToArray() }) `
+      -OrganizationUuid ([string]$organizationUuid) -NowMilliseconds $now `
+      -MaxAgeMilliseconds $LocalQuotaMaxAgeMilliseconds -MaxSamples 10000
     if ($desktopRecord) { $candidates.Add($desktopRecord) }
   } catch {}
   $script:ClaudeLocalCandidates = $candidates.ToArray()
@@ -523,10 +561,33 @@ function Resolve-ClaudeQuotaState {
   $reason = if (-not $live -or $live.Request) {
     if ($script:QuotaCollectionStopped) { 'not_collected' } else { 'loading' }
   } elseif ($live.Reason) { $live.Reason } else { 'loading' }
-  $best = Select-NewestQuotaCandidate -Candidates (@($script:ClaudeLocalCandidates) + @($script:ClaudeCacheCandidate))
+  $candidates = @(@($script:ClaudeLocalCandidates) + @($script:ClaudeCacheCandidate) | Where-Object { $_ })
+  $best = Select-NewestQuotaCandidate -Candidates $candidates
   if (-not $best) { return [ordered]@{ ok = $false; reason = $reason } }
   try {
     $copy = $best.payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    # A desktop sample measures only the five-hour and seven-day windows. Usage inside
+    # a window only grows until its reset, so an older record's other limit that was
+    # exhausted with its reset still ahead is exhausted now; keep it for "am I blocked".
+    # An endpoint answer is authoritative even when its limits[] is empty.
+    if ([string]$best.source -ceq 'claude_desktop' -and -not @($copy.limits).Count) {
+      $carried = New-Object Collections.Generic.List[object]
+      $nowUtc = [DateTimeOffset]::UtcNow
+      foreach ($other in $candidates) {
+        if ([object]::ReferenceEquals($other, $best) -or -not $other.payload) { continue }
+        foreach ($limit in @($other.payload.limits)) {
+          if (-not $limit -or [string]$limit.kind -cin @('session', 'weekly_all') -or
+              $null -eq $limit.percent -or [double]$limit.percent -lt 100 -or -not $limit.resetsAt) { continue }
+          try {
+            $resetsAt = [DateTimeOffset]::Parse([string]$limit.resetsAt, [Globalization.CultureInfo]::InvariantCulture)
+          } catch { continue }
+          if ($resetsAt -le $nowUtc) { continue }
+          if (@($carried | Where-Object { $_.kind -ceq $limit.kind -and $_.model -ceq $limit.model }).Count) { continue }
+          $carried.Add(($limit | ConvertTo-Json -Depth 5 | ConvertFrom-Json))
+        }
+      }
+      if ($carried.Count) { $copy.limits = $carried.ToArray() }
+    }
     $observed = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$best.observedAtMilliseconds).ToLocalTime().ToString('o')
     Add-Member -InputObject $copy -NotePropertyName 'cachedAt' -NotePropertyValue $observed -Force
     Add-Member -InputObject $copy -NotePropertyName 'stale' -NotePropertyValue $true -Force
@@ -2466,6 +2527,7 @@ function Select-UsableBlocks($Blocks) {
   foreach ($row in $rows) {
     $safe = Select-TypedOutputRecord -Record $row `
       -RequiredNumbers @('costUSD') `
+      -OptionalInt64s @('totalTokens') `
       -RequiredBooleans @('isActive', 'isGap') `
       -RequiredDates @('startTime', 'endTime') `
       -OptionalNullableDates @('actualEndTime')
@@ -3192,7 +3254,7 @@ try {
   # overlap with CodeBurn.
   if ($CCUsage) {
     $blocksDeadlineUtc = [DateTime]::UtcNow.AddMilliseconds($CCUsageTimeoutMilliseconds)
-    $blocksJob = Start-OptionalJsonCommand $CCUsage @('blocks', '--json', '--offline') $blocksOutput
+    $blocksJob = Start-OptionalJsonCommand $CCUsage @('blocks', '--json') $blocksOutput
     if (-not $blocksJob) { $blocksDeadlineUtc = $null }
   }
 

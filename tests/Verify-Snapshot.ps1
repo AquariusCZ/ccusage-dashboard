@@ -408,8 +408,12 @@ function Assert-ClaudeBlocks($Blocks, [string]$Path) {
     $blockPath = "$Path.blocks[$index]"
     Assert-Fields $block $blockPath `
       @('costUSD', 'isActive', 'isGap', 'startTime', 'endTime') `
-      @('costUSD', 'isActive', 'isGap', 'startTime', 'endTime', 'actualEndTime', 'burnRate', 'projection')
+      @('costUSD', 'totalTokens', 'isActive', 'isGap', 'startTime', 'endTime', 'actualEndTime', 'burnRate', 'projection')
     Assert-NonnegativeNumber $block.costUSD "$blockPath.costUSD"
+    if ((Test-HasField $block 'totalTokens') -and
+        (-not (Test-JsonInt64 $block.totalTokens) -or [double]$block.totalTokens -lt 0)) {
+      throw "$blockPath.totalTokens is not a nonnegative integer."
+    }
     foreach ($field in @('isActive', 'isGap')) {
       if (-not ($block.$field -is [bool])) { throw "$blockPath.$field is not a boolean." }
     }

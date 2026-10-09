@@ -38,6 +38,7 @@ $oldCodeBurnBarrierMatch = $env:AI_USAGE_CODEBURN_BARRIER_MATCH
 $oldCodeBurnBarrierReady = $env:AI_USAGE_CODEBURN_BARRIER_READY
 $oldCodeBurnBarrierRelease = $env:AI_USAGE_CODEBURN_BARRIER_RELEASE
 $oldAppData = $env:APPDATA
+$oldLocalAppData = $env:LOCALAPPDATA
 $oldCodexHome = $env:CODEX_HOME
 $oldCodexMode = $env:AI_USAGE_CODEX_MODE
 $oldCodexLog = $env:AI_USAGE_CODEX_LOG
@@ -47,6 +48,7 @@ $oldLocation = (Get-Location).Path
 $oldCurrentDirectory = [Environment]::CurrentDirectory
 $codexLog = Join-Path $sandbox 'codex.log'
 $sandboxAppData = Join-Path $sandbox 'appdata'
+$sandboxLocalAppData = Join-Path $sandbox 'localappdata'
 
 function Read-Snapshot([string]$Path) {
   try {
@@ -159,18 +161,22 @@ function Invoke-Scenario(
   $scenarioTemp = Join-Path $scenarioRoot 'temp'
   $profile = Join-Path $scenarioRoot 'profile'
   $appData = Join-Path $profile 'AppData\Roaming'
+  # Outside the profile on purpose: a profile AppData\Local would give this scenario's
+  # PowerShell children their own cold module-analysis cache.
+  $localAppData = Join-Path $scenarioRoot 'localappdata'
   New-Item -ItemType Directory -Force -Path $scenarioTemp, $profile, $appData | Out-Null
   foreach ($log in @($codeBurnLog, $ccusageLog, $codexLog)) {
     if (Test-Path -LiteralPath $log) { [IO.File]::Delete($log) }
   }
   # Quota fixtures (Claude Code config, desktop history, Codex auth and sessions)
   # are written into this scenario's isolated profile before the generator starts.
-  if ($Prepare) { & $Prepare $profile $appData }
+  if ($Prepare) { & $Prepare $profile $appData $localAppData }
 
   $env:TEMP = $scenarioTemp
   $env:TMP = $scenarioTemp
   $env:USERPROFILE = $profile
   $env:APPDATA = $appData
+  $env:LOCALAPPDATA = $localAppData
   $env:AI_USAGE_STUB_FAILURE = $Failure
   $env:AI_USAGE_STUB_FAILURE_MODE = $FailureMode
   $env:AI_USAGE_CCUSAGE_EXIT = [string]$CCUsageExit
@@ -305,6 +311,7 @@ function Start-Process {
   }
   try { $process.Dispose() } catch {}
   $env:APPDATA = $sandboxAppData
+  $env:LOCALAPPDATA = $sandboxLocalAppData
   return $result
 }
 
@@ -2362,7 +2369,7 @@ if ($env:AI_USAGE_CCUSAGE_MODE -in @('oversized-then-hang', 'deadline-hang')) {
 }
 $block = [ordered]@{
   startTime = '2026-08-29T00:00:00Z'; endTime = '2026-08-29T05:00:00Z'
-  actualEndTime = '2026-08-29T01:00:00Z'; costUSD = 1.25
+  actualEndTime = '2026-08-29T01:00:00Z'; costUSD = 1.25; totalTokens = 4200
   isActive = $true; isGap = $false
 }
 if ($env:AI_USAGE_CCUSAGE_MODE -eq 'blocks-sensitive') {
@@ -2422,6 +2429,9 @@ while ($true) {
   [IO.File]::WriteAllText((Join-Path $stubs 'codex.cmd'), '@echo off' + "`r`n" + 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0codex-stub.ps1" %*' + "`r`n" + 'exit /b %errorlevel%' + "`r`n", [Text.Encoding]::ASCII)
   New-Item -ItemType Directory -Force -Path $sandboxAppData | Out-Null
   $env:APPDATA = $sandboxAppData
+  # The generator also reads the Claude desktop app's MSIX package folder under
+  # LOCALAPPDATA; never let a test see this host's real record there.
+  $env:LOCALAPPDATA = $sandboxLocalAppData
   $env:CODEX_HOME = $null
   $env:AI_USAGE_CODEX_LOG = $codexLog
   $env:AI_USAGE_CODEX_MODE = ''
@@ -2444,6 +2454,7 @@ while ($true) {
   $MaxQuotaResponseBytes = [int64](1024 * 1024)
   $MaxLocalDocumentBytes = [int64](16 * 1024 * 1024)
   $LocalQuotaMaxAgeMilliseconds = [int64](7 * 24 * 60 * 60 * 1000)
+  $ClaudeDesktopPackageFamily = 'Claude_pzs8sxrjxfjjc'
   $ClaudeQuotaTimeoutSeconds = 20
   $script:ClaudeLive = $null
   $script:ClaudeCacheCandidate = $null
@@ -2472,6 +2483,7 @@ while ($true) {
     'Start-JsonCommand', 'Start-OptionalJsonCommand', 'Get-NpmPackageVersion', 'Get-CodexProviderFingerprint',
     'Get-ClaudeOAuthUsage', 'Invoke-BoundedJsonRequest', 'Get-CodexProviderQuota',
     'Read-FileTailLines', 'Read-JsonDocument', 'Get-DocumentField', 'Get-RoamingAppDataPath', 'Get-CodexHomePath',
+    'Get-LocalAppDataPath', 'Get-ClaudeDesktopHistoryPaths',
     'Get-ClaudeIdentityFingerprint', 'Read-ClaudeCodeConfig',
     'Read-ClaudeQuotaCache', 'Read-ClaudeCliCredential', 'Start-AsyncJsonRequest', 'Test-AsyncJsonRequestDone',
     'Complete-AsyncJsonRequest', 'Start-ClaudeUsageRequest', 'Start-ClaudeLiveQuota', 'Receive-ClaudeLiveQuota',
@@ -2773,6 +2785,71 @@ namespace AiUsage {
       throw 'Another account''s cached or desktop quota was shown.'
     }
 
+    # The packaged (MSIX) build keeps its history in the package folder, which is all an
+    # ordinary process sees. Samples from both locations are judged together.
+    $roamingHistoryPath = Join-Path $desktopDirectory 'plan-usage-history.json'
+    $packageDirectory = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude'
+    New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
+    $packageHistoryPath = Join-Path $packageDirectory 'plan-usage-history.json'
+    [IO.File]::WriteAllText((Join-Path $oauthProfile '.claude.json'),
+      '{"oauthAccount":{"accountUuid":"account-a","organizationUuid":"org-a"}}', [Text.Encoding]::ASCII)
+    [void](Remove-FileWithRetry $roamingHistoryPath)
+    [IO.File]::WriteAllText($packageHistoryPath,
+      '{"samples":[{"t":' + ($nowMs - 600000) + ',"org":"org-a","u":{"fh":31,"sd":9}}]}', [Text.Encoding]::ASCII)
+    $packageOnly = Get-ClaudeOAuthUsage
+    if (-not $packageOnly.ok -or $packageOnly.source -ne 'claude_desktop' -or [double]$packageOnly.fiveHour.utilization -ne 31) {
+      throw 'The packaged desktop app''s record was not read when %APPDATA% has none.'
+    }
+    [IO.File]::WriteAllText($roamingHistoryPath,
+      '{"samples":[{"t":' + ($nowMs - 60000) + ',"org":"org-a","u":{"fh":44,"sd":12}}]}', [Text.Encoding]::ASCII)
+    $roamingNewer = Get-ClaudeOAuthUsage
+    if (-not $roamingNewer.ok -or [double]$roamingNewer.fiveHour.utilization -ne 44) {
+      throw 'A newer %APPDATA% desktop sample lost to an older package-folder sample.'
+    }
+    [void](Remove-FileWithRetry $roamingHistoryPath)
+    [IO.File]::WriteAllText($packageHistoryPath,
+      '{"samples":[{"t":' + ($nowMs - 600000) + ',"org":"org-other","u":{"fh":77,"sd":70}}]}', [Text.Encoding]::ASCII)
+    $packageForeign = Get-ClaudeOAuthUsage
+    if ($packageForeign.ok -ne $false -or $packageForeign.reason -ne 'no_credentials') {
+      throw 'Another organization''s package-folder sample was shown.'
+    }
+    # With no known organization, two files that disagree are as ambiguous as one mixed file.
+    [IO.File]::WriteAllText((Join-Path $oauthProfile '.claude.json'), '{}', [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText($roamingHistoryPath,
+      '{"samples":[{"t":' + ($nowMs - 60000) + ',"org":"org-a","u":{"fh":44,"sd":12}}]}', [Text.Encoding]::ASCII)
+    $mixedFiles = Get-ClaudeOAuthUsage
+    if ($mixedFiles.ok -ne $false) {
+      throw 'Desktop samples of two organizations across both locations were shown without a known organization.'
+    }
+    [void](Remove-FileWithRetry $roamingHistoryPath)
+
+    # A desktop sample has no per-model limits. An older same-account record's exhausted
+    # model limit whose reset is still ahead stays; its five-hour and weekly totals do not.
+    $limitReset = [DateTimeOffset]::UtcNow.AddDays(2).ToString('o')
+    $carryConfig = '{"oauthAccount":{"accountUuid":"account-a","organizationUuid":"org-a"},' +
+      '"cachedUsageUtilization":{"fetchedAtMs":' + ($nowMs - 7200000) + ',"accountUuid":"account-a","utilization":' +
+      '{"five_hour":null,"seven_day":{"utilization":80,"resets_at":"' + $limitReset + '"},"limits":[' +
+      '{"kind":"weekly_all","group":"weekly","percent":100,"severity":"critical","resets_at":"' + $limitReset + '","scope":null,"is_active":true},' +
+      '{"kind":"weekly_scoped","group":"weekly","percent":100,"severity":"critical","resets_at":"' + $limitReset +
+      '","scope":{"model":{"display_name":"Opus"}},"is_active":true}]}}}'
+    [IO.File]::WriteAllText((Join-Path $oauthProfile '.claude.json'), $carryConfig, [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText($packageHistoryPath,
+      '{"samples":[{"t":' + ($nowMs - 600000) + ',"org":"org-a","u":{"fh":31,"sd":9}}]}', [Text.Encoding]::ASCII)
+    $carriedQuota = Get-ClaudeOAuthUsage
+    $carriedLimits = @($carriedQuota.limits)
+    if (-not $carriedQuota.ok -or $carriedQuota.source -ne 'claude_desktop' -or $carriedLimits.Count -ne 1 -or
+        $carriedLimits[0].kind -ne 'weekly_scoped' -or [double]$carriedLimits[0].percent -ne 100 -or
+        $carriedLimits[0].model -ne 'Opus' -or [double]$carriedQuota.sevenDay.utilization -ne 9) {
+      throw 'A newer desktop sample dropped an exhausted model limit whose reset is still ahead.'
+    }
+    [IO.File]::WriteAllText((Join-Path $oauthProfile '.claude.json'),
+      $carryConfig.Replace($limitReset, [DateTimeOffset]::UtcNow.AddMinutes(-5).ToString('o')), [Text.Encoding]::ASCII)
+    $expiredCarry = Get-ClaudeOAuthUsage
+    if (-not $expiredCarry.ok -or $expiredCarry.source -ne 'claude_desktop' -or @($expiredCarry.limits).Count -ne 0) {
+      throw 'An exhausted limit whose reset has passed was carried onto a newer desktop sample.'
+    }
+    [void](Remove-FileWithRetry $packageHistoryPath)
+
     # A valid CLI token still wins, and a two-minute answer is reused without a request.
     [IO.File]::WriteAllText($oauthCredentials, '{"claudeAiOauth":{"accessToken":"test-token","expiresAt":253402300799000}}', [Text.Encoding]::ASCII)
     [void](Remove-FileWithRetry $QuotaCachePath)
@@ -3065,14 +3142,14 @@ namespace AiUsage {
   $optionalOutput = Join-Path $sandbox 'optional-launch-output.json'
   $script:CollectorCleanupUncertain = $false
   [IO.File]::WriteAllText($optionalOutput, '{"stale":true}', [Text.Encoding]::ASCII)
-  $optionalProcess = Start-OptionalJsonCommand 'ccusage.cmd' @('blocks', '--json', '--offline') $optionalOutput
+  $optionalProcess = Start-OptionalJsonCommand 'ccusage.cmd' @('blocks', '--json') $optionalOutput
   if ($optionalProcess) { throw 'An optional collector launch failure returned a process.' }
   if (Test-Path -LiteralPath $optionalOutput) { throw 'An optional collector launch failure retained stale output.' }
   $script:CollectorCleanupUncertain = $true
   [IO.File]::WriteAllText($optionalOutput, '{"stale":true}', [Text.Encoding]::ASCII)
   $uncertainLaunchThrew = $false
   try {
-    [void](Start-OptionalJsonCommand 'ccusage.cmd' @('blocks', '--json', '--offline') $optionalOutput)
+    [void](Start-OptionalJsonCommand 'ccusage.cmd' @('blocks', '--json') $optionalOutput)
   } catch {
     $uncertainLaunchThrew = $true
   }
@@ -3246,8 +3323,11 @@ namespace AiUsage {
     }
     if ($success.Final.complete -ne $true -or $success.Final.generationError) { throw 'Successful generator scenario did not finish cleanly.' }
     if (@($success.Final.limits.claudeBlocks.blocks).Count -ne 1) { throw 'Successful ccusage output was not retained in the final snapshot.' }
-    if ($success.CCUsageCalls.Count -ne 1 -or $success.CCUsageCalls[0] -ne 'blocks|--json|--offline') {
-      throw 'ccusage was not invoked exactly once in offline JSON mode.'
+    if ($success.CCUsageCalls.Count -ne 1 -or $success.CCUsageCalls[0] -ne 'blocks|--json') {
+      throw 'ccusage was not invoked exactly once in JSON mode with current public prices.'
+    }
+    if ([int64]@($success.Final.limits.claudeBlocks.blocks)[0].totalTokens -ne 4200) {
+      throw 'The active window token count did not reach the render DTO.'
     }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $success.DataPath | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Successful generated snapshot failed contract verification.' }
@@ -3464,6 +3544,31 @@ namespace AiUsage {
     }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $desktopRun.DataPath | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Claude desktop record snapshot failed contract verification.' }
+
+    # The packaged (MSIX) build keeps its history in the package's private folder,
+    # which an ordinary process sees only at that path. A newer sample there must
+    # outrank an older one left in %APPDATA%\Claude.
+    $prepareClaudeMsix = {
+      param($ProfilePath, $AppDataPath, $LocalAppDataPath)
+      [IO.File]::WriteAllText((Join-Path $ProfilePath '.claude.json'),
+        '{"oauthAccount":{"accountUuid":"account-a","organizationUuid":"org-a"}}', [Text.Encoding]::ASCII)
+      $roamingDirectory = Join-Path $AppDataPath 'Claude'
+      New-Item -ItemType Directory -Force -Path $roamingDirectory | Out-Null
+      $older = '{"version":2,"samples":[{"t":' + [DateTimeOffset]::UtcNow.AddMinutes(-90).ToUnixTimeMilliseconds() +
+        ',"org":"org-a","u":{"fh":10,"sd":3}}]}'
+      [IO.File]::WriteAllText((Join-Path $roamingDirectory 'plan-usage-history.json'), $older, [Text.Encoding]::ASCII)
+      $packageDirectory = Join-Path $LocalAppDataPath 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude'
+      New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
+      $newer = '{"version":2,"samples":[{"t":' + [DateTimeOffset]::UtcNow.AddMinutes(-15).ToUnixTimeMilliseconds() +
+        ',"org":"org-a","u":{"fh":31,"sd":9}}]}'
+      [IO.File]::WriteAllText((Join-Path $packageDirectory 'plan-usage-history.json'), $newer, [Text.Encoding]::ASCII)
+    }
+    $msixRun = Invoke-Scenario 'claude-desktop-msix-record' '' 0 $false 'before' '' $false '' '' $prepareClaudeMsix
+    $msixFinal = $msixRun.Final.limits.claudeQuota
+    if (-not $msixFinal.ok -or $msixFinal.source -ne 'claude_desktop' -or
+        [int]$msixFinal.fiveHour.utilization -ne 31 -or [int]$msixFinal.sevenDay.utilization -ne 9) {
+      throw 'The Claude desktop record in the MSIX package folder was not read, or an older record outranked it.'
+    }
   }
 
   if ($TestGroup -in @('all', 'optional')) {
@@ -3656,6 +3761,7 @@ namespace AiUsage {
   $env:TMP = $oldTmp
   $env:USERPROFILE = $oldUserProfile
   $env:APPDATA = $oldAppData
+  $env:LOCALAPPDATA = $oldLocalAppData
   $env:CODEX_HOME = $oldCodexHome
   $env:AI_USAGE_CODEX_MODE = $oldCodexMode
   $env:AI_USAGE_CODEX_LOG = $oldCodexLog

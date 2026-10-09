@@ -657,14 +657,24 @@ async function main() {
     primary: { used_percent: 64, resets_at: new Date(Date.now() - 2 * 86400000).toISOString(), window_minutes: 10080 },
     secondary: null
   };
+  // A window with tokens but no cost had no price available; it is not a free window.
+  recordedSnapshot.limits.claudeBlocks.blocks = recordedSnapshot.limits.claudeBlocks.blocks.map((block) =>
+    block.isActive
+      ? { ...block, costUSD: 0, totalTokens: 340707781, burnRate: { costPerHour: 0 }, projection: { totalCost: 0 } }
+      : block
+  );
   const recordedState = await evaluate(`(function () {
     document.querySelector('[data-filter="all"]').click();
+    var pricedCard = document.querySelector('#quota .quota:first-child').textContent;
     window.__DATA__ = ${JSON.stringify(recordedSnapshot)};
     window.__render__();
     var text = document.querySelector('#quota').textContent;
+    var claudeCard = document.querySelector('#quota .quota:first-child').textContent;
     return {
       desktopSource: text.includes('Claude \u684c\u9762\u7248'),
       loginHint: text.includes('claude auth login'),
+      unpricedWindow: claudeCard.includes('\u672a\u5b9a\u4ef7') && !claudeCard.includes('$0.00'),
+      pricedWindow: pricedCard.includes('$12.50') && !pricedCard.includes('\u672a\u5b9a\u4ef7'),
       claudeMeters: document.querySelectorAll('#quota .quota:first-child .meter-row:not(.is-reset)').length,
       codexReset: text.includes('\u5df2\u91cd\u7f6e'),
       codexStale: text.includes('\u672c\u5730\u8bb0\u5f55'),
@@ -673,10 +683,41 @@ async function main() {
   })()`);
   assert.equal(recordedState.desktopSource, true, JSON.stringify(recordedState));
   assert.equal(recordedState.loginHint, true);
+  assert.equal(recordedState.unpricedWindow, true, "An unpriced window was shown as a zero cost.");
+  assert.equal(recordedState.pricedWindow, true, "A priced window lost its cost.");
   assert.equal(recordedState.claudeMeters, 2);
   assert.equal(recordedState.codexReset, true);
   assert.equal(recordedState.codexStale, true);
   assert.equal(recordedState.overflow, 0);
+
+  // ccusage can finish after the first usage revision, and the hour chart must follow;
+  // a profile with unpriced windows is hidden rather than drawn with a false peak.
+  const lateBlocks = structuredClone(finalSnapshot);
+  lateBlocks.runId = "late-blocks-browser-smoke";
+  const withoutBlocks = structuredClone(lateBlocks);
+  withoutBlocks.revision = 1;
+  withoutBlocks.limits.claudeBlocks = null;
+  const withBlocks = structuredClone(lateBlocks);
+  withBlocks.revision = 2;
+  const unpricedBlocks = structuredClone(lateBlocks);
+  unpricedBlocks.revision = 3;
+  // Only the active window loses its price; the others keep the profile above zero.
+  unpricedBlocks.limits.claudeBlocks.blocks = unpricedBlocks.limits.claudeBlocks.blocks.map((block) =>
+    block.isActive ? { ...block, costUSD: 0, totalTokens: 5000000 } : block
+  );
+  const hoursState = await evaluate(`(function () {
+    var hidden = function () { return document.querySelector('#hoursWrap').classList.contains('hide'); };
+    window.__DATA__ = ${JSON.stringify(withoutBlocks)};
+    window.__render__();
+    var before = hidden();
+    window.__DATA__ = ${JSON.stringify(withBlocks)};
+    window.__render__();
+    var after = hidden();
+    window.__DATA__ = ${JSON.stringify(unpricedBlocks)};
+    window.__render__();
+    return { before: before, after: after, unpriced: hidden() };
+  })()`);
+  assert.deepEqual(hoursState, { before: true, after: false, unpriced: true }, JSON.stringify(hoursState));
 
   const staleIncompleteSnapshot = structuredClone(finalSnapshot);
   staleIncompleteSnapshot.runId = "stale-incomplete-browser-smoke";
