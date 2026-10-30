@@ -303,11 +303,12 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   `prefers-reduced-motion` and must not be required to read any value.
 - Validate any new categorical or sequential palette with the dataviz validator rather
   than eyeballing it.
-- Provider marks are 12x12 pixel glyphs (`shape-rendering="crispEdges"`, `fill="currentColor"`):
-  a burst for Claude, terminal angle brackets for Codex, a whale face for DeepSeek, plus a
-  pixel grid for "all". Render them at 20px in the filter row and 24px in a card chip so the
-  cells stay on whole pixels; the other icons stay line art because they are affordances,
-  not brands.
+- Provider marks are perler-bead mosaics: one `<circle r=".42">` per filled cell, no
+  `shape-rendering`, `fill="currentColor"`. DeepSeek's whale is the official LobeHub path
+  downsampled to a 16-cell grid, Claude is the blocky mascot at 16 cells, and Codex plus
+  "all" stay at 12. A 44px chip with a 40px glyph keeps the bead pitch near 2.75px, the
+  smallest size where beads still read as beads; at 26px in the filter row they degrade to
+  a dotted silhouette, which is the accepted trade for brand fidelity.
 - Motion uses one token set taken from IBM Carbon's productive motion: standard
   `cubic-bezier(.2,0,.38,.9)`, entrance `cubic-bezier(0,0,.38,.9)`, and 110/150/240 ms
   for fades, small movement and expansion. Micro-interactions stay in Carbon's 90-120 ms
