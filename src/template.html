@@ -62,7 +62,7 @@
 
     /* ── provider identity: reserved, never a series slot ── */
     --claude:   light-dark(#d9581d, #e05e26);
-    --codex:    light-dark(#0b7a70, #2fbfae);
+    --codex:    light-dark(#6a4cf0, #9d8bff);
     --deepseek: light-dark(#4d6bfe, #6b8cff);
 
     /* ── status: reserved for state, never for "series 4" ── */
@@ -541,7 +541,7 @@
   }
   .pw i b {
     position: absolute; inset-block: 0; inset-inline-start: 0; inline-size: 0;
-    background: var(--claude);
+    background: linear-gradient(180deg, color-mix(in oklab, var(--claude) 72%, #fff), var(--claude));
     transition: inline-size 220ms linear;
   }
   .pw i.next { outline: 1px solid color-mix(in oklab, var(--claude) 55%, transparent); outline-offset: -1px; }
@@ -2474,7 +2474,7 @@ addEventListener("error", function (event) {
     if (!bar) return;
     var cells = bar.children;
     for (var index = 0; index < cells.length; index++) {
-      var local = Math.max(0, Math.min(1, fraction * total - index));
+      var local = Math.max(0, Math.min(1, fraction * 24 - index));
       var fill = cells[index].firstChild;
       if (fill) fill.style.inlineSize = (local * 100).toFixed(2) + "%";
       cells[index].classList.toggle("next", local > 0 && local < 1);
@@ -2497,9 +2497,10 @@ addEventListener("error", function (event) {
     var p = data && data.progress;
     if (!p || !n(p.total)) { copy.textContent = ""; return; }
     var total = n(p.total), done = Math.max(0, Math.min(total, n(p.done)));
-    if (bar.children.length !== total) {
+    var cells = 24;
+    if (bar.children.length !== cells) {
       bar.textContent = "";
-      for (var index = 0; index < total; index++) {
+      for (var index = 0; index < cells; index++) {
         var cell = document.createElement("i");
         cell.appendChild(document.createElement("b"));
         bar.appendChild(cell);
