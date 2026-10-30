@@ -533,18 +533,21 @@
 
   /* First paint: one block per collector step, the same block language as the
      quota meters. The fill creeps toward the next step without passing it. */
-  .pw { display: flex; gap: 2px; inline-size: min(15rem, 42vw); flex: none; --off: var(--card-2); }
+  .pw { display: flex; gap: 3px; inline-size: min(20rem, 56vw); flex: none; position: relative; --off: var(--card-2); }
   .pw i {
-    position: relative; flex: 1; block-size: 12px; border-radius: 1px;
+    position: relative; flex: 1; block-size: 10px; border-radius: 2px;
     background: var(--off);
     overflow: hidden;
   }
   .pw i b {
     position: absolute; inset-block: 0; inset-inline-start: 0; inline-size: 0;
-    background: linear-gradient(180deg, color-mix(in oklab, var(--claude) 72%, #fff), var(--claude));
+    background-image: linear-gradient(90deg, #f4a259 0%, var(--claude) 55%, #b8431a 100%);
+    background-size: var(--bar-w, 100%) 100%;
+    background-position-x: calc(-1 * var(--cell-x, 0px));
+    background-repeat: no-repeat;
+    border-radius: 2px;
     transition: inline-size 220ms linear;
   }
-  .pw i.next { outline: 1px solid color-mix(in oklab, var(--claude) 55%, transparent); outline-offset: -1px; }
   .usage-wait .copy { display: grid; gap: .1rem; }
   #loader .pw { inline-size: min(18rem, 62vw); margin-block-start: 1.1rem; margin-inline: auto; --off: color-mix(in oklab, var(--ink) 9%, transparent); }
   #loader .usage-progress { display: block; margin-block-start: .5rem; }
@@ -2440,7 +2443,7 @@ addEventListener("error", function (event) {
     $("app").classList.toggle("usage-pending", !ready);
     if (ready && !loaderDismissed) {
       loaderDismissed = true;
-      paintBar(1, 24);
+      paintBar(1, 12);
       setTimeout(function () {
         $("loader").classList.add("done");
         $("app").classList.add("show");
@@ -2477,11 +2480,13 @@ addEventListener("error", function (event) {
     var bar = document.getElementById("bootProgress") || document.querySelector(".usage-wait .pw");
     if (!bar) return;
     var cells = bar.children;
+    var barWidth = bar.getBoundingClientRect().width;
+    bar.style.setProperty("--bar-w", barWidth + "px");
     for (var index = 0; index < cells.length; index++) {
-      var local = Math.max(0, Math.min(1, fraction * 24 - index));
+      var local = Math.max(0, Math.min(1, fraction * 12 - index));
       var fill = cells[index].firstChild;
+      cells[index].style.setProperty("--cell-x", cells[index].offsetLeft + "px");
       if (fill) fill.style.inlineSize = (local * 100).toFixed(2) + "%";
-      cells[index].classList.toggle("next", local > 0 && local < 1);
     }
   }
   function startTrickle(bar, total) {
@@ -2501,7 +2506,7 @@ addEventListener("error", function (event) {
     var p = data && data.progress;
     if (!p || !n(p.total)) { copy.textContent = ""; return; }
     var total = n(p.total), done = Math.max(0, Math.min(total, n(p.done)));
-    var cells = 24;
+    var cells = 12;
     if (bar.children.length !== cells) {
       bar.textContent = "";
       for (var index = 0; index < cells; index++) {
