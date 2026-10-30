@@ -452,6 +452,92 @@
     .quota-offline { grid-template-columns: auto minmax(0, 1fr); }
     .quota-local-ok { grid-column: 2; }
   }
+  /* ── motion: one easing set, one duration scale ──────────────────────────
+     Every state change below is a transition (interruptible) rather than a
+     keyframe, so a second update mid-flight retargets instead of restarting.
+     Nothing here is required to read a value, and the reduced-motion query
+     below collapses all of it. */
+  :root {
+    --ease: cubic-bezier(.2, .7, .2, 1);
+    --ease-out: cubic-bezier(.16, 1, .3, 1);
+    --dur-fast: 120ms;
+    --dur: 200ms;
+    --dur-slow: 320ms;
+  }
+
+  /* Segmented controls: one pill slides between pressed items, so a filter change
+     reads as movement instead of a repaint. Widths are measured in JS because the
+     labels differ (Claude / Codex / DeepSeek). */
+  .seg { position: relative; }
+  .seg::before {
+    content: ""; position: absolute; z-index: 0; inset-block: 3px; inset-inline-start: 0;
+    inline-size: var(--seg-w, 0px); translate: var(--seg-x, 0px) 0;
+    border-radius: var(--r-pill); background: var(--ink); opacity: 0;
+    transition: translate var(--dur) var(--ease-out), inline-size var(--dur) var(--ease-out), opacity var(--dur-fast) linear;
+  }
+  .seg[data-indicator="1"]::before { opacity: 1; }
+  .seg button { position: relative; z-index: 1; background: transparent; border-color: transparent; box-shadow: none; }
+  .seg button[aria-pressed="true"] { background: transparent; color: var(--card); border-color: transparent; box-shadow: none; transform: none; }
+  .seg button[aria-pressed="true"]:active { transform: none; }
+
+  /* Provider cards: the whole card is the toggle for cost <-> tokens. */
+  .prov { cursor: pointer; transition: translate var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out); }
+  .prov:hover { translate: 0 -2px; box-shadow: 5px 5px 0 color-mix(in oklab, var(--p) 26%, var(--edge) 34%); }
+  .prov:active { translate: 0 0; }
+  .prov:focus-visible { outline: 2px solid var(--p); outline-offset: 2px; }
+  .prov-figures { display: grid; min-inline-size: 0; }
+  .prov-figures > span { grid-area: 1 / 1; transition: opacity var(--dur) var(--ease-out), translate var(--dur) var(--ease-out); }
+  .prov-tokens { opacity: 0; translate: 0 10px; }
+  .prov[data-view="tokens"] .prov-cost { opacity: 0; translate: 0 -10px; }
+  .prov[data-view="tokens"] .prov-tokens { opacity: 1; translate: 0 0; }
+  .prov[data-view="tokens"] .prov-unit-cost { display: none; }
+  .prov-unit-tokens { display: none; }
+  .prov[data-view="tokens"] .prov-unit-tokens { display: inline; }
+
+  /* A plan with no metered window says so in one line; the meters fold away. */
+  .quota-head h3 { margin: 0; font-size: .75rem; font-weight: 700; }
+  .quota-note { margin-inline-start: auto; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
+  .quota-toggle {
+    inline-size: 24px; block-size: 24px; display: grid; place-items: center; flex: none;
+    border: 1px solid var(--line-2); border-radius: var(--r-item); background: var(--card); color: var(--ink-2);
+    cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  }
+  .quota-toggle:hover { background: var(--card-2); color: var(--ink); border-color: var(--line-2); }
+  .quota-toggle svg { transition: rotate var(--dur) var(--ease-out); }
+  .quota[data-open="1"] .quota-toggle svg { rotate: 90deg; }
+  .quota-body {
+    display: grid; grid-template-rows: 1fr;
+    transition: grid-template-rows var(--dur-slow) var(--ease-out), opacity var(--dur) var(--ease-out);
+  }
+  .quota[data-open="0"] .quota-body { grid-template-rows: 0fr; opacity: 0; }
+  .quota-clip { min-block-size: 0; overflow: hidden; display: grid; gap: .7rem; }
+  /* Two open quota cards stay equal height; a folded one shrinks to its head. */
+  #quota .quota[data-open="0"] { align-self: start; }
+
+  /* First paint: a determinate bar fed by real collector steps. */
+  .usage-wait .pw {
+    inline-size: min(15rem, 42vw); block-size: 6px; flex: none;
+    border: 1px solid var(--line-2); border-radius: 999px; background: var(--card-2); overflow: hidden;
+  }
+  .usage-wait .pw i {
+    display: block; block-size: 100%; inline-size: var(--pct, 0%);
+    background: var(--claude); border-radius: inherit;
+    transition: inline-size var(--dur-slow) var(--ease-out);
+  }
+  .usage-wait .copy { display: grid; gap: .1rem; }
+  .usage-progress { color: var(--ink-2); font: 600 .7rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
+  .usage-wait.failed .pw { display: none; }
+
+  /* Shared micro-motion: new figures rise in, disclosures fade their body. */
+  @keyframes fig-in { from { opacity: 0; translate: 0 7px; } to { opacity: 1; translate: 0 0; } }
+  .is-new { animation: fig-in var(--dur-slow) var(--ease-out); }
+  details[open] > *:not(summary) { animation: fade-in var(--dur) var(--ease-out); }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  details > summary svg.chev { transition: rotate var(--dur) var(--ease-out); }
+  details[open] > summary svg.chev { rotate: 90deg; }
+  .rank-fill { transition: inline-size var(--dur-slow) var(--ease-out); }
+  .meter .blocks i { transition: inline-size var(--dur-slow) var(--ease-out); }
+
   @media (prefers-reduced-motion: reduce) {
     .boot-line::after { animation: none; inline-size: 100%; }
     *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
@@ -544,8 +630,11 @@
   </section>
 
   <section class="card usage-wait" role="status" aria-live="polite">
-    <div class="boot-line" aria-hidden="true"></div>
-    <p>正在读取本地用量…</p>
+    <div class="pw" role="progressbar" aria-valuemin="0" aria-valuemax="6" aria-valuenow="0" aria-label="采集进度"><i></i></div>
+    <div class="copy">
+      <p>正在读取本地用量…</p>
+      <span class="usage-progress"></span>
+    </div>
   </section>
 
   <section class="card hero usage-block" aria-label="合计参考成本">
@@ -633,6 +722,21 @@ addEventListener("error", function (event) {
   var data = null, filter = "all", period = "30days", charts = [], terminalFailure = false, stalled = false;
   var lastRunId = null, lastRevision = -1, lastRevisionAt = Date.now(), desiredPeriod = null;
   var PERIOD_LABEL = { today: "今天", week: "近 7 天", "30days": "近 30 天", month: "本月", all: "全部", lifetime: "全部" };
+
+  // Remembered UI state, next to the theme key: which quota card the reader folded
+  // away and whether a provider card shows cost or tokens. A relaunch opens the page
+  // the way it was left instead of guessing again.
+  var PREF_KEY = "ai-usage-ledger-prefs";
+  var prefs = (function () {
+    try {
+      var raw = localStorage.getItem(PREF_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (e) { return {}; }
+  })();
+  function savePrefs() {
+    try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) {}
+  }
 
   function $(id) { return document.getElementById(id); }
 
@@ -1108,6 +1212,47 @@ addEventListener("error", function (event) {
     return head + rows;
   }
 
+  // Both quota cards share one structure so the fold behaves identically: the head
+  // always stays readable, the body animates between 0fr and 1fr.
+  function quotaCard(key, name, accent, body, summary, open, extraClass) {
+    return '<article class="card quota' + (extraClass ? " " + extraClass : "") + '" data-q="' + key + '" data-open="' + (open ? "1" : "0") + '" style="--p:' + accent + '">' +
+      '<div class="quota-head"><span class="dot"></span><h3>' + esc(name) + "</h3>" +
+      (summary ? '<span class="quota-note">' + esc(summary) + "</span>" : "") +
+      '<button type="button" class="quota-toggle" aria-expanded="' + (open ? "true" : "false") +
+      '" aria-controls="quota-body-' + key + '">' +
+      '<svg width="14" height="14" aria-hidden="true"><use href="#i-chev"/></svg>' +
+      '<span class="sr-only">展开或收起' + esc(name) + "</span></button></div>" +
+      '<div class="quota-body" id="quota-body-' + key + '"><div class="quota-clip">' + body + "</div></div></article>";
+  }
+  // A saved fold wins; otherwise the card appears only when there is something to be
+  // blocked by. A Free plan has no metered window, so its meters are pure noise.
+  function quotaOpenFor(key, metered) {
+    var saved = prefs.quota && prefs.quota[key];
+    if (saved === "open") return true;
+    if (saved === "closed") return false;
+    return metered;
+  }
+  function codexMetered(off, cq) {
+    if (cq && cq.ok) {
+      return list(cq.windows).some(function (w) { return w && w.percent != null; });
+    }
+    if (!off || off.ok !== true) return false;
+    if (String(off.planType || "").toLowerCase() === "free") return false;
+    return [off.primary, off.secondary].some(function (w) {
+      return w && typeof w === "object" && w.used_percent != null && n(w.window_minutes) > 0;
+    });
+  }
+  function codexHeadline(off, cq) {
+    var used = null;
+    if (cq && cq.ok) {
+      var relayWindow = list(cq.windows).filter(function (w) { return w && w.percent != null; })[0];
+      if (relayWindow) used = n(relayWindow.percent);
+    } else if (off && off.primary && off.primary.used_percent != null) {
+      used = n(off.primary.used_percent);
+    }
+    return used == null ? "" : "剩余 " + Math.max(0, 100 - used).toFixed(0) + "%";
+  }
+
   function renderQuota() {
     var host = $("quota"), out = [];
     var q = (data.limits && data.limits.claudeQuota) || {};
@@ -1187,9 +1332,12 @@ addEventListener("error", function (event) {
         extra = windowStats(pending, pending, pending);
       }
 
-      out.push('<article class="card quota" style="--p:var(--claude)">' +
-        '<div class="quota-head"><span class="dot"></span><h3>Claude 额度</h3></div>' +
-        alarm + rows + hint + extra + "</article>");
+      var claudeSummary = "";
+      if (q.ok && q.fiveHour && q.fiveHour.utilization != null) {
+        claudeSummary = "剩余 " + Math.max(0, 100 - n(q.fiveHour.utilization)).toFixed(0) + "%";
+      }
+      out.push(quotaCard("claude", "Claude 额度", "var(--claude)",
+        alarm + rows + hint + extra, claudeSummary, quotaOpenFor("claude", true)));
     }
 
     if (filter === "all" || filter === "codex") {
@@ -1250,8 +1398,13 @@ addEventListener("error", function (event) {
           "</b><span>" + (quotaLoading ? "稍候自动更新" : esc(codexQuotaReason(codexReason))) + "</span></span>" +
           (usageReady() ? '<span class="quota-local-ok">本地统计正常</span>' : "") + "</div>";
       }
-      out.push('<article class="card quota' + (populated ? "" : " quota-unavailable") + '" style="--p:var(--codex)">' +
-        '<div class="quota-head"><span class="dot"></span><h3>Codex 额度</h3></div>' + body + "</article>");
+      var codexWindowMetered = codexMetered(off, cq);
+      var codexPlanLabel = CODEX_PLAN[String(off.planType || "").toLowerCase()] || "";
+      var codexSummary = codexWindowMetered
+        ? codexHeadline(off, cq)
+        : (codexPlanLabel ? codexPlanLabel + " · " : "") + "无计量额度";
+      out.push(quotaCard("codex", "Codex 额度", "var(--codex)", body, codexSummary,
+        quotaOpenFor("codex", codexWindowMetered || populated && cq.ok), populated ? "" : "quota-unavailable"));
     }
 
     host.innerHTML = out.join("");
@@ -1286,8 +1439,11 @@ addEventListener("error", function (event) {
     var suffix = filter === "deepseek" ? " · 实际计费"
       : (filter === "all" && hasProvider("deepseek") ? " · 合计成本" : " · API 参考价");
     $("heroLabel").textContent = (filter === "all" ? shown().map(pname).join(" + ") + " 合计" : pname(filter)) + suffix;
-    window.__heroFigureText = money(total, false);
+    var nextHeroText = money(total, false);
+    var heroChanged = window.__heroFigureText != null && window.__heroFigureText !== nextHeroText;
+    window.__heroFigureText = nextHeroText;
     fitHeroFigure();
+    if (heroChanged) pulse($("heroFigure"));
     $("heroFacts").innerHTML = [
       ["调用", int(calls)], ["会话", int(sess)], ["Tokens", kmb(toks)],
       ["缓存读占比", (toks ? (cr / toks * 100).toFixed(1) : "0") + "%"]
@@ -1320,11 +1476,19 @@ addEventListener("error", function (event) {
     host.innerHTML = figure(text, px, "var(--claude)");
   }
   function fitProviderFigures() {
-    document.querySelectorAll(".prov-cost[data-figure-text]").forEach(function (host) {
-      var text = host.dataset.figureText || "$0.00";
-      var available = Math.max(96, Math.floor(host.parentElement.clientWidth || 0));
-      var px = Math.max(2, Math.min(5, Math.floor((available - 2) / Math.max(1, pixelWidth(text, 1)))));
-      host.innerHTML = figure(text, px, getComputedStyle(host).color);
+    // One scale per card: the cost string decides the pixel size and the token view
+    // inherits it, so toggling never resizes the figure under the cursor.
+    document.querySelectorAll(".prov").forEach(function (card) {
+      var hosts = Array.prototype.slice.call(card.querySelectorAll(".prov-figures [data-figure-text]"));
+      if (!hosts.length) return;
+      var reference = hosts[0].dataset.figureText || "";
+      var available = Math.max(96, Math.floor(hosts[0].parentElement.clientWidth || 0));
+      var px = Math.max(2, Math.min(5, Math.floor((available - 2) / Math.max(1, pixelWidth(reference, 1)))));
+      hosts.forEach(function (host) {
+        var text = host.dataset.figureText || "";
+        if (!text) { host.innerHTML = ""; return; }
+        host.innerHTML = figure(text, px, getComputedStyle(host).color);
+      });
     });
   }
 
@@ -1342,12 +1506,20 @@ addEventListener("error", function (event) {
         return '<span><i style="background:' + k.css + '"></i>' + k.label + " <b>" + kmb(t[k.key]) + "</b></span>";
       }).join("");
       var costText = money(cost(p));
-      return '<article class="card prov" style="--p:' + pcolor(p) + '">' +
+      var tokenText = kmb(tokTotal(t));
+      var view = prefs.view && prefs.view[p] === "tokens" ? "tokens" : "cost";
+      return '<article class="card prov" style="--p:' + pcolor(p) + '" data-p="' + p +
+        '" data-view="' + view + '" role="button" tabindex="0" aria-pressed="' + (view === "tokens") +
+        '" aria-label="' + pname(p) + '，点击切换成本与 tokens">' +
         '<div class="prov-top"><span class="prov-name"><span class="chip"><svg aria-hidden="true"><use href="#i-' + p + '"/></svg></span>' +
         '<span translate="no">' + pname(p) + "</span></span>" +
         '<span class="prov-share">' + (grand ? (cost(p) / grand * 100).toFixed(1) : "0") + "%</span></div>" +
-        '<div class="prov-cost-row"><span class="prov-cost" data-figure-text="' + esc(costText) + '"></span>' +
-        "<span>" + (p === "deepseek" ? "实际计费" : "API 参考价") + "</span></div>" +
+        '<div class="prov-cost-row"><span class="prov-figures">' +
+        '<span class="prov-cost" data-figure-text="' + esc(costText) + '"></span>' +
+        '<span class="prov-tokens" data-figure-text="' + esc(tokenText) + '"></span>' +
+        "</span>" +
+        '<span class="prov-unit-cost">' + (p === "deepseek" ? "实际计费" : "API 参考价") + "</span>" +
+        '<span class="prov-unit-tokens">tokens</span></div>' +
         '<div class="prov-stats">' +
           "<div><span>调用</span><b>" + int(o.calls) + "</b></div>" +
           "<div><span>会话</span><b>" + int(o.sessions) + "</b></div>" +
@@ -1769,8 +1941,68 @@ addEventListener("error", function (event) {
     if (picker) picker.hidden = !hasProvider("deepseek");
     if (filter !== "all" && !hasProvider(filter)) filter = "all";
     renderQuota();
+    renderProgress();
+    syncSegs();
     syncUsage();
   }
+
+  var PROGRESS_STAGE = { quota: "读取额度", period: "汇总用量", blocks: "窗口曲线", final: "收尾" };
+  // The first-paint bar reports finished collector steps, so it only moves when work
+  // actually finished; the page never animates a guess at how long a scan takes.
+  function renderProgress() {
+    var bar = document.querySelector(".usage-wait .pw");
+    var copy = document.querySelector(".usage-progress");
+    if (!bar || !copy) return;
+    var p = data && data.progress;
+    if (!p || !n(p.total)) { copy.textContent = ""; return; }
+    var total = n(p.total), done = Math.max(0, Math.min(total, n(p.done)));
+    bar.style.setProperty("--pct", (done / total * 100).toFixed(2) + "%");
+    bar.setAttribute("aria-valuemax", String(total));
+    bar.setAttribute("aria-valuenow", String(done));
+    var label = PROGRESS_STAGE[p.stage] || "";
+    if (p.stage === "period" && p.period) label = PERIOD_LABEL[p.period] || p.period;
+    copy.textContent = done + " / " + total + (label ? " · " + label : "");
+  }
+
+  function pulse(node) {
+    if (!node) return;
+    node.classList.remove("is-new");
+    void node.offsetWidth;
+    node.classList.add("is-new");
+  }
+
+  // Quota fold: delegated, so a re-render never drops the handler.
+  $("quota").addEventListener("click", function (event) {
+    var button = event.target.closest && event.target.closest(".quota-toggle");
+    if (!button) return;
+    var card = button.closest(".quota");
+    var open = card.dataset.open !== "1";
+    card.dataset.open = open ? "1" : "0";
+    button.setAttribute("aria-expanded", String(open));
+    prefs.quota = prefs.quota || {};
+    prefs.quota[card.dataset.q] = open ? "open" : "closed";
+    savePrefs();
+  });
+
+  function toggleProviderView(card) {
+    var next = card.dataset.view === "tokens" ? "cost" : "tokens";
+    card.dataset.view = next;
+    card.setAttribute("aria-pressed", String(next === "tokens"));
+    prefs.view = prefs.view || {};
+    prefs.view[card.dataset.p] = next;
+    savePrefs();
+  }
+  $("split").addEventListener("click", function (event) {
+    var card = event.target.closest && event.target.closest(".prov");
+    if (card) toggleProviderView(card);
+  });
+  $("split").addEventListener("keydown", function (event) {
+    if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
+    var card = event.target.closest && event.target.closest(".prov");
+    if (!card) return;
+    event.preventDefault();
+    toggleProviderView(card);
+  });
 
   /* ─────────────────────────────────── wiring ── */
   function syncPressed(nodes, isOn) { nodes.forEach(function (b) { b.setAttribute("aria-pressed", String(isOn(b))); }); }
@@ -1778,6 +2010,17 @@ addEventListener("error", function (event) {
     if (!data) return;
     $("stamp").textContent = "生成于 " + stampAt(data.generatedAt) + " · " + (PERIOD_LABEL[period] || period) +
       (data.generationError ? " · 部分更新失败，请重新启动" : data.complete === false ? " · 更新中" : " · 更新完成");
+  }
+
+  function syncSeg(seg) {
+    var pressed = seg.querySelector('button[aria-pressed="true"]');
+    if (!pressed) { seg.dataset.indicator = "0"; return; }
+    seg.style.setProperty("--seg-x", pressed.offsetLeft + "px");
+    seg.style.setProperty("--seg-w", pressed.offsetWidth + "px");
+    seg.dataset.indicator = "1";
+  }
+  function syncSegs() {
+    document.querySelectorAll(".seg").forEach(syncSeg);
   }
 
   function buildPeriodSeg() {
@@ -1804,9 +2047,10 @@ addEventListener("error", function (event) {
         desiredPeriod = b.dataset.period;
         period = b.dataset.period;
         syncPressed(Array.from($("periodSeg").querySelectorAll("[data-period]")), function (x) { return x === b; });
-        syncUrl(); renderStamp(); render();
+        syncSeg($("periodSeg")); syncUrl(); renderStamp(); render();
       });
     });
+    syncSeg($("periodSeg"));
     if (focusedPeriod) {
       var replacement = Array.from($("periodSeg").querySelectorAll("[data-period]")).filter(function (b) {
         return b.dataset.period === focusedPeriod;
@@ -1876,7 +2120,7 @@ addEventListener("error", function (event) {
 
   addEventListener("resize", function () {
     clearTimeout(window.__rz);
-    window.__rz = setTimeout(function () { fitHeroFigure(); fitProviderFigures(); repaintAll(); }, 150);
+    window.__rz = setTimeout(function () { fitHeroFigure(); fitProviderFigures(); syncSegs(); repaintAll(); }, 150);
   });
 
   /* ─────────────────────────── data intake ── */

@@ -449,8 +449,8 @@ function Assert-ClaudeBlocks($Blocks, [string]$Path) {
 }
 
 Assert-Fields $data '$' `
-  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'reports', 'limits', 'appDir') `
-  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'reports', 'limits', 'appDir')
+  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'progress', 'reports', 'limits', 'appDir') `
+  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'progress', 'reports', 'limits', 'appDir')
 if (-not (Test-IsoTimestamp $data.generatedAt)) { throw 'Snapshot generatedAt metadata is invalid.' }
 Assert-String $data.runId 'runId' 128 $false
 Assert-Int64 $data.revision 'revision'
@@ -541,6 +541,17 @@ foreach ($periodKey in $periods) {
     throw 'Snapshot published a period that the plan never named.'
   }
 }
+
+# The first-paint progress bar is driven by real collector steps, never a guess.
+Assert-Fields $data.progress 'progress' @('done', 'total', 'stage', 'period') @('done', 'total', 'stage', 'period')
+foreach ($field in @('done', 'total')) { Assert-Int64 $data.progress.$field "progress.$field" }
+if ([int64]$data.progress.total -lt 1 -or [int64]$data.progress.done -gt [int64]$data.progress.total) {
+  throw 'Snapshot progress is outside its own total.'
+}
+if (@('quota', 'period', 'blocks', 'final') -cnotcontains [string]$data.progress.stage) {
+  throw 'Snapshot progress stage is not a known collector step.'
+}
+Assert-String $data.progress.period 'progress.period' 64
 Assert-Fields $data.reports 'reports' $periods $periods
 foreach ($period in $periods) {
   Assert-Fields $data.reports.$period "reports.$period" @('claude', 'codex') $allowedProviderKeys

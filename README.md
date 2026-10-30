@@ -54,7 +54,7 @@ for that provider. Usage and cost views remain available when no source answers.
 The page opens on the quota cards within about a second; every usage period follows as
 soon as CodeBurn finishes it, and a period switch never waits for the durable model pass.
 A local DeepSeek API account appears as a third provider card with its own series, models,
-projects, and sessions when OpenCode's store holds one.
+projects, and sessions when OpenCode's store holds one. Clicking a provider card switches its headline between cost and tokens, and a quota card folds to one line: a Free plan has no metered window, so it starts folded, and both choices are remembered.
 
 ## Install
 

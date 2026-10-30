@@ -2147,6 +2147,14 @@ $script:LocalUsageCutoffs = @{
 }
 $script:LocalProviderKeys = @('deepseek')
 
+# The page shows a real progress bar while the collectors run, so the run publishes
+# how many of its planned steps are complete instead of animating a guess. One step
+# for the quota read, one per period, one for the ccusage window curve, one to close.
+$script:ProgressTotal = 3 + $PeriodKeys.Count
+$script:ProgressDone = 0
+$script:ProgressStage = 'quota'
+$script:ProgressPeriod = ''
+
 $KeepFields = @(
   'currency', 'overview', 'daily', 'models', 'projects', 'topSessions'
 )
@@ -3074,6 +3082,14 @@ function Write-Snapshot([bool]$Complete) {
     # The full plan, published from the first revision so the period switcher keeps
     # its final shape while the reports are still being collected.
     plannedPeriods = @($PeriodKeys)
+    # Real collector progress for the first-paint bar: done counts finished steps of
+    # quota + periods + window curve + final publish.
+    progress = [ordered]@{
+      done   = [int]$script:ProgressDone
+      total  = [int]$script:ProgressTotal
+      stage  = [string]$script:ProgressStage
+      period = [string]$script:ProgressPeriod
+    }
     reports = $reports
     limits = $limits
     appDir = $AppDir
@@ -3094,6 +3110,13 @@ function Write-Snapshot([bool]$Complete) {
   a revision. A failed write only skips this early update.
 #>
 function Step-QuotaState { $script:QuotaStateVersion += 1 }
+
+# Publishes real collector progress: the page shows done/total instead of a sweep.
+function Set-Progress([int]$Done, [string]$Stage, [string]$PeriodKey = '') {
+  $script:ProgressDone = [Math]::Max(0, [Math]::Min($script:ProgressTotal, $Done))
+  $script:ProgressStage = $Stage
+  $script:ProgressPeriod = $PeriodKey
+}
 
 function Publish-QuotaUpdate {
   if ($GenerationFailed -or $script:QuotaStateVersion -eq $script:PublishedQuotaVersion) { return }
@@ -3559,6 +3582,8 @@ try {
     $codexQuota = [ordered]@{ ok = $false; reason = 'official_account' }
   }
   Step-QuotaState
+  # The local quota read is the first finished step; periods start next.
+  Set-Progress 1 'period' $PeriodKeys[0]
 
   # CodeBurn is NOT concurrency-safe: overlapping invocations leak each other's
   # rows, so a `--provider codex` run can come back holding the union of both
@@ -3584,6 +3609,10 @@ try {
       }
       Publish-PeriodCandidate $periodKey
       $HasPublishedSnapshot = $true
+      $donePeriods = [Array]::IndexOf([string[]]$PeriodKeys, $periodKey) + 1
+      $nextPeriod = if ($donePeriods -lt $PeriodKeys.Count) { [string]$PeriodKeys[$donePeriods] } else { '' }
+      if ($nextPeriod) { Set-Progress (1 + $donePeriods) 'period' $nextPeriod }
+      else { Set-Progress (1 + $donePeriods) 'blocks' }
     }
 
     foreach ($periodKey in $PeriodKeys) {
@@ -3604,6 +3633,7 @@ try {
 
     $GenerationStage = 'local_limits'
     Receive-BlocksIfReady $true
+    Set-Progress (2 + $PeriodKeys.Count) 'final'
     Update-ClaudeLocalQuota
     Update-CodexSessionQuota
     Write-Snapshot $false
@@ -3622,6 +3652,7 @@ try {
       Step-QuotaState
     }
     $GenerationStage = 'final_publish'
+    Set-Progress $script:ProgressTotal 'final'
     Write-Snapshot $true
   } catch {
     $GenerationFailed = $true
