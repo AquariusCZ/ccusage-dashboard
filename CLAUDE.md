@@ -314,6 +314,12 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   for fades, small movement and expansion. Micro-interactions stay in Carbon's 90-120 ms
   band with ease-out on user input. State changes are transitions, not keyframes, so a
   second update retargets instead of restarting.
+- Entrance motion belongs to the intro window only (`#app.intro`): `card-in`, `block-pop`,
+  `grow-x`, `tile-in`, `area-in`, `draw-line`, `marker-in` and `cell-in` run once when the
+  page first appears and never again on a later revision. Updates change values through
+  transitions instead, `renderQuota` skips an identical rebuild, and the hero figure only
+  pulses when the reader changes the period or the filter. Measured before the change: 215
+  entrance animations restarted on every progressive revision.
 
 ## Publishing
 

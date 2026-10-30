@@ -233,7 +233,7 @@
   /* A relay names its own plan, so the note has to shrink rather than overflow. */
   .meter-note { margin-inline-start: auto; color: var(--muted); font-size: .75rem; white-space: nowrap; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
   .blocks { display: flex; gap: 2px; }
-  .blocks i { flex: 1; block-size: 12px; border-radius: 1px; background: var(--off); transform-origin: bottom; animation: block-pop .32s cubic-bezier(.2,.8,.2,1) backwards; }
+  .blocks i { flex: 1; block-size: 12px; border-radius: 1px; background: var(--off); transform-origin: bottom; }
   .meter-foot { display: flex; gap: .5rem; color: var(--muted); font-size: .75rem; }
   .meter-foot :last-child { margin-inline-start: auto; }
   .alarm {
@@ -288,7 +288,7 @@
   .prov-stats span { display: block; color: var(--muted); font-size: .75rem; }
   .prov-stats b { display: block; font: 700 .75rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
   .rail { block-size: 10px; display: flex; gap: 2px; }
-  .rail i { display: block; min-inline-size: 0; border-radius: 1px; transform-origin: left; animation: grow-x .58s cubic-bezier(.2,.8,.2,1) backwards; }
+  .rail i { display: block; min-inline-size: 0; border-radius: 1px; transform-origin: left; }
 
   .legend { display: flex; flex-wrap: wrap; gap: .3rem .9rem; color: var(--muted); font-size: .75rem; }
   .legend span { display: inline-flex; align-items: center; gap: .35rem; }
@@ -308,7 +308,7 @@
 
   /* ── tiles ── */
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: .6rem; }
-  .tile { padding: .75rem .85rem; border: 1px solid var(--line); border-radius: var(--r-item); background: var(--card-2); animation: tile-in .4s cubic-bezier(.2,.8,.2,1) backwards; }
+  .tile { padding: .75rem .85rem; border: 1px solid var(--line); border-radius: var(--r-item); background: var(--card-2); }
   .tile:nth-child(2) { animation-delay: 55ms; }
   .tile:nth-child(3) { animation-delay: 110ms; }
   .tile:nth-child(4) { animation-delay: 165ms; }
@@ -323,7 +323,7 @@
   .rank-name b { display: block; font-size: .75rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rank-name span { display: block; color: var(--muted); font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rank-track { block-size: 10px; border: 1px solid color-mix(in oklab, var(--p) 28%, var(--line)); border-radius: 1px; background: color-mix(in oklab, var(--p) 10%, var(--card-2)); overflow: hidden; }
-  .rank-fill { block-size: 100%; border-radius: 0; background: var(--p); transform-origin: left; animation: grow-x .65s cubic-bezier(.2,.8,.2,1) backwards; }
+  .rank-fill { block-size: 100%; border-radius: 0; background: var(--p); transform-origin: left; }
   .rank-val { font: 600 .75rem/1 var(--mono); font-variant-numeric: tabular-nums; text-align: end; }
 
   /* ── tables ── */
@@ -368,19 +368,18 @@
   .gridline { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
   .axis { fill: var(--muted); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
   .callout { fill: var(--ink); font: 600 12px var(--mono); font-variant-numeric: tabular-nums; }
-  .series-area { animation: area-in .6s ease-out backwards; }
   .series-line { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
-  .series-line.draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-line .85s cubic-bezier(.2,.8,.2,1) forwards; }
+  .series-line.draw { stroke-dasharray: none; stroke-dashoffset: 0; }
   .hit { fill: transparent; cursor: crosshair; }
   [data-tip]:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-  .marker { stroke: var(--card); stroke-width: 2.5; transform-box: fill-box; transform-origin: center; animation: marker-in .36s .48s cubic-bezier(.2,.9,.3,1.4) backwards; }
+  .marker { stroke: var(--card); stroke-width: 2.5; transform-box: fill-box; transform-origin: center; }
   .arc-fill { fill: none; stroke-linecap: round; }
   /* polar spokes are wide strokes; a round cap would balloon each one into a
      blob that overlaps its neighbours */
   .spoke { fill: none; stroke-linecap: butt; }
   .cell {
     shape-rendering: crispEdges; stroke: color-mix(in oklab, var(--card) 54%, var(--line)); stroke-width: 1;
-    transform-box: fill-box; transform-origin: center; animation: cell-in .3s cubic-bezier(.2,.8,.2,1) backwards;
+    transform-box: fill-box; transform-origin: center;
     transition: filter .14s ease, stroke .14s ease, stroke-width .14s ease;
   }
   .cell:hover, .cell:focus { filter: brightness(1.08) saturate(1.08); stroke: var(--ink); stroke-width: 2; }
@@ -416,11 +415,24 @@
 
   #app { opacity: 0; transition: opacity .3s ease; }
   #app.show { opacity: 1; }
-  #app.show .card { animation: card-in .44s cubic-bezier(.2,.8,.2,1) both; }
   #app.show .hero { animation-delay: 45ms; }
   #app.show #split .card:nth-child(1) { animation-delay: 90ms; }
   #app.show #split .card:nth-child(2) { animation-delay: 135ms; }
   #app.show #split .card:nth-child(3) { animation-delay: 175ms; }
+
+  /* Entrance runs once, in the intro window; later revisions must not replay it. */
+  #app.show.intro .card { animation: card-in .44s cubic-bezier(.2,.8,.2,1) both; }
+  #app.intro .blocks i { animation: block-pop .32s cubic-bezier(.2,.8,.2,1) backwards; }
+  #app.intro .rail i { animation: grow-x .58s cubic-bezier(.2,.8,.2,1) backwards; }
+  #app.intro .tile { animation: tile-in .4s cubic-bezier(.2,.8,.2,1) backwards; }
+  #app.intro .tile:nth-child(2) { animation-delay: 55ms; }
+  #app.intro .tile:nth-child(3) { animation-delay: 110ms; }
+  #app.intro .tile:nth-child(4) { animation-delay: 165ms; }
+  #app.intro .rank-fill { animation: grow-x .65s cubic-bezier(.2,.8,.2,1) backwards; }
+  #app.intro .series-area { animation: area-in .6s ease-out backwards; }
+  #app.intro .series-line.draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-line .85s cubic-bezier(.2,.8,.2,1) forwards; }
+  #app.intro .marker { animation: marker-in .36s .48s cubic-bezier(.2,.9,.3,1.4) backwards; }
+  #app.intro .cell { animation: cell-in .3s cubic-bezier(.2,.8,.2,1) backwards; }
 
   @keyframes card-in { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
   @keyframes tile-in { from { opacity: 0; translate: -7px 0; } to { opacity: 1; translate: 0 0; } }
@@ -535,7 +547,7 @@
 
   /* Shared micro-motion: new figures rise in, disclosures fade their body. */
   @keyframes fig-in { from { opacity: 0; translate: 0 7px; } to { opacity: 1; translate: 0 0; } }
-  .is-new { animation: fig-in var(--dur-slow) var(--ease-out); }
+  #app.intro .is-new { animation: fig-in var(--dur-slow) var(--ease-out); }
   details[open] > *:not(summary) { animation: fade-in var(--dur) var(--ease-out); }
   @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
   details > summary svg.chev { transition: rotate var(--dur) var(--ease-out); }
@@ -1732,7 +1744,9 @@ addEventListener("error", function (event) {
       }
     }
 
-    host.innerHTML = out.join("");
+    var nextQuotaHtml = out.join("");
+    if (nextQuotaHtml === host.innerHTML) return;
+    host.innerHTML = nextQuotaHtml;
   }
 
   /* ─────────────────────────────── ② hero ── */
@@ -1753,8 +1767,12 @@ addEventListener("error", function (event) {
   }
   function rowTotal(r) { return shown().reduce(function (s, p) { return s + r[p]; }, 0); }
 
+  var lastHeroScope = null;
   function renderHero() {
     var sel = shown();
+    var scope = period + "|" + filter;
+    var scopeChanged = lastHeroScope !== null && lastHeroScope !== scope;
+    lastHeroScope = scope;
     var total = sum(sel.map(cost));
     var calls = sum(sel.map(function (p) { return overview(p).calls; }));
     var sess = sum(sel.map(function (p) { return overview(p).sessions; }));
@@ -1768,7 +1786,7 @@ addEventListener("error", function (event) {
     var heroChanged = window.__heroFigureText != null && window.__heroFigureText !== nextHeroText;
     window.__heroFigureText = nextHeroText;
     fitHeroFigure();
-    if (heroChanged) pulse($("heroFigure"));
+    if (heroChanged && scopeChanged) pulse($("heroFigure"));
     $("heroFacts").innerHTML = [
       ["调用", int(calls)], ["会话", int(sess)], ["Tokens", kmb(toks)],
       ["缓存读占比", (toks ? (cr / toks * 100).toFixed(1) : "0") + "%"]
@@ -2256,10 +2274,21 @@ addEventListener("error", function (event) {
   }
   // Quota can be published before the first usage report; usage sections then wait
   // behind one status card instead of rendering zeros.
+  var usageIntroShown = false;
   function syncUsage() {
     var ready = usageReady();
     $("app").classList.toggle("usage-pending", !ready);
-    if (ready) renderUsage(true);
+    if (ready) {
+      if (!usageIntroShown) { usageIntroShown = true; introWindow(700); }
+      renderUsage(true);
+    }
+  }
+  var introTimer = null;
+  function introWindow(milliseconds) {
+    var app = $("app");
+    app.classList.add("intro");
+    clearTimeout(introTimer);
+    introTimer = setTimeout(function () { app.classList.remove("intro"); }, milliseconds);
   }
   function render() {
     var picker = document.querySelector('[data-filter="deepseek"]');
@@ -2484,6 +2513,7 @@ addEventListener("error", function (event) {
       render();
       clearInterval(bootTimer);
       $("app").classList.add("show");
+      introWindow(900);
       $("loader").classList.add("done");
       setTimeout(function () { $("loader").style.display = "none"; }, 340);
     } else {
