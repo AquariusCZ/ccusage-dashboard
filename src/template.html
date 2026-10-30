@@ -62,8 +62,8 @@
 
     /* ── provider identity: reserved, never a series slot ── */
     --claude:   light-dark(#d9581d, #e05e26);
-    --codex:    light-dark(#3f6eef, #4575f6);
-    --deepseek: light-dark(#6d3fd0, #a78bfa);
+    --codex:    light-dark(#0f9488, #2fbfae);
+    --deepseek: light-dark(#4d6bfe, #6b8cff);
 
     /* ── status: reserved for state, never for "series 4" ── */
     --good:     light-dark(#0f8a4d, #2fbd72);
@@ -519,16 +519,15 @@
   /* Two open quota cards stay equal height; a folded one shrinks to its head. */
   #quota .quota[data-open="0"] { align-self: start; }
 
-  /* First paint: a determinate bar fed by real collector steps. */
-  .usage-wait .pw {
-    inline-size: min(15rem, 42vw); block-size: 6px; flex: none;
-    border: 1px solid var(--line-2); border-radius: 999px; background: var(--card-2); overflow: hidden;
-  }
+  /* First paint: one block per collector step, the same block language as the
+     quota meters. It only advances when a step really finished. */
+  .usage-wait .pw { display: flex; gap: 2px; inline-size: min(15rem, 42vw); flex: none; --off: var(--card-2); }
   .usage-wait .pw i {
-    display: block; block-size: 100%; inline-size: var(--pct, 0%);
-    background: var(--claude); border-radius: inherit;
-    transition: inline-size var(--dur-slow) var(--ease-out);
+    flex: 1; block-size: 12px; border-radius: 1px;
+    background: var(--off);
+    transition: background var(--dur) var(--ease);
   }
+  .usage-wait .pw i.on { background: var(--claude); }
   .usage-wait .copy { display: grid; gap: .1rem; }
   .usage-progress { color: var(--ink-2); font: 600 .7rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
   .usage-wait.failed .pw { display: none; }
@@ -2281,7 +2280,13 @@ addEventListener("error", function (event) {
     var p = data && data.progress;
     if (!p || !n(p.total)) { copy.textContent = ""; return; }
     var total = n(p.total), done = Math.max(0, Math.min(total, n(p.done)));
-    bar.style.setProperty("--pct", (done / total * 100).toFixed(2) + "%");
+    if (bar.children.length !== total) {
+      bar.textContent = "";
+      for (var index = 0; index < total; index++) { bar.appendChild(document.createElement("i")); }
+    }
+    Array.prototype.forEach.call(bar.children, function (cell, index) {
+      cell.classList.toggle("on", index < done);
+    });
     bar.setAttribute("aria-valuemax", String(total));
     bar.setAttribute("aria-valuenow", String(done));
     var label = PROGRESS_STAGE[p.stage] || "";
