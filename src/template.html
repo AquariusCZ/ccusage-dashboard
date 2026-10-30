@@ -457,12 +457,17 @@
      keyframe, so a second update mid-flight retargets instead of restarting.
      Nothing here is required to read a value, and the reduced-motion query
      below collapses all of it. */
+  /* Motion follows IBM Carbon's productive scale (carbondesignsystem.com/elements/motion):
+     standard cubic-bezier(.2,0,.38,.9), entrance cubic-bezier(0,0,.38,.9), and the
+     110/150/240 ms tokens for fades, small movement and expansion. Carbon's checklist
+     keeps micro-interactions at 90-120 ms with ease-out on user input, which is what the
+     segmented pill and the card hover use. */
   :root {
-    --ease: cubic-bezier(.2, .7, .2, 1);
-    --ease-out: cubic-bezier(.16, 1, .3, 1);
-    --dur-fast: 120ms;
-    --dur: 200ms;
-    --dur-slow: 320ms;
+    --ease: cubic-bezier(.2, 0, .38, .9);
+    --ease-out: cubic-bezier(0, 0, .38, .9);
+    --dur-fast: 110ms;
+    --dur: 150ms;
+    --dur-slow: 240ms;
   }
 
   /* Segmented controls: one pill slides between pressed items, so a filter change

@@ -308,6 +308,11 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   pixel grid for "all". Render them at 20px in the filter row and 24px in a card chip so the
   cells stay on whole pixels; the other icons stay line art because they are affordances,
   not brands.
+- Motion uses one token set taken from IBM Carbon's productive motion: standard
+  `cubic-bezier(.2,0,.38,.9)`, entrance `cubic-bezier(0,0,.38,.9)`, and 110/150/240 ms
+  for fades, small movement and expansion. Micro-interactions stay in Carbon's 90-120 ms
+  band with ease-out on user input. State changes are transitions, not keyframes, so a
+  second update retargets instead of restarting.
 
 ## Publishing
 
