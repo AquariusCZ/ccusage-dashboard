@@ -197,7 +197,10 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   latency can never delay a usage publish. A changed quota state is published between
   collector slices, which makes quota-only revisions (empty `periods`) precede the first usage
   revision; never publish while a period candidate is being committed, and detect changes with
-  the quota state counter rather than re-serializing every slice. After the first usage
+  the quota state counter rather than re-serializing every slice. Publish `plannedPeriods`
+  (the full `$PeriodKeys` plan) from the first revision: before any report exists the
+  switcher must show the run's plan greyed out rather than collapsing to a single button,
+  and once data arrives it offers only the periods it can actually show. After the first usage
   publish, later failures must terminate with a retained
   `generationError` snapshot rather than blanking an already usable dashboard. A failure
   before the first usage snapshot must atomically publish a terminal, credential-free

@@ -3071,6 +3071,9 @@ function Write-Snapshot([bool]$Complete) {
     source = $sourceRecord
     providers = $providers.ToArray()
     periods = $availablePeriods
+    # The full plan, published from the first revision so the period switcher keeps
+    # its final shape while the reports are still being collected.
+    plannedPeriods = @($PeriodKeys)
     reports = $reports
     limits = $limits
     appDir = $AppDir

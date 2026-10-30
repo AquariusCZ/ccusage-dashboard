@@ -482,17 +482,21 @@ async function main() {
   await evaluate("document.querySelector('#details details:nth-of-type(2) summary').focus()")
   writeSnapshot(detailSnapshot);
   await waitFor(
-    () => evaluate("window.__DATA__ && window.__DATA__.revision === 2 && document.querySelectorAll('[data-period]').length === 2"),
+    () => evaluate("window.__DATA__ && window.__DATA__.revision === 2 && !document.querySelector('[data-period=\"week\"]').disabled && document.querySelector('[data-period=\"all\"]').disabled"),
     "the detail-focus usage revision"
   );
   const detailState = await evaluate(`({
     detailOpen: document.querySelector('#details details:nth-of-type(2)').open,
     detailFocused: document.activeElement === document.querySelector('#details details:nth-of-type(2) summary'),
-    periods: document.querySelectorAll('[data-period]').length
+    periods: document.querySelectorAll('[data-period]').length,
+    weekReady: !document.querySelector('[data-period="week"]').disabled,
+    allPending: document.querySelector('[data-period="all"]').disabled
   })`);
   assert.equal(detailState.detailOpen, true);
   assert.equal(detailState.detailFocused, true);
-  assert.equal(detailState.periods, 2);
+  assert.equal(detailState.periods, 3);
+  assert.equal(detailState.weekReady, true);
+  assert.equal(detailState.allPending, true);
 
   await evaluate(`document.querySelector('[data-period="${defaultPeriod}"]').focus()`);
   writeSnapshot(expandedSnapshot);

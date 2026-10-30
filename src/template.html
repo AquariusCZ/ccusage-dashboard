@@ -168,6 +168,9 @@
   .seg button:hover:not([aria-pressed="true"]) { color: var(--ink); background: color-mix(in oklab, var(--ink) 7%, transparent); }
   .seg button[aria-pressed="true"] { background: var(--ink); color: var(--card); border-color: var(--ink); font-weight: 600; box-shadow: 2px 2px 0 color-mix(in oklab, var(--edge) 55%, transparent); transform: translate(-1px, -1px); }
   .seg button:active { transform: translate(1px, 1px); box-shadow: none; }
+  /* A planned period whose report is still being collected: visible, not clickable. */
+  .seg button[disabled] { opacity: .42; cursor: default; }
+  .seg button[disabled]:hover { background: none; color: inherit; }
   .iconbtn {
     min-inline-size: 38px; min-block-size: 38px; display: grid; place-items: center;
     border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--card); color: var(--ink-2); cursor: pointer;
@@ -253,9 +256,10 @@
   .meter-row.is-reset .blocks i { opacity: .5; }
 
   /* Quota arrives before the first usage report; usage sections wait in one place. */
-  .usage-wait { margin-block-start: .85rem; padding: 1rem 1.1rem; display: grid; gap: .65rem; }
-  .usage-wait .boot-line { margin-block-start: 0; }
-  .usage-wait p { color: var(--muted); font-size: .75rem; }
+  .usage-wait { margin-block-start: .85rem; padding: .8rem 1.1rem; display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; }
+  .usage-wait .boot-line { inline-size: min(14rem, 40vw); block-size: 6px; margin: 0; flex: none; }
+  .usage-wait p { color: var(--muted); font-size: .75rem; margin: 0; }
+  .usage-wait.failed { display: block; }
   .usage-wait.failed .boot-line { display: none; }
   #app.usage-pending .usage-block { display: none; }
   #app:not(.usage-pending) .usage-wait { display: none; }
@@ -1779,11 +1783,21 @@ addEventListener("error", function (event) {
   function buildPeriodSeg() {
     var focusedPeriod = document.activeElement && document.activeElement.dataset
       ? document.activeElement.dataset.period : null;
-    var keys = (data.periods && data.periods.length ? data.periods : [data.period]).slice();
-    if (desiredPeriod && keys.indexOf(desiredPeriod) >= 0) period = desiredPeriod;
-    if (keys.indexOf(period) < 0) period = keys.indexOf(data.period) >= 0 ? data.period : keys[0];
+    var ready = data.periods && data.periods.length ? data.periods : [];
+    // The switcher keeps the run's planned shape from the first revision and simply
+    // enables a period when its report lands. Showing only ready keys made it collapse
+    // to a single button on first paint, then jump 3 -> 1 -> 2 -> 3 as reports arrived.
+    var planned = data.plannedPeriods && data.plannedPeriods.length
+      ? data.plannedPeriods
+      : (ready.length ? ready : [data.period]);
+    var keys = planned.slice();
+    if (desiredPeriod && ready.indexOf(desiredPeriod) >= 0) period = desiredPeriod;
+    if (ready.length && ready.indexOf(period) < 0) {
+      period = ready.indexOf(data.period) >= 0 ? data.period : ready[0];
+    }
     $("periodSeg").innerHTML = keys.map(function (k) {
-      return '<button type="button" data-period="' + esc(k) + '" aria-pressed="' + (k === period) + '">' + esc(PERIOD_LABEL[k] || k) + "</button>";
+      return '<button type="button" data-period="' + esc(k) + '" aria-pressed="' + (k === period) + '"' +
+        (ready.indexOf(k) < 0 ? " disabled" : "") + ">" + esc(PERIOD_LABEL[k] || k) + "</button>";
     }).join("");
     $("periodSeg").querySelectorAll("[data-period]").forEach(function (b) {
       b.addEventListener("click", function () {

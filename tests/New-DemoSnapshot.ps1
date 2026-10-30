@@ -185,6 +185,7 @@ $payload = [ordered]@{
   source = [ordered]@{ name = 'CodeBurn'; version = '0.9.27' }
   providers = @('claude', 'codex', 'deepseek')
   periods = @('30days', 'week', 'all')
+  plannedPeriods = @('30days', 'week', 'all')
   reports = $reports
   limits = [ordered]@{
     claudeQuota = [ordered]@{

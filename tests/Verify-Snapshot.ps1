@@ -449,8 +449,8 @@ function Assert-ClaudeBlocks($Blocks, [string]$Path) {
 }
 
 Assert-Fields $data '$' `
-  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'reports', 'limits', 'appDir') `
-  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'reports', 'limits', 'appDir')
+  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'reports', 'limits', 'appDir') `
+  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'reports', 'limits', 'appDir')
 if (-not (Test-IsoTimestamp $data.generatedAt)) { throw 'Snapshot generatedAt metadata is invalid.' }
 Assert-String $data.runId 'runId' 128 $false
 Assert-Int64 $data.revision 'revision'
@@ -518,6 +518,28 @@ foreach ($periodKey in $periods) {
 }
 if (@($periods | Select-Object -Unique).Count -ne $periods.Count) {
   throw 'Snapshot periods metadata contains duplicate keys.'
+}
+# The plan must be readable before its data exists, so the switcher can render its
+# final shape on the quota-only first revision.
+if (-not ($data.plannedPeriods -is [Collections.IList]) -or $data.plannedPeriods -is [string]) {
+  throw 'Snapshot plannedPeriods metadata is not an array.'
+}
+$planned = @($data.plannedPeriods)
+if ($planned.Count -lt 1 -or $planned[0] -cne $data.period) {
+  throw 'Snapshot plannedPeriods does not lead with the default period.'
+}
+foreach ($plannedKey in $planned) {
+  if (-not ($plannedKey -is [string]) -or $validPeriods -cnotcontains $plannedKey) {
+    throw 'Snapshot plannedPeriods contains an invalid key.'
+  }
+}
+if (@($planned | Select-Object -Unique).Count -ne $planned.Count) {
+  throw 'Snapshot plannedPeriods contains duplicate keys.'
+}
+foreach ($periodKey in $periods) {
+  if ($planned -cnotcontains $periodKey) {
+    throw 'Snapshot published a period that the plan never named.'
+  }
 }
 Assert-Fields $data.reports 'reports' $periods $periods
 foreach ($period in $periods) {
