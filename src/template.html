@@ -62,7 +62,7 @@
 
     /* ── provider identity: reserved, never a series slot ── */
     --claude:   light-dark(#d9581d, #e05e26);
-    --codex:    light-dark(#0f9488, #2fbfae);
+    --codex:    light-dark(#0b7a70, #2fbfae);
     --deepseek: light-dark(#4d6bfe, #6b8cff);
 
     /* ── status: reserved for state, never for "series 4" ── */
@@ -528,6 +528,7 @@
     transition: background var(--dur) var(--ease);
   }
   .usage-wait .pw i.on { background: var(--claude); }
+  .usage-wait .pw i.next { outline: 1px solid color-mix(in oklab, var(--claude) 55%, transparent); outline-offset: -1px; }
   .usage-wait .copy { display: grid; gap: .1rem; }
   .usage-progress { color: var(--ink-2); font: 600 .7rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
   .usage-wait.failed .pw { display: none; }
@@ -2286,6 +2287,7 @@ addEventListener("error", function (event) {
     }
     Array.prototype.forEach.call(bar.children, function (cell, index) {
       cell.classList.toggle("on", index < done);
+      cell.classList.toggle("next", index === done);
     });
     bar.setAttribute("aria-valuemax", String(total));
     bar.setAttribute("aria-valuenow", String(done));
