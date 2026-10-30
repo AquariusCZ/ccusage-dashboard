@@ -306,7 +306,7 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 - Provider marks are perler-bead mosaics: one `<circle r=".42">` per filled cell, no
   `shape-rendering`, `fill="currentColor"`. DeepSeek's whale is the official LobeHub path
   downsampled to a 16-cell grid, Claude is the blocky mascot at 16 cells, and Codex plus
-  "all" stay at 12. A 44px chip with a 40px glyph keeps the bead pitch near 2.75px, the
+  "all" stay at 12. A 44px chip with a 40px glyph keeps the bead pitch at 2.5px, the
   smallest size where beads still read as beads; at 26px in the filter row they degrade to
   a dotted silhouette, which is the accepted trade for brand fidelity.
 - Motion uses one token set taken from IBM Carbon's productive motion: standard
