@@ -303,6 +303,11 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   `prefers-reduced-motion` and must not be required to read any value.
 - Validate any new categorical or sequential palette with the dataviz validator rather
   than eyeballing it.
+- Provider marks are 12x12 pixel glyphs (`shape-rendering="crispEdges"`, `fill="currentColor"`):
+  a burst for Claude, terminal angle brackets for Codex, a whale face for DeepSeek, plus a
+  pixel grid for "all". Render them at 20px in the filter row and 24px in a card chip so the
+  cells stay on whole pixels; the other icons stay line art because they are affordances,
+  not brands.
 
 ## Publishing
 
