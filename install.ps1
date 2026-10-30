@@ -1045,7 +1045,7 @@ try {
   Write-Host '  [ok] runtime staged and verified' -ForegroundColor Green
 
 $tools = @(
-  [ordered]@{ Command = 'codeburn'; Package = 'codeburn'; Label = 'CodeBurn'; Version = '0.9.19' },
+  [ordered]@{ Command = 'codeburn'; Package = 'codeburn'; Label = 'CodeBurn'; Version = '0.9.27' },
   [ordered]@{ Command = 'ccusage'; Package = 'ccusage'; Label = 'ccusage'; Version = '20.0.20' }
 )
 
@@ -1076,7 +1076,7 @@ try {
 
   $nodeVersion = Get-ExactReleaseVersion $nodePath
   if (-not $nodeVersion -or $nodeVersion -lt [version]'22.13.0') {
-    throw 'CodeBurn 0.9.19 requires Node.js 22.13.0 or newer.'
+    throw 'CodeBurn 0.9.27 requires Node.js 22.13.0 or newer.'
   }
   Write-Host "  [ok] Node.js $nodeVersion" -ForegroundColor Green
 

@@ -16,7 +16,12 @@ $AppDir = $PSScriptRoot
 $Template = Join-Path $AppDir 'template.html'
 $FontDir = Join-Path $AppDir 'fonts'
 $ReportDataModule = Join-Path $AppDir 'ReportData.psm1'
-$RequiredCodeBurnVersion = '0.9.19'
+$RequiredCodeBurnVersion = '0.9.27'
+# 0.9.19 is still accepted: its report/status JSON is the same contract, but its
+# live model rows do not reconcile against its own headline, so it keeps paying for
+# the durable status pass on every period. 0.9.27 reconciles them itself and reads
+# its cache about twice as fast per invocation.
+$SupportedCodeBurnVersions = @('0.9.27', '0.9.19')
 $RequiredCCUsageVersion = '20.0.20'
 $MaxCollectorOutputBytes = [int64](16 * 1024 * 1024)
 $MaxQuotaResponseBytes = [int64](1024 * 1024)
@@ -878,6 +883,158 @@ public static extern int Release(IntPtr db);
   } finally {
     if ($statement -ne [IntPtr]::Zero) { [void][AiUsage.WinSqlite]::Close($statement) }
     if ($db -ne [IntPtr]::Zero) { [void][AiUsage.WinSqlite]::Release($db) }
+  }
+}
+
+# OpenCode keeps every chat turn in one SQLite store and records provider, model,
+# token counts and the call's own cost on each assistant message. That is the only
+# local record for a DeepSeek API account: CodeBurn reads OpenCode's store as
+# generic usage, but it cannot separate a provider from it, and its OpenCode
+# overview does not reconcile against the recorded cost.
+#
+# Upstream inventory, 2026-10-30: `%USERPROFILE%\.local\share\opencode\opencode.db`,
+# tables `message` (id, session_id, time_created, data) and `session`
+# (id, directory). Windows ships `winsqlite3.dll` 3.53 with JSON1, so one grouped
+# query returns at most a few hundred rows. The store is opened read-only, one
+# SELECT is issued, and nothing is written back; a running OpenCode keeps its WAL
+# beside it, so a read-write open is only a fallback for a store whose shared-memory
+# file has been cleaned up while the client is closed.
+function Read-OpenCodeDeepSeekUsage {
+  $dbPath = Join-Path (Join-Path $env:USERPROFILE '.local\share\opencode') 'opencode.db'
+  if (-not (Test-Path -LiteralPath $dbPath)) {
+    return [pscustomobject]@{ ok = $false; reason = 'no_opencode'; rows = @() }
+  }
+
+  try {
+    if (-not ('AiUsage.WinSqliteQuery' -as [type])) {
+      Add-Type -Namespace AiUsage -Name WinSqliteQuery -MemberDefinition @'
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_open_v2", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Open(byte[] filename, out IntPtr db, int flags, IntPtr vfs);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_busy_timeout", CallingConvention = CallingConvention.Cdecl)]
+public static extern int BusyTimeout(IntPtr db, int ms);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_prepare_v2", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Prepare(IntPtr db, byte[] sql, int nbyte, out IntPtr stmt, IntPtr tail);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_step", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Step(IntPtr stmt);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_column_double", CallingConvention = CallingConvention.Cdecl)]
+public static extern double ColumnDouble(IntPtr stmt, int col);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_column_text", CallingConvention = CallingConvention.Cdecl)]
+public static extern IntPtr ColumnText(IntPtr stmt, int col);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_column_bytes", CallingConvention = CallingConvention.Cdecl)]
+public static extern int ColumnBytes(IntPtr stmt, int col);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_finalize", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Close(IntPtr stmt);
+[DllImport("winsqlite3.dll", EntryPoint = "sqlite3_close_v2", CallingConvention = CallingConvention.Cdecl)]
+public static extern int Release(IntPtr db);
+'@
+    }
+  } catch {
+    return [pscustomobject]@{ ok = $false; reason = 'sqlite_unavailable'; rows = @() }
+  }
+
+  $utf8 = New-Object Text.UTF8Encoding($false)
+  $db = [IntPtr]::Zero
+  $statement = [IntPtr]::Zero
+  try {
+    $flags = 1
+    if ([AiUsage.WinSqliteQuery]::Open(($utf8.GetBytes($dbPath) + [byte]0), [ref]$db, $flags, [IntPtr]::Zero) -ne 0) {
+      $db = [IntPtr]::Zero
+      $flags = 2
+      if ([AiUsage.WinSqliteQuery]::Open(($utf8.GetBytes($dbPath) + [byte]0), [ref]$db, $flags, [IntPtr]::Zero) -ne 0) {
+        return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @() }
+      }
+    }
+    [void][AiUsage.WinSqliteQuery]::BusyTimeout($db, 3000)
+    # SQLite's own 'localtime' modifier returns NULL under winsqlite3 on a process
+    # whose TZ is unset, so the local calendar day is folded in with the offset this
+    # process already knows. A run near a DST change can shift a midnight-adjacent
+    # message by an hour; nothing else in the day depends on it.
+    $offsetSeconds = [int64][Math]::Round([TimeZoneInfo]::Local.GetUtcOffset([DateTimeOffset]::Now).TotalSeconds)
+    $sql = @(
+      'select m.session_id as session_id,',
+      '       cast(m.time_created / 1000 as integer) as created_at,',
+      "       json_extract(m.data, '`$.modelID') as model,",
+      "       date(m.time_created / 1000 + $offsetSeconds, 'unixepoch') as day,",
+      '       count(*) as calls,',
+      "       sum(coalesce(json_extract(m.data, '`$.cost'), 0)) as cost,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.input'), 0)) as input_tokens,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.output'), 0)) as output_tokens,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.cache.read'), 0)) as cache_read,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.cache.write'), 0)) as cache_write,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.reasoning'), 0)) as reasoning,",
+      '       max(s.directory) as project',
+      'from message m left join session s on s.id = m.session_id',
+      'where json_valid(m.data)',
+      "  and json_extract(m.data, '`$.role') = 'assistant'",
+      "  and json_extract(m.data, '`$.providerID') = 'deepseek'",
+      'group by m.session_id, day, model'
+    ) -join ' '
+    if ([AiUsage.WinSqliteQuery]::Prepare($db, ($utf8.GetBytes($sql) + [byte]0), -1, [ref]$statement, [IntPtr]::Zero) -ne 0) {
+      return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @() }
+    }
+
+    $rows = New-Object Collections.Generic.List[object]
+    while ($true) {
+      $step = [AiUsage.WinSqliteQuery]::Step($statement)
+      if ($step -eq 101) { break }
+      if ($step -ne 100) {
+        return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @() }
+      }
+      $sessionId = ''
+      $length = [AiUsage.WinSqliteQuery]::ColumnBytes($statement, 0)
+      if ($length -gt 0) {
+        $buffer = New-Object byte[] $length
+        [Runtime.InteropServices.Marshal]::Copy([AiUsage.WinSqliteQuery]::ColumnText($statement, 0), $buffer, 0, $length)
+        $sessionId = [Text.Encoding]::UTF8.GetString($buffer)
+      }
+      $model = ''
+      $length = [AiUsage.WinSqliteQuery]::ColumnBytes($statement, 2)
+      if ($length -gt 0) {
+        $buffer = New-Object byte[] $length
+        [Runtime.InteropServices.Marshal]::Copy([AiUsage.WinSqliteQuery]::ColumnText($statement, 2), $buffer, 0, $length)
+        $model = [Text.Encoding]::UTF8.GetString($buffer)
+      }
+      $day = ''
+      $length = [AiUsage.WinSqliteQuery]::ColumnBytes($statement, 3)
+      if ($length -gt 0) {
+        $buffer = New-Object byte[] $length
+        [Runtime.InteropServices.Marshal]::Copy([AiUsage.WinSqliteQuery]::ColumnText($statement, 3), $buffer, 0, $length)
+        $day = [Text.Encoding]::UTF8.GetString($buffer)
+      }
+      $directory = ''
+      $length = [AiUsage.WinSqliteQuery]::ColumnBytes($statement, 11)
+      if ($length -gt 0) {
+        $buffer = New-Object byte[] $length
+        [Runtime.InteropServices.Marshal]::Copy([AiUsage.WinSqliteQuery]::ColumnText($statement, 11), $buffer, 0, $length)
+        $directory = [Text.Encoding]::UTF8.GetString($buffer)
+      }
+      $projectName = $directory
+      if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        $leaf = ''
+        try { $leaf = [IO.Path]::GetFileName($directory) } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($leaf)) { $projectName = $leaf }
+      }
+      $rows.Add([pscustomobject][ordered]@{
+        sessionId       = $sessionId
+        createdAt       = [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 1)
+        date            = $day
+        model           = $model
+        project         = $projectName
+        projectPath     = $directory
+        calls           = [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 4)
+        cost            = [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 5)
+        inputTokens     = [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 6)
+        outputTokens    = [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 7) + [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 10)
+        cacheReadTokens = [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 8)
+        cacheWriteTokens = [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 9)
+      })
+    }
+    return [pscustomobject]@{ ok = $true; reason = $null; rows = $rows.ToArray() }
+  } catch {
+    return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @() }
+  } finally {
+    if ($statement -ne [IntPtr]::Zero) { [void][AiUsage.WinSqliteQuery]::Close($statement) }
+    if ($db -ne [IntPtr]::Zero) { [void][AiUsage.WinSqliteQuery]::Release($db) }
   }
 }
 
@@ -1980,6 +2137,16 @@ foreach ($candidate in @('week', '30days', 'all')) {
   if ($PeriodKeys -notcontains $candidate) { $PeriodKeys += $candidate }
 }
 
+# Local providers are already aggregated, so one read covers every period the page
+# can switch to. The cutoffs match CodeBurn's rolling windows: the same instant minus
+# seven or thirty days, and everything the store still holds for `all`.
+$script:LocalUsageCutoffs = @{
+  week   = [DateTimeOffset]::Now.AddDays(-7).ToUnixTimeSeconds()
+  '30days' = [DateTimeOffset]::Now.AddDays(-30).ToUnixTimeSeconds()
+  all    = 0
+}
+$script:LocalProviderKeys = @('deepseek')
+
 $KeepFields = @(
   'currency', 'overview', 'daily', 'models', 'projects', 'topSessions'
 )
@@ -2145,9 +2312,12 @@ function Select-ReportFields($Report) {
 
   $projects = New-Object Collections.Generic.List[object]
   foreach ($row in $Report.projects) {
+    # CodeBurn 0.9.19 reported avgCostPerSession on every project row; 0.9.27 dropped
+    # it for a session-count basis and per-checkout rows. The page never reads it, so
+    # an absent value must not fail an otherwise complete project row.
     $safeRow = Select-TypedOutputRecord -Record $row `
       -RequiredNumbers @('cost', 'savings') `
-      -RequiredNullableNumbers @('avgCostPerSession') `
+      -OptionalNullableNumbers @('avgCostPerSession') `
       -RequiredInt64s @('calls', 'sessions') `
       -RequiredNonEmptyStrings @('name', 'path')
     if ($null -eq $safeRow) { return $null }
@@ -2701,10 +2871,41 @@ function Build-PeriodReports([string]$PeriodKey) {
   }
   $claudeStatus = Select-UsableStatus (Read-JsonFile $scratch["$PeriodKey/claude/status"])
   $codexStatus = Select-UsableStatus (Read-JsonFile $scratch["$PeriodKey/codex/status"])
-  return [ordered]@{
-    claude = Merge-CodeBurnDurableModels -Report $claudeReport -StatusCurrent (Select-StatusCurrent $claudeStatus) -StatusCurrency (Select-StatusCurrency $claudeStatus)
-    codex  = Merge-CodeBurnDurableModels -Report $codexReport -StatusCurrent (Select-StatusCurrent $codexStatus) -StatusCurrency (Select-StatusCurrency $codexStatus)
+  $mergedClaude = Merge-CodeBurnDurableModels -Report $claudeReport -StatusCurrent (Select-StatusCurrent $claudeStatus) -StatusCurrency (Select-StatusCurrency $claudeStatus)
+  $mergedCodex = Merge-CodeBurnDurableModels -Report $codexReport -StatusCurrent (Select-StatusCurrent $codexStatus) -StatusCurrency (Select-StatusCurrency $codexStatus)
+
+  # DeepSeek comes from OpenCode's own records, which already carry the cost of each
+  # call, so it needs no durable reconciliation: the recorded amount is the reference.
+  # The page shows one display currency, so a non-USD CodeBurn report keeps DeepSeek
+  # off the page until the exchange rate that matches it is known.
+  $candidate = [ordered]@{
+    claude = $mergedClaude
+    codex  = $mergedCodex
   }
+  if ($script:DeepSeekAvailable) {
+    $displayCode = 'USD'
+    if ($mergedClaude -and $mergedClaude.PSObject.Properties.Name -contains 'currency') {
+      $displayCode = [string]$mergedClaude.currency
+    }
+    $displayRate = 0.0
+    if ($displayCode -ieq 'USD') {
+      $displayRate = 1.0
+    } else {
+      $statusCurrency = $script:StatusCurrencies["$PeriodKey/claude"]
+      if ($statusCurrency -and [string]$statusCurrency.code -ieq $displayCode -and
+          (Test-JsonNumberValue $statusCurrency.rate $false)) {
+        $displayRate = [double]$statusCurrency.rate
+      }
+    }
+    if ($displayRate -gt 0) {
+      $candidate['deepseek'] = New-LocalUsageReport `
+        -Rows $script:DeepSeekRows `
+        -SinceUnixSeconds $script:LocalUsageCutoffs[$PeriodKey] `
+        -Rate $displayRate `
+        -Currency $displayCode
+    }
+  }
+  return $candidate
 }
 
 function Receive-BlocksIfReady([bool]$WaitForCompletion = $false) {
@@ -2831,8 +3032,32 @@ function Write-Snapshot([bool]$Complete) {
     $displayCurrency = [pscustomobject][ordered]@{ code = 'USD'; rate = 1.0; symbol = '$' }
   }
   $quotaVersion = $script:QuotaStateVersion
-  $limits = Get-PublishedLimits
+  # Resolving every quota source deep-copies its payload, which costs about a second
+  # per publish. The state counter already marks every mutation, so a revision that
+  # only adds a usage period reuses the limits it just resolved. The collection-stopped
+  # flag is part of the key because it turns a "loading" reason into a final one
+  # without bumping the counter.
+  $limitsKey = '{0}|{1}' -f $script:QuotaStateVersion, [bool]$script:QuotaCollectionStopped
+  if (-not $script:LimitsCache -or $script:LimitsCacheKey -cne $limitsKey) {
+    $script:LimitsCache = Get-PublishedLimits
+    $script:LimitsCacheKey = $limitsKey
+  }
+  $limits = $script:LimitsCache
   $script:Revision += 1
+
+  # The page renders the providers a run actually has. DeepSeek is absent for a user
+  # who never ran one, and the two CodeBurn providers stay the required pair.
+  $providers = New-Object Collections.Generic.List[string]
+  foreach ($key in @('claude', 'codex')) { $providers.Add($key) }
+  foreach ($key in $script:LocalProviderKeys) {
+    $present = @($availablePeriods | Where-Object {
+      $reports[$_].Contains($key) -and $reports[$_][$key]
+    })
+    if ($present.Count) { $providers.Add($key) }
+  }
+  $localSource = if ($providers -contains 'deepseek') { 'OpenCode deepseek' } else { $null }
+  $sourceRecord = [ordered]@{ name = 'CodeBurn'; version = $CodeBurnVersion }
+  if ($localSource) { $sourceRecord['local'] = $localSource }
 
   $payload = [ordered]@{
     generatedAt = [DateTimeOffset]::Now.ToString('o')
@@ -2843,10 +3068,8 @@ function Write-Snapshot([bool]$Complete) {
     period = $Period
     currency = $displayCurrency
     pricingNote = 'API reference price estimate; subscription plans and custom providers may bill differently.'
-    source = [ordered]@{
-      name = 'CodeBurn'
-      version = $CodeBurnVersion
-    }
+    source = $sourceRecord
+    providers = $providers.ToArray()
     periods = $availablePeriods
     reports = $reports
     limits = $limits
@@ -3223,7 +3446,7 @@ try {
     throw 'CodeBurn is not installed. Run: npm install -g codeburn'
   }
   $CodeBurnVersion = Get-NpmPackageVersion $CodeBurn 'codeburn'
-  if ($CodeBurnVersion -ne $RequiredCodeBurnVersion) {
+  if ($CodeBurnVersion -notin $SupportedCodeBurnVersions) {
     throw ("Unsupported CodeBurn version {0}; run install.ps1 to install {1}." -f $CodeBurnVersion, $RequiredCodeBurnVersion)
   }
   $CCUsage = Resolve-CommandPath @('ccusage.cmd', 'ccusage')
@@ -3304,6 +3527,22 @@ try {
     if (-not $blocksJob) { $blocksDeadlineUtc = $null }
   }
 
+  # Local provider records are read once, before the first CodeBurn call: the query
+  # is small, and a store that cannot be read must degrade to "no extra provider"
+  # instead of failing a run whose Claude and Codex reports are fine.
+  $script:DeepSeekRows = @()
+  $script:DeepSeekAvailable = $false
+  try {
+    $localUsage = Read-OpenCodeDeepSeekUsage
+    if ($localUsage -and $localUsage.ok -and @($localUsage.rows).Count -gt 0) {
+      $script:DeepSeekRows = @($localUsage.rows)
+      $script:DeepSeekAvailable = $true
+    }
+  } catch {
+    $script:DeepSeekRows = @()
+    $script:DeepSeekAvailable = $false
+  }
+
   # Quota reads start now and finish in the background: the Claude request is an
   # async HttpClient task and the Codex helper is another Job-contained process. A
   # slow provider can update its card later but can never delay a usage publish.
@@ -3325,9 +3564,14 @@ try {
   # sequential gave the correct 3 models summing $1,263.73. Keep these serial.
   #
   try {
-    # Publish reports first. They already conserve the headline cost through the
-    # unattributed fallback, which makes the default period useful after two calls.
-    # Status is a quality pass that restores durable historical model attribution.
+    # Two phases, because the two collectors answer different questions.
+    #
+    # 1. Every period's live report. This is what makes the page browsable: after the
+    #    last report lands, all three periods render, so a period switch never waits
+    #    for a quality pass.
+    # 2. Durable model attribution, only for a period whose live rows leave a
+    #    remainder or contradict the headline. CodeBurn 0.9.27 reconciles its own
+    #    report, so this phase usually issues nothing at all; 0.9.19 still needs it.
     foreach ($periodKey in $PeriodKeys) {
       $GenerationStage = if ($periodKey -eq $PeriodKeys[0]) { 'default_usage' } else { 'remaining_usage' }
       foreach ($provider in @('claude', 'codex')) {
@@ -3337,7 +3581,9 @@ try {
       }
       Publish-PeriodCandidate $periodKey
       $HasPublishedSnapshot = $true
+    }
 
+    foreach ($periodKey in $PeriodKeys) {
       $statusCollected = $false
       foreach ($provider in @('claude', 'codex')) {
         if (-not (Test-StatusReconciliationNeeded $periodKey $provider)) { continue }
@@ -3368,6 +3614,9 @@ try {
     if ($script:CodexOfficial.Mode -eq 'apikey') {
       Write-Snapshot $false
       $codexQuota = Get-CodexProviderQuota
+      # The relay answer is new quota state; without this the cached limits from the
+      # previous revision would win and the relay card would never appear.
+      Step-QuotaState
     }
     $GenerationStage = 'final_publish'
     Write-Snapshot $true

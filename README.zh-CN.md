@@ -43,7 +43,8 @@ AI Usage 从不读取。Codex 查询不到时，显示 Codex 写进本地会话�
 用 API Key 通过中转登录时，改为重放 CC Switch 已经为该服务商定义好的额度查询。所有来源都拿不到时，
 用量和成本统计照常可看。
 
-页面大约一秒内先显示额度卡；CodeBurn 算完默认周期后，用量报表随即补上。
+页面大约一秒内先显示额度卡；每个周期在 CodeBurn 算完后立刻可看，切换周期不必等模型历史校对。
+本机有 DeepSeek API 账号时，它会作为第三张服务商卡片出现，带自己的走势、模型、项目和会话。
 
 ## 安装
 
@@ -160,6 +161,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 ## 数据来源
 
 - [CodeBurn](https://github.com/getagentseal/codeburn) 汇总 Claude 与 Codex 用量，并套用公开 API 参考价。
+- OpenCode 自己的 SQLite 库（`%USERPROFILE%\.local\share\opencode\opencode.db`）提供 DeepSeek API 账号
+  每次调用的费用与 token。只读打开、一条分组查询、不联网、不读凭据；库里没有 DeepSeek 记录时不会出现该服务商。
 - [ccusage](https://github.com/ccusage/ccusage) 提供活动窗口的燃烧数据和 Claude 按小时分布。
 - Anthropic OAuth 用量端点提供真实的 Claude 套餐额度；命令行未登录时，由 Claude Code 自己缓存的
   响应和 Claude 桌面版的套餐用量采样代替。

@@ -451,4 +451,60 @@ $legacy = Select-CodexSessionRateLimit -Lines @('{"timestamp":"2026-08-01T00:00:
 Assert-True ($legacy -and $null -eq $legacy.snapshot.limit_id) 'a pre-bucket rate-limit record must still be read'
 Assert-True ($null -eq (Select-CodexSessionRateLimit -Lines @('{"payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":5}}}}'))) 'a record without its own timestamp cannot be dated'
 
+# A local provider (OpenCode's own DeepSeek record) must render through the same
+# report contract as a CodeBurn provider: a headline that its model rows conserve,
+# a daily series, per-project session counts, and amounts converted into the page's
+# display currency.
+function LocalRow([string]$Session, [int64]$CreatedAt, [string]$Date, [string]$Model, [string]$Project, [double]$Cost, [int]$Calls, [int64]$PromptTokens, [int64]$OutTokens, [int64]$ReadTokens) {
+  return [pscustomobject]@{
+    sessionId = $Session; createdAt = $CreatedAt; date = $Date; model = $Model
+    project = (Split-Path $Project -Leaf); projectPath = $Project
+    calls = $Calls; cost = $Cost
+    inputTokens = $PromptTokens; outputTokens = $OutTokens; cacheReadTokens = $ReadTokens; cacheWriteTokens = 0
+  }
+}
+
+$localRows = @(
+  (LocalRow 's1' 1000 '2026-10-01' 'deepseek-flash' 'C:/work/alpha' 0.5 4 100 20 900),
+  (LocalRow 's1' 2000 '2026-10-02' 'deepseek-flash' 'C:/work/alpha' 0.25 2 50 10 400),
+  (LocalRow 's2' 3000 '2026-10-02' 'deepseek-pro' 'C:/work/beta' 1.25 6 200 40 1600)
+)
+$local = New-LocalUsageReport -Rows $localRows -TopSessionCount 5
+Assert-Close ([double]$local.overview.cost) 2.0 'local usage headline must sum every row'
+$localModelSum = [double](($local.models | Measure-Object -Property cost -Sum).Sum)
+Assert-Close $localModelSum 2.0 'local usage model rows must conserve the headline'
+Assert-True ($local.overview.calls -eq 12) 'local usage must count every recorded turn'
+Assert-True ($local.overview.sessions -eq 2) 'local usage must count distinct sessions'
+Assert-True (@($local.daily).Count -eq 2) 'local usage must keep one row per local day'
+Assert-True (@($local.projects).Count -eq 2) 'local usage must keep one row per project'
+$alpha = @($local.projects | Where-Object { $_.path -eq 'C:/work/alpha' })[0]
+Assert-True ($alpha.sessions -eq 1) 'a project must count the sessions that used it'
+Assert-True ($alpha.calls -eq 6) 'a project must sum the turns of every model it used'
+Assert-True ($local.topSessions[0].sessionId -ceq 's2') 'the largest session must lead the session rows'
+Assert-Close ([double]$local.costReconciliation.referenceCost) 2.0 'local usage must reconcile against its own headline'
+Assert-True ($local.costReconciliation.modelSource -ceq 'local_record') 'local usage must name its own model source'
+$localTokens = $local.overview.tokens
+Assert-True (($localTokens.input -eq 350) -and ($localTokens.output -eq 70) -and ($localTokens.cacheRead -eq 2900)) 'local usage must sum every token bucket'
+Assert-Close ([double]$local.overview.cacheHitPercent) (2900 / 3250 * 100) 'local cache hit must be cache reads over all prompt tokens'
+
+$recent = New-LocalUsageReport -Rows $localRows -SinceUnixSeconds 2500
+Assert-Close ([double]$recent.overview.cost) 1.25 'a period cutoff must drop older rows'
+Assert-True ($recent.overview.sessions -eq 1) 'a period cutoff must drop older sessions'
+
+$scaled = New-LocalUsageReport -Rows $localRows -Rate 7.2 -Currency 'CNY'
+Assert-Close ([double]$scaled.overview.cost) 14.4 'a local report must follow the display currency rate'
+$scaledModelSum = [double](($scaled.models | Measure-Object -Property cost -Sum).Sum)
+Assert-Close $scaledModelSum 14.4 'converted model rows must still conserve the converted headline'
+
+$empty = New-LocalUsageReport -Rows @()
+Assert-Close ([double]$empty.overview.cost) 0.0 'an empty local store must publish a zero headline'
+Assert-True (@($empty.models).Count -eq 0 -and @($empty.daily).Count -eq 0) 'an empty local store must keep empty arrays'
+
+try {
+  New-LocalUsageReport -Rows $localRows -Rate 0 | Out-Null
+  throw 'a non-positive local usage rate must be rejected'
+} catch {
+  Assert-True ($_.Exception.Message -like '*positive finite number*') 'a non-positive local usage rate must be rejected'
+}
+
 Write-Output 'ReportData.Tests.ps1: PASS'

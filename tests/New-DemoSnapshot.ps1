@@ -61,6 +61,8 @@ function New-DailyRows([int]$Days, [double]$Total, [int]$Seed) {
 function New-ModelRows([string]$Provider, [double]$Total, [int]$Calls, [int64]$TokenScale) {
   $specs = if ($Provider -eq 'claude') {
     @(@('Fable 5', 0.42), @('Opus 4.8', 0.31), @('Opus 5', 0.20), @('Sonnet 5', 0.07))
+  } elseif ($Provider -eq 'deepseek') {
+    @(@('deepseek-flash', 0.78), @('deepseek-pro', 0.22))
   } else {
     @(@('gpt-5.6-sol', 0.72), @('luna', 0.23), @('GPT-5.5', 0.05))
   }
@@ -89,8 +91,14 @@ function New-ModelRows([string]$Provider, [double]$Total, [int]$Calls, [int64]$T
 }
 
 function New-ProjectRows([string]$Provider, [double]$Total, [int]$Calls, [int]$Sessions) {
-  $names = if ($Provider -eq 'claude') { @('Signal Lab', 'Resume Studio', 'Usage Dashboard') } else { @('Resume Studio', 'Data Workbench', 'Usage Dashboard') }
-  $shares = @(0.48, 0.31, 0.21)
+  $names = if ($Provider -eq 'claude') {
+    @('Signal Lab', 'Resume Studio', 'Usage Dashboard')
+  } elseif ($Provider -eq 'deepseek') {
+    @('Default Project', 'Signal Lab')
+  } else {
+    @('Resume Studio', 'Data Workbench', 'Usage Dashboard')
+  }
+  $shares = if ($names.Count -eq 2) { @(0.64, 0.36) } else { @(0.48, 0.31, 0.21) }
   $rows = @()
   $running = 0.0
   for ($index = 0; $index -lt $names.Count; $index++) {
@@ -113,7 +121,7 @@ function New-ProjectRows([string]$Provider, [double]$Total, [int]$Calls, [int]$S
 function New-DemoReport([string]$Provider, [string]$PeriodKey, [int]$Days, [double]$Total, [int]$Calls, [int]$Sessions, [int64]$TokenScale) {
   $models = @(New-ModelRows $Provider $Total $Calls $TokenScale)
   $projects = @(New-ProjectRows $Provider $Total $Calls $Sessions)
-  $seed = if ($Provider -eq 'claude') { 3 } else { 7 }
+  $seed = if ($Provider -eq 'claude') { 3 } elseif ($Provider -eq 'deepseek') { 11 } else { 7 }
   return [pscustomobject][ordered]@{
     currency = $CurrencyCode
     overview = [pscustomobject][ordered]@{
@@ -123,7 +131,7 @@ function New-DemoReport([string]$Provider, [string]$PeriodKey, [int]$Days, [doub
       estimatedCost = 0
       calls = $Calls
       sessions = $Sessions
-      cacheHitPercent = if ($Provider -eq 'claude') { 97.8 } else { 94.6 }
+      cacheHitPercent = if ($Provider -eq 'claude') { 97.8 } elseif ($Provider -eq 'deepseek') { 98.8 } else { 94.6 }
       tokens = [pscustomobject][ordered]@{
         input = [int64]($TokenScale * 0.08)
         output = [int64]($TokenScale * 0.02)
@@ -150,9 +158,9 @@ function New-DemoReport([string]$Provider, [string]$PeriodKey, [int]$Days, [doub
 }
 
 $periods = [ordered]@{
-  week = [ordered]@{ days = 7; claude = 648.40; codex = 214.60; claudeCalls = 3280; codexCalls = 1840; claudeSessions = 186; codexSessions = 42; claudeTokens = 620000000; codexTokens = 280000000 }
-  '30days' = [ordered]@{ days = 30; claude = 2846.00; codex = 934.00; claudeCalls = 12180; codexCalls = 6940; claudeSessions = 742; codexSessions = 126; claudeTokens = 2840000000; codexTokens = 1260000000 }
-  all = [ordered]@{ days = 48; claude = 5120.00; codex = 1680.00; claudeCalls = 21940; codexCalls = 12420; claudeSessions = 1284; codexSessions = 224; claudeTokens = 5120000000; codexTokens = 2240000000 }
+  week = [ordered]@{ days = 7; claude = 648.40; codex = 214.60; deepseek = 3.53; claudeCalls = 3280; codexCalls = 1840; deepseekCalls = 1498; claudeSessions = 186; codexSessions = 42; deepseekSessions = 11; claudeTokens = 620000000; codexTokens = 280000000; deepseekTokens = 240000000 }
+  '30days' = [ordered]@{ days = 30; claude = 2846.00; codex = 934.00; deepseek = 5.44; claudeCalls = 12180; codexCalls = 6940; deepseekCalls = 2560; claudeSessions = 742; codexSessions = 126; deepseekSessions = 29; claudeTokens = 2840000000; codexTokens = 1260000000; deepseekTokens = 670000000 }
+  all = [ordered]@{ days = 48; claude = 5120.00; codex = 1680.00; deepseek = 12.20; claudeCalls = 21940; codexCalls = 12420; deepseekCalls = 5398; claudeSessions = 1284; codexSessions = 224; deepseekSessions = 65; claudeTokens = 5120000000; codexTokens = 2240000000; deepseekTokens = 1380000000 }
 }
 
 $reports = [ordered]@{}
@@ -161,6 +169,7 @@ foreach ($entry in $periods.GetEnumerator()) {
   $reports[$entry.Key] = [ordered]@{
     claude = New-DemoReport 'claude' $entry.Key $v.days ($v.claude * $CurrencyRate) $v.claudeCalls $v.claudeSessions $v.claudeTokens
     codex = New-DemoReport 'codex' $entry.Key $v.days ($v.codex * $CurrencyRate) $v.codexCalls $v.codexSessions $v.codexTokens
+    deepseek = New-DemoReport 'deepseek' $entry.Key $v.days ($v.deepseek * $CurrencyRate) $v.deepseekCalls $v.deepseekSessions $v.deepseekTokens
   }
 }
 
@@ -173,7 +182,8 @@ $payload = [ordered]@{
   period = '30days'
   currency = [ordered]@{ code = $CurrencyCode; rate = $CurrencyRate; symbol = $CurrencySymbol }
   pricingNote = 'Synthetic API reference price estimate.'
-  source = [ordered]@{ name = 'CodeBurn'; version = '0.9.19' }
+  source = [ordered]@{ name = 'CodeBurn'; version = '0.9.27' }
+  providers = @('claude', 'codex', 'deepseek')
   periods = @('30days', 'week', 'all')
   reports = $reports
   limits = [ordered]@{

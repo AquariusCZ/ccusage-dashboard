@@ -9,6 +9,8 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 - Windows PowerShell / PowerShell launcher and data assembly
 - Local HTML, bundled pixel webfonts, CSS, and vanilla JavaScript dashboard
 - CodeBurn for normalized Claude/Codex usage and API reference-price estimates
+- OpenCode's own SQLite store (`opencode.db`, read-only) for the DeepSeek API account's
+  per-call cost and tokens, shown as a third provider when that store exists
 - ccusage for the active window's burn rate, projection, and hour-of-day profile
 - Claude's OAuth usage endpoint for the real plan quota, with Claude Code's cached response and
   the Claude desktop app's plan-usage samples as labelled local fallbacks
@@ -112,9 +114,33 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   expose them in `data.js`, and invalidate legacy envelopes or an in-place credential,
   endpoint, or usage-script change.
 - CodeBurn may refresh its public LiteLLM price catalogue from GitHub when its local
-  24-hour cache expires. Version `0.9.19` is the audited and required runtime; upgrades
-  require re-auditing this boundary. It must never receive or upload credentials or
-  rendered payloads.
+  24-hour cache expires. Version `0.9.27` is the audited and required runtime; `0.9.19` is
+  still accepted because it publishes the same report and status contract, but it cannot be
+  the default: its live model rows do not reconcile against its own headline (30 days on the
+  author's machine: overview $5,434.65 against model rows totalling $6,561.45), so every
+  period still pays for a durable status call. `0.9.27` reconciles them itself and reads its
+  cache about twice as fast per invocation, which is why the version is worth pinning.
+  Upgrading again requires re-auditing this boundary. It must never receive or upload
+  credentials or rendered payloads.
+- `0.9.27` replaces the session cache with a directory-backed store and rebuilds it once on
+  the first run after the upgrade; that first launch is slow (about 20 s of collector time)
+  and every later one is not. It also drops `avgCostPerSession` from project rows, so that
+  field is optional in the snapshot contract, and it offers no `status` need on a report that
+  already reconciles - the durable pass must therefore stay conditional, never presumed.
+- The DeepSeek card is fed only by OpenCode's own store
+  (`%USERPROFILE%\.local\share\opencode\opencode.db`), opened read-only through the
+  Windows-supplied `winsqlite3.dll`: one grouped SELECT over `message` joined to
+  `session.directory`, no write, no network call, and never a read of OpenCode's
+  credential or `auth.json`. Each assistant turn already carries its own `cost` and
+  `tokens`, so that provider is labelled as API billing instead of a CodeBurn reference
+  price. SQLite's `localtime` modifier returns NULL under `winsqlite3` when `TZ` is unset,
+  so the local calendar day comes from the offset this process already knows. A missing,
+  unreadable, or DeepSeek-free store must leave the page exactly as it was with two
+  providers: the snapshot's `providers[]` is what the UI renders, never a hard-coded pair.
+- Resolve quota state once per state change, not once per publish. A snapshot reuses the
+  limits it resolved until `QuotaStateVersion` moves; the relay answer bumps that counter
+  and the collection-stopped flag is part of the cache key, because either one would
+  otherwise leave a "loading" card on a finished run or hide a relay balance.
 - Pin ccusage `20.0.20` and invoke `blocks --json` without `--offline`. It GETs the public
   LiteLLM catalogue from GitHub, and `models.dev/api.json` only for a model LiteLLM lacks,
   never with a credential or usage data; each request has its own 10-second timeout. Its

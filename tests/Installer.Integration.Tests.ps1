@@ -312,7 +312,7 @@ function Find-TransactionRootForPid([pscustomobject]$Scenario, [int]$OwnerPid) {
 function Invoke-RollbackScenario([string]$Name, [bool]$PreexistingPending) {
   $scenario = New-Scenario $Name
   Set-ScenarioEnvironment $scenario
-  Set-FakePackage $scenario 'codeburn' '0.9.19'
+  Set-FakePackage $scenario 'codeburn' '0.9.27'
   Set-FakePackage $scenario 'ccusage' '20.0.14'
   $oldHashes = Seed-OldRuntime $scenario
   $pendingPath = Join-Path $scenario.Destination '.install-pending'
@@ -357,7 +357,7 @@ function Invoke-RollbackScenario([string]$Name, [bool]$PreexistingPending) {
     if (Test-Path -LiteralPath $pendingPath) { throw 'Clean rollback left a new pending marker behind.' }
   }
   Assert-OldRuntime $scenario $oldHashes $PreexistingPending
-  if ((Get-FakePackageVersion $scenario 'codeburn') -ne '0.9.19' -or
+  if ((Get-FakePackageVersion $scenario 'codeburn') -ne '0.9.27' -or
       (Get-FakePackageVersion $scenario 'ccusage') -ne '20.0.14') {
     throw 'Dependency versions were not restored after runtime publication failed.'
   }
@@ -591,7 +591,7 @@ try {
           if ($operation -eq 'capture') {
             [void](Invoke-CmdCapture 'synthetic.cmd' @('--version'))
           } else {
-            Invoke-Npm @('install', '-g', 'codeburn@0.9.19') 'synthetic failure'
+            Invoke-Npm @('install', '-g', 'codeburn@0.9.27') 'synthetic failure'
           }
         } catch {
           $threw = $true
@@ -625,7 +625,7 @@ try {
 
   $reparse = New-Scenario 'reparse-point-rejection'
   Set-ScenarioEnvironment $reparse
-  Set-FakePackage $reparse 'codeburn' '0.9.19'
+  Set-FakePackage $reparse 'codeburn' '0.9.27'
   Set-FakePackage $reparse 'ccusage' '20.0.20'
   $reparseTarget = Join-Path $reparse.Root 'junction-target'
   $reparseSentinel = Join-Path $reparseTarget 'sentinel.txt'
@@ -653,7 +653,7 @@ try {
   # may remove only after proving that the recorded owner process is dead.
   $nodeProbeKill = New-Scenario 'node-probe-kill-recovery'
   Set-ScenarioEnvironment $nodeProbeKill
-  Set-FakePackage $nodeProbeKill 'codeburn' '0.9.19'
+  Set-FakePackage $nodeProbeKill 'codeburn' '0.9.27'
   Set-FakePackage $nodeProbeKill 'ccusage' '20.0.20'
   [void](Seed-OldRuntime $nodeProbeKill)
   $nodeGateScript = @'
@@ -716,7 +716,7 @@ Write-Output 'v24.18.0'
 
   $success = New-Scenario 'success'
   Set-ScenarioEnvironment $success
-  Set-FakePackage $success 'codeburn' '0.9.19'
+  Set-FakePackage $success 'codeburn' '0.9.27'
   Set-FakePackage $success 'ccusage' '20.0.14'
   [void](Seed-OldRuntime $success)
   $oldManagedIcon = Join-Path $success.Destination 'icon-deadbeef.ico'
@@ -781,7 +781,7 @@ Write-Output 'v24.18.0'
     throw "Isolated installation exited $($successResult.ExitCode): $($successResult.Output)"
   }
   Assert-PublishedRuntime $success
-  if ((Get-FakePackageVersion $success 'codeburn') -ne '0.9.19' -or
+  if ((Get-FakePackageVersion $success 'codeburn') -ne '0.9.27' -or
       (Get-FakePackageVersion $success 'ccusage') -ne '20.0.20') {
     throw 'Successful installation did not leave the pinned dependency versions.'
   }
@@ -814,7 +814,7 @@ Write-Output 'v24.18.0'
   # can keep npm unchanged until the already-started script exits.
   $crossSession = New-Scenario 'cross-session-drain'
   Set-ScenarioEnvironment $crossSession
-  Set-FakePackage $crossSession 'codeburn' '0.9.19'
+  Set-FakePackage $crossSession 'codeburn' '0.9.27'
   Set-FakePackage $crossSession 'ccusage' '20.0.14'
   [void](Seed-OldRuntime $crossSession)
   $oldGeneratorPath = Join-Path $crossSession.Destination 'Generate-ClaudeReport.ps1'
@@ -893,7 +893,7 @@ try {
   # before issuing even a read-only npm root probe.
   $abandonedWaiter = New-Scenario 'abandoned-install-waiter'
   Set-ScenarioEnvironment $abandonedWaiter
-  Set-FakePackage $abandonedWaiter 'codeburn' '0.9.19'
+  Set-FakePackage $abandonedWaiter 'codeburn' '0.9.27'
   Set-FakePackage $abandonedWaiter 'ccusage' '20.0.14'
   [void](Seed-OldRuntime $abandonedWaiter)
   $abandonedOverlap = Join-Path $abandonedWaiter.Root 'npm-overlap.txt'
@@ -949,7 +949,7 @@ try {
   # forward from the pending-aware generator without restoring stale closing state.
   $killed = New-Scenario 'strong-kill-recovery'
   Set-ScenarioEnvironment $killed
-  Set-FakePackage $killed 'codeburn' '0.9.19'
+  Set-FakePackage $killed 'codeburn' '0.9.27'
   Set-FakePackage $killed 'ccusage' '20.0.14'
   [void](Seed-OldRuntime $killed)
   $env:AI_USAGE_INSTALL_TEST_GATE_SPEC = 'ccusage@20.0.20'
@@ -1018,7 +1018,7 @@ try {
   $recoveryResult = Wait-Installer (Start-Installer $killed)
   if ($recoveryResult.ExitCode -ne 0) { throw "Strong-kill recovery rerun failed: $($recoveryResult.Output)" }
   Assert-PublishedRuntime $killed
-  if ((Get-FakePackageVersion $killed 'codeburn') -ne '0.9.19' -or
+  if ((Get-FakePackageVersion $killed 'codeburn') -ne '0.9.27' -or
       (Get-FakePackageVersion $killed 'ccusage') -ne '20.0.20') {
     throw 'Strong-kill recovery did not converge on the pinned dependency versions.'
   }
@@ -1039,7 +1039,7 @@ try {
 
   $concurrent = New-Scenario 'concurrent-installers'
   Set-ScenarioEnvironment $concurrent
-  Set-FakePackage $concurrent 'codeburn' '0.9.19'
+  Set-FakePackage $concurrent 'codeburn' '0.9.27'
   Set-FakePackage $concurrent 'ccusage' '20.0.14'
   [void](Seed-OldRuntime $concurrent)
   $env:AI_USAGE_INSTALL_TEST_GATE_SPEC = 'ccusage@20.0.20'
@@ -1143,7 +1143,7 @@ while (-not (Test-Path -LiteralPath $env:AI_USAGE_INSTALL_TEST_OLD_RUN_RELEASE))
 
   $unrelatedNpm = New-Scenario 'unrelated-npm-publish-rollback'
   Set-ScenarioEnvironment $unrelatedNpm
-  Set-FakePackage $unrelatedNpm 'codeburn' '0.9.19'
+  Set-FakePackage $unrelatedNpm 'codeburn' '0.9.27'
   Set-FakePackage $unrelatedNpm 'ccusage' '20.0.20'
   $unrelatedNpmHashes = Seed-OldRuntime $unrelatedNpm
   $unrelatedNpmScript = Join-Path $unrelatedNpm.Root 'unrelated\npm-cli.ps1'
@@ -1198,7 +1198,7 @@ while (-not (Test-Path -LiteralPath $ReleasePath)) { Start-Sleep -Milliseconds 2
 
   $shortcutRollback = New-Scenario 'shortcut-rollback'
   Set-ScenarioEnvironment $shortcutRollback
-  Set-FakePackage $shortcutRollback 'codeburn' '0.9.19'
+  Set-FakePackage $shortcutRollback 'codeburn' '0.9.27'
   Set-FakePackage $shortcutRollback 'ccusage' '20.0.14'
   $shortcutRollbackHashes = Seed-OldRuntime $shortcutRollback
   $rollbackIcon = Join-Path $shortcutRollback.Destination 'icon-0123abcd.ico'
@@ -1241,7 +1241,7 @@ while (-not (Test-Path -LiteralPath $ReleasePath)) { Start-Sleep -Milliseconds 2
 
   $corruptRepair = New-Scenario 'corrupt-manifest-repair'
   Set-ScenarioEnvironment $corruptRepair
-  Set-FakePackage $corruptRepair 'codeburn' '0.9.19'
+  Set-FakePackage $corruptRepair 'codeburn' '0.9.27'
   Set-FakePackage $corruptRepair 'ccusage' '0.0.0'
   Write-Ascii (Join-Path (Join-Path $corruptRepair.NpmRoot 'ccusage') 'package.json') '{broken'
   [void](Seed-OldRuntime $corruptRepair)
@@ -1257,14 +1257,14 @@ while (-not (Test-Path -LiteralPath $ReleasePath)) { Start-Sleep -Milliseconds 2
 
   $percentPath = New-Scenario 'percent-command-path' $true
   Set-ScenarioEnvironment $percentPath
-  Set-FakePackage $percentPath 'codeburn' '0.9.19'
+  Set-FakePackage $percentPath 'codeburn' '0.9.27'
   Set-FakePackage $percentPath 'ccusage' '20.0.14'
   [void](Seed-OldRuntime $percentPath)
   $expandedBin = Join-Path $percentPath.Root 'npm\expanded-path-must-not-be-used\bin'
   if (Test-Path -LiteralPath $expandedBin) { throw 'Percent-path test unexpectedly created the expanded token directory.' }
   $percentResult = Wait-Installer (Start-Installer $percentPath)
   if ($percentResult.ExitCode -ne 0) { throw "Literal percent command path failed: $($percentResult.Output)" }
-  if ((Get-FakePackageVersion $percentPath 'codeburn') -ne '0.9.19' -or
+  if ((Get-FakePackageVersion $percentPath 'codeburn') -ne '0.9.27' -or
       (Get-FakePackageVersion $percentPath 'ccusage') -ne '20.0.20') {
     throw 'Literal percent command path did not complete the pinned dependency transition.'
   }
@@ -1273,7 +1273,7 @@ while (-not (Test-Path -LiteralPath $ReleasePath)) { Start-Sleep -Milliseconds 2
 
   $stderrFlood = New-Scenario 'stderr-capture'
   Set-ScenarioEnvironment $stderrFlood
-  Set-FakePackage $stderrFlood 'codeburn' '0.9.19'
+  Set-FakePackage $stderrFlood 'codeburn' '0.9.27'
   Set-FakePackage $stderrFlood 'ccusage' '20.0.20'
   [void](Seed-OldRuntime $stderrFlood)
   $env:AI_USAGE_INSTALL_TEST_VERSION_STDERR_PACKAGE = 'codeburn'

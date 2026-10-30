@@ -174,8 +174,10 @@ function Assert-Report($Report, [string]$Path) {
   $index = 0
   foreach ($row in $Report.projects) {
     $rowPath = "$Path.projects[$index]"
+    # avgCostPerSession is CodeBurn 0.9.19-only: 0.9.27 replaced it with a session-count
+    # basis and per-checkout rows, and the page never reads it.
     Assert-Fields $row $rowPath `
-      @('name', 'path', 'cost', 'savings', 'avgCostPerSession', 'calls', 'sessions') `
+      @('name', 'path', 'cost', 'savings', 'calls', 'sessions') `
       @('name', 'path', 'cost', 'savings', 'avgCostPerSession', 'calls', 'sessions')
     Assert-String $row.name "$rowPath.name" 32767 $false
     Assert-String $row.path "$rowPath.path" 32767 $false
@@ -447,8 +449,8 @@ function Assert-ClaudeBlocks($Blocks, [string]$Path) {
 }
 
 Assert-Fields $data '$' `
-  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'periods', 'reports', 'limits', 'appDir') `
-  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'periods', 'reports', 'limits', 'appDir')
+  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'reports', 'limits', 'appDir') `
+  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'reports', 'limits', 'appDir')
 if (-not (Test-IsoTimestamp $data.generatedAt)) { throw 'Snapshot generatedAt metadata is invalid.' }
 Assert-String $data.runId 'runId' 128 $false
 Assert-Int64 $data.revision 'revision'
@@ -473,10 +475,32 @@ if ($currencyCode -eq 'USD') {
 }
 Assert-String $data.currency.symbol 'currency.symbol' 64
 Assert-String $data.pricingNote 'pricingNote' 4096 $false
-Assert-Fields $data.source 'source' @('name', 'version') @('name', 'version')
+Assert-Fields $data.source 'source' @('name', 'version') @('name', 'version', 'local')
 Assert-String $data.source.name 'source.name' 128 $false
 Assert-String $data.source.version 'source.version' 128 $false
+if (Test-HasField $data.source 'local') { Assert-String $data.source.local 'source.local' 128 }
 Assert-String $data.appDir 'appDir' 32767 $false
+
+# The page renders the providers a run actually produced. CodeBurn's pair is the
+# floor; a local provider such as OpenCode's DeepSeek record is additive, and a run
+# without one must keep publishing the same two-provider page.
+$localProviderKeys = @('deepseek')
+$allowedProviderKeys = @('claude', 'codex') + $localProviderKeys
+if (-not ($data.providers -is [Collections.IList]) -or $data.providers -is [string]) {
+  throw 'Snapshot providers metadata is not an array.'
+}
+$reportedProviders = @($data.providers)
+if ($reportedProviders.Count -lt 2 -or $reportedProviders[0] -cne 'claude' -or $reportedProviders[1] -cne 'codex') {
+  throw 'Snapshot providers metadata does not lead with the CodeBurn pair.'
+}
+foreach ($providerKey in $reportedProviders) {
+  if ($allowedProviderKeys -cnotcontains $providerKey) {
+    throw 'Snapshot providers metadata contains an unknown provider.'
+  }
+}
+if (@($reportedProviders | Select-Object -Unique).Count -ne $reportedProviders.Count) {
+  throw 'Snapshot providers metadata contains duplicate keys.'
+}
 
 $validPeriods = @('today', 'week', '30days', 'month', 'all', 'lifetime')
 if (-not ($data.periods -is [Collections.IList]) -or $data.periods -is [string]) {
@@ -497,12 +521,16 @@ if (@($periods | Select-Object -Unique).Count -ne $periods.Count) {
 }
 Assert-Fields $data.reports 'reports' $periods $periods
 foreach ($period in $periods) {
-  Assert-Fields $data.reports.$period "reports.$period" @('claude', 'codex') @('claude', 'codex')
-  foreach ($provider in @('claude', 'codex')) {
+  Assert-Fields $data.reports.$period "reports.$period" @('claude', 'codex') $allowedProviderKeys
+  foreach ($provider in $allowedProviderKeys) {
+    if (-not (Test-HasField $data.reports.$period $provider)) { continue }
     $report = $data.reports.$period.$provider
     Assert-Report $report "reports.$period.$provider"
     if ($report.currency.ToUpperInvariant() -cne $currencyCode) {
       throw "reports.$period.$provider.currency differs from the display currency."
+    }
+    if ($reportedProviders -cnotcontains $provider) {
+      throw "reports.$period.$provider is present but the run did not announce that provider."
     }
   }
   $claudeNames = @($data.reports.$period.claude.models | Where-Object { $_.kind -ne 'unattributed' } | ForEach-Object name)

@@ -344,6 +344,181 @@ function Merge-CodeBurnDurableModels {
   return $Report
 }
 
+# Builds a report-shaped record from usage a local client already recorded, so a
+# provider CodeBurn does not read (OpenCode's own DeepSeek turns) renders through
+# the same cards, series and tables as Claude and Codex.
+#
+# Each input row is one aggregate per (session, day, model):
+#   sessionId, createdAt (Unix seconds), date (yyyy-MM-dd), model, project,
+#   projectPath, calls, cost, inputTokens, outputTokens, cacheReadTokens,
+#   cacheWriteTokens
+#
+# Amounts are converted into the page's display currency here: the caller owns the
+# rate, and an unknown rate must keep the provider off the page instead of showing
+# a number in the wrong currency.
+function New-LocalUsageReport {
+  [CmdletBinding()]
+  param(
+    [object[]]$Rows = @(),
+    [double]$SinceUnixSeconds = 0,
+    [double]$Rate = 1.0,
+    [string]$Currency = 'USD',
+    [int]$TopSessionCount = 5
+  )
+
+  if (-not (Test-FiniteNumberValue $Rate) -or [double]$Rate -le 0) {
+    throw 'A local usage rate must be a positive finite number.'
+  }
+  if (-not (Test-FiniteNumberValue $SinceUnixSeconds) -or $SinceUnixSeconds -lt 0) {
+    throw 'A local usage cutoff must be a finite non-negative Unix timestamp.'
+  }
+
+  $daily = @{}
+  $models = @{}
+  $projects = @{}
+  $sessions = @{}
+  $cost = 0.0
+  $calls = [int64]0
+  $inputTokens = 0.0
+  $outputTokens = 0.0
+  $cacheReadTokens = 0.0
+  $cacheWriteTokens = 0.0
+
+  foreach ($row in @($Rows)) {
+    if (-not $row) { continue }
+    if ((Get-RecordNumber $row 'createdAt') -lt $SinceUnixSeconds) { continue }
+    $date = [string](Get-RecordValue $row 'date')
+    if ($date -notmatch '\A\d{4}-\d{2}-\d{2}\z') { continue }
+    $rowCost = (Get-RecordNumber $row 'cost') * $Rate
+    $rowCalls = Get-RecordNumber $row 'calls'
+    if (-not (Test-FiniteNumberValue $rowCost) -or -not (Test-FiniteNumberValue $rowCalls)) { continue }
+
+    $cost = Assert-FiniteArithmeticResult ($cost + $rowCost) 'summing local usage cost'
+    $calls += [int64]$rowCalls
+    $rowInput = (Get-RecordNumber $row 'inputTokens') * 1.0
+    $rowOutput = (Get-RecordNumber $row 'outputTokens') * 1.0
+    $rowCacheRead = (Get-RecordNumber $row 'cacheReadTokens') * 1.0
+    $rowCacheWrite = (Get-RecordNumber $row 'cacheWriteTokens') * 1.0
+    $inputTokens += $rowInput
+    $outputTokens += $rowOutput
+    $cacheReadTokens += $rowCacheRead
+    $cacheWriteTokens += $rowCacheWrite
+
+    if (-not $daily.ContainsKey($date)) {
+      $daily[$date] = [pscustomobject][ordered]@{
+        date = $date; cost = 0.0; savings = 0.0; calls = [int64]0
+        turns = [int64]0; editTurns = [int64]0; oneShotTurns = [int64]0; oneShotRate = $null
+      }
+    }
+    $day = $daily[$date]
+    $day.cost = Assert-FiniteArithmeticResult ($day.cost + $rowCost) 'summing a local usage day'
+    $day.calls += [int64]$rowCalls
+
+    $modelName = [string](Get-RecordValue $row 'model')
+    if ([string]::IsNullOrWhiteSpace($modelName)) { $modelName = 'unknown' }
+    $modelKey = $modelName.ToLowerInvariant()
+    if (-not $models.ContainsKey($modelKey)) {
+      $models[$modelKey] = [pscustomobject][ordered]@{
+        name = $modelName; calls = [int64]0; cost = 0.0; savings = 0.0; estimatedCost = 0.0
+        inputTokens = 0.0; outputTokens = 0.0; cacheReadTokens = 0.0; cacheWriteTokens = 0.0
+        kind = 'model'; costSource = 'local_record'; tokensPartial = $false
+      }
+    }
+    $modelRow = $models[$modelKey]
+    $modelRow.calls += [int64]$rowCalls
+    $modelRow.cost = Assert-FiniteArithmeticResult ($modelRow.cost + $rowCost) 'summing a local usage model'
+    $modelRow.inputTokens += $rowInput
+    $modelRow.outputTokens += $rowOutput
+    $modelRow.cacheReadTokens += $rowCacheRead
+    $modelRow.cacheWriteTokens += $rowCacheWrite
+
+    $projectPath = [string](Get-RecordValue $row 'projectPath')
+    $projectName = [string](Get-RecordValue $row 'project')
+    if ([string]::IsNullOrWhiteSpace($projectName)) { $projectName = $projectPath }
+    if (-not [string]::IsNullOrWhiteSpace($projectPath)) {
+      if (-not $projects.ContainsKey($projectPath)) {
+        $projects[$projectPath] = [pscustomobject][ordered]@{
+          name = $projectName; path = $projectPath; cost = 0.0; calls = [int64]0
+          sessions = [int64]0; savings = 0.0; avgCostPerSession = $null; sessionIds = @{}
+        }
+      }
+      $projectRow = $projects[$projectPath]
+      $projectRow.cost = Assert-FiniteArithmeticResult ($projectRow.cost + $rowCost) 'summing a local usage project'
+      $projectRow.calls += [int64]$rowCalls
+    }
+
+    $sessionId = [string](Get-RecordValue $row 'sessionId')
+    if (-not [string]::IsNullOrWhiteSpace($sessionId)) {
+      if (-not $sessions.ContainsKey($sessionId)) {
+        $sessions[$sessionId] = [pscustomobject][ordered]@{
+          project = $projectName; sessionId = $sessionId; date = $date; cost = 0.0; calls = [int64]0
+          savings = 0.0
+        }
+      }
+      $sessionRow = $sessions[$sessionId]
+      $sessionRow.cost = Assert-FiniteArithmeticResult ($sessionRow.cost + $rowCost) 'summing a local usage session'
+      $sessionRow.calls += [int64]$rowCalls
+      if ([string]::CompareOrdinal($date, [string]$sessionRow.date) -gt 0) { $sessionRow.date = $date }
+      if ($projects.ContainsKey($projectPath)) {
+        # An indexer read would not create the entry; assign it so the count is real.
+        $projects[$projectPath].sessionIds[$sessionId] = $true
+      }
+    }
+  }
+
+  $projectRows = New-Object Collections.Generic.List[object]
+  foreach ($project in $projects.Values) {
+    $project.sessions = [int64]$project.sessionIds.Count
+    $project.avgCostPerSession = if ($project.sessions -gt 0) { $project.cost / $project.sessions } else { $null }
+    $projectRows.Add([pscustomobject][ordered]@{
+      name = $project.name; path = $project.path; cost = $project.cost; savings = 0.0
+      avgCostPerSession = $project.avgCostPerSession
+      calls = $project.calls; sessions = $project.sessions
+    })
+  }
+  $sortedProjects = @($projectRows | Sort-Object -Property @{ Expression = { $_.cost }; Descending = $true }, @{ Expression = { $_.path }; Descending = $false })
+
+  $modelRows = @($models.Values | Sort-Object -Property @{ Expression = { $_.cost }; Descending = $true }, @{ Expression = { $_.name }; Descending = $false })
+  $sessionRows = @($sessions.Values | Sort-Object -Property @{ Expression = { $_.cost }; Descending = $true }, @{ Expression = { $_.sessionId }; Descending = $false })
+  if ($TopSessionCount -gt 0 -and $sessionRows.Count -gt $TopSessionCount) {
+    $sessionRows = @($sessionRows | Select-Object -First $TopSessionCount)
+  }
+  $dailyRows = @($daily.Values | Sort-Object -Property date)
+  $tokenTotal = $inputTokens + $cacheReadTokens
+  $cacheHitPercent = if ($tokenTotal -gt 0) { $cacheReadTokens / $tokenTotal * 100 } else { 0.0 }
+
+  return [pscustomobject][ordered]@{
+    currency   = $Currency
+    overview   = [pscustomobject][ordered]@{
+      cost            = $cost
+      netCost         = $cost
+      savings         = 0.0
+      estimatedCost   = 0.0
+      calls           = $calls
+      sessions        = [int64]$sessions.Count
+      cacheHitPercent = $cacheHitPercent
+      tokens          = [pscustomobject][ordered]@{
+        input      = $inputTokens
+        output     = $outputTokens
+        cacheRead  = $cacheReadTokens
+        cacheWrite = $cacheWriteTokens
+      }
+    }
+    daily       = @($dailyRows)
+    models      = @($modelRows)
+    projects    = @($sortedProjects)
+    topSessions = @($sessionRows)
+    costReconciliation = [pscustomobject][ordered]@{
+      referenceCost      = $cost
+      statusCost         = 0.0
+      modelSource        = 'local_record'
+      modelSourceCost    = $cost
+      unattributedCost   = 0.0
+      modelTokensPartial = $false
+    }
+  }
+}
+
 function Get-CodexBaseUrlFromToml([string]$Toml) {
   if ([string]::IsNullOrWhiteSpace($Toml)) { return '' }
   $lines = @([regex]::Split($Toml, '\r?\n'))
@@ -1007,6 +1182,6 @@ function Select-CodexSessionRateLimit {
   return $null
 }
 
-Export-ModuleMember -Function Merge-CodeBurnDurableModels, Resolve-DisplayCurrency, Get-CodexUsageRequest, ConvertTo-CodexQuota,
+Export-ModuleMember -Function Merge-CodeBurnDurableModels, New-LocalUsageReport, Resolve-DisplayCurrency, Get-CodexUsageRequest, ConvertTo-CodexQuota,
   ConvertTo-ClaudeQuotaPayload, ConvertTo-ClaudeCodeCachedQuota, ConvertTo-ClaudeDesktopQuota, Select-NewestQuotaCandidate,
   Get-CodexAuthModeFromDocument, ConvertTo-CodexOfficialQuota, Select-CodexSessionRateLimit

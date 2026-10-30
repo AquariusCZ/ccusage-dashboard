@@ -51,8 +51,10 @@ the last plan-quota record Codex wrote into its local sessions is shown, labelle
 API-key login through a relay, AI Usage instead replays the quota call CC Switch already defines
 for that provider. Usage and cost views remain available when no source answers.
 
-The page opens on the quota cards within about a second; the usage report for the default
-period follows as soon as CodeBurn finishes it.
+The page opens on the quota cards within about a second; every usage period follows as
+soon as CodeBurn finishes it, and a period switch never waits for the durable model pass.
+A local DeepSeek API account appears as a third provider card with its own series, models,
+projects, and sessions when OpenCode's store holds one.
 
 ## Install
 
@@ -193,6 +195,10 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 
 - [CodeBurn](https://github.com/getagentseal/codeburn) normalizes Claude and Codex usage
   and applies public API reference prices.
+- OpenCode's own SQLite store (`%USERPROFILE%\.local\share\opencode\opencode.db`) supplies
+  the DeepSeek API account's per-call cost and tokens. It is opened read-only, one grouped
+  query, no network call and no credential read; the provider only appears when that store
+  actually holds a DeepSeek turn.
 - [ccusage](https://github.com/ccusage/ccusage) supplies active-window burn data and the
   Claude hour-of-day profile.
 - Anthropic's OAuth usage endpoint supplies the real Claude plan quota; Claude Code's own

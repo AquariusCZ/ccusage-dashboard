@@ -594,7 +594,11 @@ function Start-Process {
     }
     $retryResult = Get-CompletedProcessResult $retry 45000
     if ($retryResult.ExitCode -ne 0) { throw "A failed-run retry did not complete cleanly: $($retryResult.Output)" }
-    $expectedCalls = if ($StartupFailure) { 13 } else { 17 }
+    # A fresh aggregation is six reports plus six durable status calls for the stub's
+    # non-reconciling report. A startup failure aborts on the first report; a partial
+    # failure aborts on the week report, which now lands third because every period's
+    # live report is collected before the durable pass begins.
+    $expectedCalls = if ($StartupFailure) { 13 } else { 15 }
     if (@(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue).Count -ne $expectedCalls) {
       throw 'A failed-run retry did not perform exactly one fresh aggregation.'
     }
@@ -916,7 +920,10 @@ function Start-Process {
     $ownerLock = $null
     $reuserResult = Get-CompletedProcessResult $reuser 45000
     if ($reuserResult.ExitCode -ne 0) { throw "Coordination-lock fresh run failed: $($reuserResult.Output)" }
-    if (@(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue).Count -ne 17) {
+    # Three calls abort the failed run (the two default-period reports plus the week
+    # report, which now lands third because every live report is collected before the
+    # durable pass), and the fresh run adds a full twelve.
+    if (@(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue).Count -ne 15) {
       throw 'The coordination-lock scenario did not run one failed and one fresh aggregation.'
     }
     foreach ($path in @($dataPath, $htmlPath, $statePath, $ownerPath, $retryPath)) {

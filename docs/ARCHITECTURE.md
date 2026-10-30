@@ -154,7 +154,7 @@ own rate-limit read with its own credential. None of them sends anything but the
 that authenticates it. Any third authenticated destination, reading another client's
 credential, and any app-owned upload remain changes to the product's premise.
 
-The required CodeBurn 0.9.19 performs one additional upstream-controlled network
+The required CodeBurn 0.9.27 performs one additional upstream-controlled network
 operation: when its 24-hour cache is absent or stale, its status/report commands call
 `loadPricing()` and GETs the public LiteLLM model-price catalogue from GitHub. The
 request is unauthenticated and carries no session content, credential, rendered
@@ -342,6 +342,23 @@ The 2026-08-09 upstream inventory found a deliberate split in CodeBurn 0.9.19:
   call, and session differences against 0.9.19 over the same source store. Its faster
   scanning is therefore not a drop-in performance patch; upgrading remains a separate
   data-semantics migration.
+
+The 2026-10-30 re-audit moved that migration forward and adopted **0.9.27**:
+
+- 0.9.19 published a headline that its own model rows contradicted. Over 30 days on the
+  author's store it reported `overview.cost` $5,434.65 against model rows summing
+  $6,561.45, and its `daily` rows showed whole days at $0.00 with thousands of calls
+  (2026-10-21: 2,468 calls, $0.00; 2026-10-26: 3,423 calls, $0.00). Those days were
+  unpriced, not free.
+- 0.9.27 prices them: model rows sum exactly to `overview.cost` ($6,597.67 for the same
+  30 days), and the same days are $429.43 and $418.24. All-time rose from $23,341.49
+  (0.9.19 plus its durable status pass) to $25,282.86, which is the missing attribution
+  arriving rather than a new pricing model.
+- The same run costs about half as much per invocation (about 0.9 s against 2.3 s here)
+  because 0.9.27 reads a directory-backed cache instead of parsing one 85 MB JSON file,
+  and it needs no durable status pass at all on a report that reconciles.
+- It publishes the same `report` and `status` field contract, so 0.9.19 stays accepted for
+  an existing installation; the generator treats it as the slower, non-reconciling path.
 
 AI Usage therefore reuses the upstream public status shape instead of parsing CodeBurn's
 private cache or reimplementing its pricing logic. For each period/provider pair it runs
@@ -553,6 +570,7 @@ Several upstream-first alternatives were measured before changing the orchestrat
 | CodeBurn `web` / MCP | long-lived cache, but no complete model-token, project, and session report contract | reject |
 | CodeBurn `export` | about 3.9 s and 23 MB, but not durable and no full-history contract | reject |
 | CodeBurn 0.9.23 | faster scan, but materially different cost/call/session semantics on the same store | keep 0.9.19 |
+| CodeBurn 0.9.27 (2026-10-30) | about 0.9 s per call instead of 2.3 s, report reconciles so no status pass is needed, and it prices days 0.9.19 left at $0.00 | adopt |
 | persist the previous full snapshot | near-instant, but retains project paths and session identifiers across launches | reject |
 | parallel CodeBurn calls | faster, but proven provider contamination | reject |
 | default-period progressive publish | exact existing public CLI contract and unchanged final result | adopt |
@@ -766,7 +784,7 @@ the current-Session legacy Local mutex, matching the generator's lock order. Onl
 capture npm rollback baselines or mutate dependencies. Package state comes from `npm root -g`
 manifests and the exact PATH command; version output is accepted only after a zero exit code. An
 unreadable manifest, damaged shim, or nonzero shim is repaired by a forced install. CodeBurn
-0.9.19 declares Node `>=22.13.0`; the installer therefore requires a stable release at or above
+0.9.27 declares Node `>=22.13.0`; the installer therefore requires a stable release at or above
 that version and accepts only a complete `vX.Y.Z` or `X.Y.Z` line. A warning containing a version
 and a `22.13.0-rc` prerelease are both rejected.
 

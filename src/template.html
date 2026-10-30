@@ -63,6 +63,7 @@
     /* ── provider identity: reserved, never a series slot ── */
     --claude:   light-dark(#d9581d, #e05e26);
     --codex:    light-dark(#3f6eef, #4575f6);
+    --deepseek: light-dark(#6d3fd0, #a78bfa);
 
     /* ── status: reserved for state, never for "series 4" ── */
     --good:     light-dark(#0f8a4d, #2fbd72);
@@ -415,6 +416,7 @@
   #app.show .hero { animation-delay: 45ms; }
   #app.show #split .card:nth-child(1) { animation-delay: 90ms; }
   #app.show #split .card:nth-child(2) { animation-delay: 135ms; }
+  #app.show #split .card:nth-child(3) { animation-delay: 175ms; }
 
   @keyframes card-in { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
   @keyframes tile-in { from { opacity: 0; translate: -7px 0; } to { opacity: 1; translate: 0 0; } }
@@ -475,6 +477,10 @@
   <symbol id="i-codex" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M9.2 7.4 4.6 12l4.6 4.6"/><path d="M14.8 7.4 19.4 12l-4.6 4.6"/>
   </symbol>
+  <symbol id="i-deepseek" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.6 10c3.3 0 4.9 2.1 7.4 2.1s4.1-2.1 7.4-2.1c0 5-3.3 8.1-7.4 8.1S4.6 15 4.6 10Z"/>
+    <path d="M12 3.3v4.2"/>
+  </symbol>
   <symbol id="i-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M20 13.4A8 8 0 0 1 10.6 4a8.2 8.2 0 1 0 9.4 9.4Z"/>
   </symbol>
@@ -515,6 +521,7 @@
         <button type="button" data-filter="all" aria-pressed="true"><svg width="14" height="14" aria-hidden="true"><use href="#i-all"/></svg>全部</button>
         <button type="button" data-filter="claude" aria-pressed="false"><svg width="14" height="14" aria-hidden="true"><use href="#i-claude"/></svg><span translate="no">Claude</span></button>
         <button type="button" data-filter="codex" aria-pressed="false"><svg width="14" height="14" aria-hidden="true"><use href="#i-codex"/></svg><span translate="no">Codex</span></button>
+        <button type="button" data-filter="deepseek" aria-pressed="false" hidden><svg width="14" height="14" aria-hidden="true"><use href="#i-deepseek"/></svg><span translate="no">DeepSeek</span></button>
       </div>
       <button type="button" class="iconbtn" id="themeBtn" aria-pressed="false" aria-label="深色主题">
         <svg width="18" height="18" aria-hidden="true"><use href="#i-theme"/></svg><span class="sr-only">深色主题</span>
@@ -546,7 +553,7 @@
     <div class="hero-facts" id="heroFacts"></div>
   </section>
 
-  <section class="grid-2 usage-block" id="split" aria-label="Claude 与 Codex 对比" style="margin-block-start:.75rem"></section>
+  <section class="grid-2 usage-block" id="split" aria-label="提供商成本对比" style="margin-block-start:.75rem"></section>
 
   <section class="section card usage-block" style="padding:1rem 1.1rem">
     <div class="section-head">
@@ -829,9 +836,18 @@ addEventListener("error", function (event) {
     return pixel(text, px, color) + '<span class="sr-only">' + esc(text) + "</span>";
   }
 
-  function pname(p) { return p === "claude" ? "Claude" : "Codex"; }
-  function pcolor(p) { return p === "claude" ? "var(--claude)" : "var(--codex)"; }
-  function shown() { return filter === "all" ? ["claude", "codex"] : [filter]; }
+  var PROVIDER_NAME = { claude: "Claude", codex: "Codex", deepseek: "DeepSeek" };
+  var PROVIDER_COLOR = { claude: "var(--claude)", codex: "var(--codex)", deepseek: "var(--deepseek)" };
+  function pname(p) { return PROVIDER_NAME[p] || p; }
+  function pcolor(p) { return PROVIDER_COLOR[p] || "var(--muted)"; }
+  function shown() { return filter === "all" ? providerList() : [filter]; }
+  // The snapshot names the providers it actually produced. A user with no local
+  // DeepSeek record keeps the two-provider page it has always had.
+  function providerList() {
+    var list = data && data.providers;
+    return Array.isArray(list) && list.length ? list : ["claude", "codex"];
+  }
+  function hasProvider(p) { return providerList().indexOf(p) >= 0; }
   function report(p, key) {
     var slot = data && data.reports && data.reports[key || period];
     return (slot && slot[p]) || {};
@@ -1095,7 +1111,7 @@ addEventListener("error", function (event) {
     var stopped = terminalFailure || stalled;
     var settled = function (code) { return stopped && code === "loading" ? "not_collected" : code; };
 
-    if (filter !== "codex") {
+    if (filter === "all" || filter === "claude") {
       var rows = "", alarm = "", hint = "";
       if (q.ok) {
         var recorded = q.stale === true;
@@ -1172,7 +1188,7 @@ addEventListener("error", function (event) {
         alarm + rows + hint + extra + "</article>");
     }
 
-    if (filter !== "claude") {
+    if (filter === "all" || filter === "codex") {
       var off = (data.limits && data.limits.codex) || {};
       var cq = (data.limits && data.limits.codexQuota) || {};
       var body, populated = false;
@@ -1239,11 +1255,15 @@ addEventListener("error", function (event) {
 
   /* ─────────────────────────────── ② hero ── */
   function dailyRows(key) {
-    var map = {};
-    ["claude", "codex"].forEach(function (p) {
+    var map = {}, base = {};
+    providerList().forEach(function (p) { base[p] = 0; });
+    providerList().forEach(function (p) {
       list(report(p, key).daily).forEach(function (d) {
         if (!validDate(d.date)) return;
-        if (!map[d.date]) map[d.date] = { date: d.date, claude: 0, codex: 0 };
+        if (!map[d.date]) {
+          map[d.date] = { date: d.date };
+          providerList().forEach(function (q) { map[d.date][q] = 0; });
+        }
         map[d.date][p] = n(d.cost);
       });
     });
@@ -1259,7 +1279,9 @@ addEventListener("error", function (event) {
     var toks = sum(sel.map(function (p) { return tokTotal(tokens(p)); }));
     var cr = sum(sel.map(function (p) { return n(tokens(p).cacheRead); }));
 
-    $("heroLabel").textContent = (filter === "all" ? "Claude + Codex 合计" : pname(filter)) + " · API 参考价";
+    var suffix = filter === "deepseek" ? " · 实际计费"
+      : (filter === "all" && hasProvider("deepseek") ? " · 合计成本" : " · API 参考价");
+    $("heroLabel").textContent = (filter === "all" ? shown().map(pname).join(" + ") + " 合计" : pname(filter)) + suffix;
     window.__heroFigureText = money(total, false);
     fitHeroFigure();
     $("heroFacts").innerHTML = [
@@ -1304,8 +1326,9 @@ addEventListener("error", function (event) {
 
   /* ──────────────────────────── ③ provider cards ── */
   function renderSplit() {
-    var grand = cost("claude") + cost("codex");
-    $("split").innerHTML = ["claude", "codex"].map(function (p) {
+    var list = providerList();
+    var grand = sum(list.map(cost));
+    $("split").innerHTML = list.map(function (p) {
       var o = overview(p), t = tokens(p), total = tokTotal(t) || 1;
       var segs = TOKEN_PARTS.map(function (k) {
         var v = n(t[k.key]);
@@ -1319,7 +1342,8 @@ addEventListener("error", function (event) {
         '<div class="prov-top"><span class="prov-name"><span class="chip"><svg aria-hidden="true"><use href="#i-' + p + '"/></svg></span>' +
         '<span translate="no">' + pname(p) + "</span></span>" +
         '<span class="prov-share">' + (grand ? (cost(p) / grand * 100).toFixed(1) : "0") + "%</span></div>" +
-        '<div class="prov-cost-row"><span class="prov-cost" data-figure-text="' + esc(costText) + '"></span><span>API 参考价</span></div>' +
+        '<div class="prov-cost-row"><span class="prov-cost" data-figure-text="' + esc(costText) + '"></span>' +
+        "<span>" + (p === "deepseek" ? "实际计费" : "API 参考价") + "</span></div>" +
         '<div class="prov-stats">' +
           "<div><span>调用</span><b>" + int(o.calls) + "</b></div>" +
           "<div><span>会话</span><b>" + int(o.sessions) + "</b></div>" +
@@ -1502,7 +1526,7 @@ addEventListener("error", function (event) {
   function renderHours(rows) {
     var wrap = $("hoursWrap"), host = $("hoursChart");
     var blocks = claudeBlocks();
-    if (filter === "codex" || !blocks || !blocks.length || convertUsd(1) == null) { wrap.classList.add("hide"); return; }
+    if ((filter !== "all" && filter !== "claude") || !blocks || !blocks.length || convertUsd(1) == null) { wrap.classList.add("hide"); return; }
 
     var from = new Date(rows[0].date + "T00:00:00").getTime();
     var to = new Date(rows[rows.length - 1].date + "T23:59:59").getTime();
@@ -1561,7 +1585,7 @@ addEventListener("error", function (event) {
     // colour follows the model, not its rank in the current filter, so filtering
     // never repaints the survivors
     var all = {};
-    ["claude", "codex"].forEach(function (p) {
+    providerList().forEach(function (p) {
       list(report(p).models).forEach(function (m) {
         if (m.kind === "unattributed") return;
         all[m.name] = (all[m.name] || 0) + n(m.cost);
@@ -1737,6 +1761,9 @@ addEventListener("error", function (event) {
     if (ready) renderUsage(true);
   }
   function render() {
+    var picker = document.querySelector('[data-filter="deepseek"]');
+    if (picker) picker.hidden = !hasProvider("deepseek");
+    if (filter !== "all" && !hasProvider(filter)) filter = "all";
     renderQuota();
     syncUsage();
   }
@@ -1827,7 +1854,7 @@ addEventListener("error", function (event) {
   syncTheme();
 
   var q = new URLSearchParams(location.search);
-  if (["all", "claude", "codex"].indexOf(q.get("provider")) >= 0) filter = q.get("provider");
+  if (["all", "claude", "codex", "deepseek"].indexOf(q.get("provider")) >= 0) filter = q.get("provider");
   desiredPeriod = q.get("period") || null;
   if (desiredPeriod) period = desiredPeriod;
   syncPressed(Array.from(document.querySelectorAll("[data-filter]")), function (b) { return b.dataset.filter === filter; });
