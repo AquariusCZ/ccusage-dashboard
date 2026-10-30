@@ -400,8 +400,8 @@
     transition: opacity .12s ease;
   }
 
-  #loader { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: var(--canvas); transition: opacity 340ms var(--handoff-ease), scale 340ms var(--handoff-ease), translate 340ms var(--handoff-ease); }
-  #loader.done { opacity: 0; scale: 1.04; translate: 0 -6px; pointer-events: none; }
+  #loader { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: var(--canvas); transition: opacity 300ms var(--ease-out), translate 300ms var(--ease-out); }
+  #loader.done { opacity: 0; translate: 0 -8px; pointer-events: none; }
   .boot { inline-size: min(26rem, calc(100vw - 2.5rem)); text-align: center; }
   .boot .brand-badge { margin-inline: auto; }
   .boot-line { block-size: 8px; border: 1px solid var(--line-2); border-radius: 1px; margin-block-start: 1.3rem; background: var(--card-2); overflow: hidden; }
@@ -413,8 +413,12 @@
   .boot p { margin-block-start: .85rem; color: var(--muted); font-size: .75rem; }
   @keyframes sweep { from { translate: -100% 0; } to { translate: 300% 0; } }
 
-  #app { opacity: 0; scale: .97; translate: 0 4px; transition: opacity 340ms var(--handoff-ease), scale 340ms var(--handoff-ease), translate 340ms var(--handoff-ease); }
-  #app.show { opacity: 1; scale: 1; translate: 0 0; }
+  /* The page paints under the still-opaque loader (`prepaint`); the reveal only moves
+     the already-painted surface, so a heavy first layout cannot swallow the transition. */
+  #app { opacity: 0; translate: 0 6px; }
+  #app.prepaint { opacity: 1; }
+  #app.show { opacity: 1; }
+  #app.reveal { translate: 0 0; transition: translate 320ms var(--ease-out); }
   #app.show .hero { animation-delay: 45ms; }
   #app.show #split .card:nth-child(1) { animation-delay: 90ms; }
   #app.show #split .card:nth-child(2) { animation-delay: 135ms; }
@@ -477,7 +481,6 @@
   :root {
     --ease: cubic-bezier(.2, 0, .38, .9);
     --ease-out: cubic-bezier(0, 0, .38, .9);
-    --handoff-ease: cubic-bezier(.4, 0, .2, 1);
     --dur-fast: 110ms;
     --dur: 150ms;
     --dur-slow: 240ms;
@@ -2440,8 +2443,8 @@ addEventListener("error", function (event) {
   var usageIntroShown = false;
   var loaderDismissed = false;
   // The bar's own 220 ms fill finishes first, then it rests at full for 160 ms before
-  // the loader and the page start their 340 ms handoff together.
-  var BAR_FILL_MS = 220, HANDOFF_HOLD_MS = 160, HANDOFF_MS = 340;
+  // the loader fades and the already-painted page slides up from under it.
+  var BAR_FILL_MS = 220, HANDOFF_HOLD_MS = 160, HANDOFF_MS = 300;
   function syncUsage() {
     var ready = usageReady();
     $("app").classList.toggle("usage-pending", !ready);
@@ -2451,6 +2454,11 @@ addEventListener("error", function (event) {
       setTimeout(function () {
         $("loader").classList.add("done");
         $("app").classList.add("show");
+        // The page was painted on its first render, under the loader. Two frames make
+        // sure that paint landed before the slide starts from it.
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () { $("app").classList.add("reveal"); });
+        });
       }, BAR_FILL_MS + HANDOFF_HOLD_MS);
       setTimeout(function () { $("loader").style.display = "none"; }, BAR_FILL_MS + HANDOFF_HOLD_MS + HANDOFF_MS + 60);
     }
@@ -2720,6 +2728,9 @@ addEventListener("error", function (event) {
     $("location").textContent = data.appDir || "";
     if (firstRender) {
       render();
+      // Paint the page while the loader still covers it; the reveal then only moves a
+      // surface the compositor already has, instead of paying for the first paint.
+      $("app").classList.add("prepaint");
       clearInterval(bootTimer);
       introWindow(900);
     } else {
