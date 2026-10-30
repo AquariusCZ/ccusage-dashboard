@@ -98,7 +98,15 @@ if (-not $uninstaller.Contains('$managedRelativeFiles = @(Get-ChildItem -Literal
   throw 'The repository uninstaller does not derive managed mirrors from the canonical src inventory.'
 }
 if (-not $template.Contains('id="modelDonut"')) { throw 'The model composition chart is missing.' }
-foreach ($marker in @('id="trendCap"', 'id="activityCap"', 'id="modelCap"', 'quota-src', 'quota-offline-note')) {
+# The root-level runtime is an installed mirror, so a checkout must launch its own
+# src\ copy first; otherwise an updated src\ silently runs an older mirror.
+$silentLauncher = [IO.File]::ReadAllText((Join-Path $root 'src\dashboard.vbs'))
+$batchLauncher = [IO.File]::ReadAllText((Join-Path $root 'src\dashboard.bat'))
+foreach ($launcher in @($silentLauncher, $batchLauncher)) {
+  if (-not $launcher.Contains('src\Generate-ClaudeReport.ps1')) {
+    throw 'A dashboard launcher does not prefer the canonical src\ runtime over the installed mirror.'
+  }
+}foreach ($marker in @('id="trendCap"', 'id="activityCap"', 'id="modelCap"', 'quota-src', 'quota-offline-note')) {
   if ($template.Contains($marker)) { throw "Implementation copy leaked into the dashboard: $marker" }
 }
 if (-not $template.Contains('function cost(p) { var o = overview(p); return n(o.cost != null ? o.cost : o.netCost); }')) {
