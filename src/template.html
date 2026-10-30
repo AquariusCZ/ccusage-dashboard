@@ -532,14 +532,18 @@
   #quota .quota[data-open="0"] { align-self: start; }
 
   /* First paint: one block per collector step, the same block language as the
-     quota meters. It only advances when a step really finished. */
+     quota meters. The fill creeps toward the next step without passing it. */
   .pw { display: flex; gap: 2px; inline-size: min(15rem, 42vw); flex: none; --off: var(--card-2); }
   .pw i {
-    flex: 1; block-size: 12px; border-radius: 1px;
+    position: relative; flex: 1; block-size: 12px; border-radius: 1px;
     background: var(--off);
-    transition: background var(--dur) var(--ease);
+    overflow: hidden;
   }
-  .pw i.on { background: var(--claude); }
+  .pw i b {
+    position: absolute; inset-block: 0; inset-inline-start: 0; inline-size: 0;
+    background: var(--claude);
+    transition: inline-size 220ms linear;
+  }
   .pw i.next { outline: 1px solid color-mix(in oklab, var(--claude) 55%, transparent); outline-offset: -1px; }
   .usage-wait .copy { display: grid; gap: .1rem; }
   #loader .pw { inline-size: min(18rem, 62vw); margin-block-start: 1.1rem; margin-inline: auto; --off: color-mix(in oklab, var(--ink) 9%, transparent); }
@@ -760,39 +764,191 @@
     <circle cx="10.5" cy="13.5" r="0.42" fill="currentColor"/>
     <circle cx="11.5" cy="13.5" r="0.42" fill="currentColor"/>
   </symbol>
-  <symbol id="i-codex" viewBox="0 0 12 12" fill="currentColor">
+  <symbol id="i-codex" viewBox="0 0 16 16" fill="currentColor">
+    <circle cx="5.5" cy="0.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="0.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="0.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="0.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="1.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="1.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="1.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="1.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="1.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="1.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="1.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="1.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="1.5" r="0.42" fill="currentColor"/>
     <circle cx="3.5" cy="2.5" r="0.42" fill="currentColor"/>
     <circle cx="4.5" cy="2.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="2.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="2.5" r="0.42" fill="currentColor"/>
     <circle cx="7.5" cy="2.5" r="0.42" fill="currentColor"/>
     <circle cx="8.5" cy="2.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="2.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="2.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="2.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="2.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="2.5" r="0.42" fill="currentColor"/>
     <circle cx="2.5" cy="3.5" r="0.42" fill="currentColor"/>
     <circle cx="3.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="3.5" r="0.42" fill="currentColor"/>
     <circle cx="8.5" cy="3.5" r="0.42" fill="currentColor"/>
     <circle cx="9.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="3.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="3.5" r="0.42" fill="currentColor"/>
     <circle cx="1.5" cy="4.5" r="0.42" fill="currentColor"/>
     <circle cx="2.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="4.5" r="0.42" fill="currentColor"/>
     <circle cx="9.5" cy="4.5" r="0.42" fill="currentColor"/>
     <circle cx="10.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="4.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="4.5" r="0.42" fill="currentColor"/>
     <circle cx="0.5" cy="5.5" r="0.42" fill="currentColor"/>
     <circle cx="1.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="2.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="5.5" r="0.42" fill="currentColor"/>
     <circle cx="10.5" cy="5.5" r="0.42" fill="currentColor"/>
     <circle cx="11.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="5.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="5.5" r="0.42" fill="currentColor"/>
     <circle cx="0.5" cy="6.5" r="0.42" fill="currentColor"/>
     <circle cx="1.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="2.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="6.5" r="0.42" fill="currentColor"/>
     <circle cx="10.5" cy="6.5" r="0.42" fill="currentColor"/>
     <circle cx="11.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="6.5" r="0.42" fill="currentColor"/>
+    <circle cx="0.5" cy="7.5" r="0.42" fill="currentColor"/>
     <circle cx="1.5" cy="7.5" r="0.42" fill="currentColor"/>
     <circle cx="2.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="7.5" r="0.42" fill="currentColor"/>
     <circle cx="9.5" cy="7.5" r="0.42" fill="currentColor"/>
     <circle cx="10.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="15.5" cy="7.5" r="0.42" fill="currentColor"/>
+    <circle cx="0.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="1.5" cy="8.5" r="0.42" fill="currentColor"/>
     <circle cx="2.5" cy="8.5" r="0.42" fill="currentColor"/>
     <circle cx="3.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="8.5" r="0.42" fill="currentColor"/>
     <circle cx="8.5" cy="8.5" r="0.42" fill="currentColor"/>
     <circle cx="9.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="15.5" cy="8.5" r="0.42" fill="currentColor"/>
+    <circle cx="1.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="2.5" cy="9.5" r="0.42" fill="currentColor"/>
     <circle cx="3.5" cy="9.5" r="0.42" fill="currentColor"/>
-    <circle cx="4.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="9.5" r="0.42" fill="currentColor"/>
     <circle cx="7.5" cy="9.5" r="0.42" fill="currentColor"/>
     <circle cx="8.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="15.5" cy="9.5" r="0.42" fill="currentColor"/>
+    <circle cx="1.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="2.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="15.5" cy="10.5" r="0.42" fill="currentColor"/>
+    <circle cx="1.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="2.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="14.5" cy="11.5" r="0.42" fill="currentColor"/>
+    <circle cx="1.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="2.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="13.5" cy="12.5" r="0.42" fill="currentColor"/>
+    <circle cx="2.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="12.5" cy="13.5" r="0.42" fill="currentColor"/>
+    <circle cx="3.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="4.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="5.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="6.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="11.5" cy="14.5" r="0.42" fill="currentColor"/>
+    <circle cx="7.5" cy="15.5" r="0.42" fill="currentColor"/>
+    <circle cx="8.5" cy="15.5" r="0.42" fill="currentColor"/>
+    <circle cx="9.5" cy="15.5" r="0.42" fill="currentColor"/>
+    <circle cx="10.5" cy="15.5" r="0.42" fill="currentColor"/>
   </symbol>
   <symbol id="i-deepseek" viewBox="0 0 16 16" fill="currentColor">
     <circle cx="2.5" cy="3.0" r="0.42" fill="currentColor"/>
@@ -2310,8 +2466,30 @@ addEventListener("error", function (event) {
   }
 
   var PROGRESS_STAGE = { quota: "读取额度", period: "汇总用量", blocks: "窗口曲线", final: "收尾" };
-  // The first-paint bar reports finished collector steps, so it only moves when work
-  // actually finished; the page never animates a guess at how long a scan takes.
+  // The first-paint bar reports finished collector steps and creeps toward the next
+  // one, so the page shows motion without ever claiming a step that has not finished.
+  var barShown = 0, barTimer = null;
+  function paintBar(fraction, total) {
+    var bar = document.getElementById("bootProgress") || document.querySelector(".usage-wait .pw");
+    if (!bar) return;
+    var cells = bar.children;
+    for (var index = 0; index < cells.length; index++) {
+      var local = Math.max(0, Math.min(1, fraction * total - index));
+      var fill = cells[index].firstChild;
+      if (fill) fill.style.inlineSize = (local * 100).toFixed(2) + "%";
+      cells[index].classList.toggle("next", local > 0 && local < 1);
+    }
+  }
+  function startTrickle(bar, total) {
+    if (barTimer) return;
+    barTimer = setInterval(function () {
+      var done = n(data && data.progress && data.progress.done);
+      var ceiling = Math.min(0.99, (done + 0.92) / total);
+      if (ceiling > barShown) barShown = barShown + (ceiling - barShown) * 0.16;
+      if (barShown > ceiling) barShown = ceiling;
+      paintBar(barShown, total);
+    }, 160);
+  }
   function renderProgress() {
     var bar = document.getElementById("bootProgress") || document.querySelector(".usage-wait .pw");
     var copy = document.getElementById("bootProgressLabel") || document.querySelector(".usage-progress");
@@ -2321,12 +2499,21 @@ addEventListener("error", function (event) {
     var total = n(p.total), done = Math.max(0, Math.min(total, n(p.done)));
     if (bar.children.length !== total) {
       bar.textContent = "";
-      for (var index = 0; index < total; index++) { bar.appendChild(document.createElement("i")); }
+      for (var index = 0; index < total; index++) {
+        var cell = document.createElement("i");
+        cell.appendChild(document.createElement("b"));
+        bar.appendChild(cell);
+      }
     }
-    Array.prototype.forEach.call(bar.children, function (cell, index) {
-      cell.classList.toggle("on", index < done);
-      cell.classList.toggle("next", index === done);
-    });
+    if (done / total > barShown) barShown = done / total;
+    if (done >= total) {
+      clearInterval(barTimer); barTimer = null;
+      barShown = 1;
+      paintBar(1, total);
+    } else {
+      paintBar(barShown, total);
+      startTrickle(bar, total);
+    }
     bar.setAttribute("aria-valuemax", String(total));
     bar.setAttribute("aria-valuenow", String(done));
     var label = PROGRESS_STAGE[p.stage] || "";
