@@ -368,10 +368,11 @@ async function main() {
 
   writeSnapshot(quotaOnlySnapshot);
   await waitFor(
-    () => evaluate("window.__DATA__ && window.__DATA__.revision === 98 && document.querySelector('#app').classList.contains('show')"),
-    "the quota-only first revision"
+    () => evaluate("window.__DATA__ && window.__DATA__.revision === 98 && document.querySelector('#app').classList.contains('usage-pending') && !document.querySelector('#app').classList.contains('show')"),
+    "the quota-only first revision before the reveal"
   );
   const quotaOnlyState = await evaluate(`({
+    appShown: document.querySelector('#app').classList.contains('show'),
     pending: document.querySelector('#app').classList.contains('usage-pending'),
     waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
     heroHidden: getComputedStyle(document.querySelector('.hero')).display === 'none',
@@ -383,6 +384,7 @@ async function main() {
     bootError: window.__BOOT_ERROR__ || null,
     overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
   })`);
+  assert.equal(quotaOnlyState.appShown, false, "The page must stay hidden behind the loader until the reveal");
   assert.equal(quotaOnlyState.pending, true);
   assert.equal(quotaOnlyState.waitVisible, true);
   assert.equal(quotaOnlyState.heroHidden, true);
