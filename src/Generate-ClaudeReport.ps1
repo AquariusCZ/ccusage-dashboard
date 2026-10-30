@@ -2149,8 +2149,10 @@ $script:LocalProviderKeys = @('deepseek')
 
 # The page shows a real progress bar while the collectors run, so the run publishes
 # how many of its planned steps are complete instead of animating a guess. One step
-# for the quota read, one per period, one for the ccusage window curve, one to close.
-$script:ProgressTotal = 3 + $PeriodKeys.Count
+# for the quota read, then one per provider report; nothing else moves it.
+# The first-paint bar measures time to a usable page: the quota read plus the
+# default period's two reports. Later periods load while the page is already readable.
+$script:ProgressTotal = 3
 $script:ProgressDone = 0
 $script:ProgressStage = 'quota'
 $script:ProgressPeriod = ''
@@ -3606,14 +3608,21 @@ try {
         Invoke-CodeBurnJson `
           @('report', '--period', $periodKey, '--provider', $provider, '--format', 'json') `
           $scratch["$periodKey/$provider/report"] "$periodKey/$provider report"
+        # Stop one short of the total: the last step belongs to the revision that also
+        # makes the default period readable, so a full bar and a usable page coincide.
+        if ($script:ProgressDone -lt ($script:ProgressTotal - 1)) {
+          $script:ProgressDone += 1
+          $script:ProgressStage = 'period'
+          $script:ProgressPeriod = $periodKey
+          try { Write-Snapshot $false } catch {}
+        }
       }
+      $script:ProgressDone = $script:ProgressTotal
       Publish-PeriodCandidate $periodKey
       $HasPublishedSnapshot = $true
-      $donePeriods = [Array]::IndexOf([string[]]$PeriodKeys, $periodKey) + 1
-      $nextPeriod = if ($donePeriods -lt $PeriodKeys.Count) { [string]$PeriodKeys[$donePeriods] } else { '' }
-      if ($nextPeriod) { Set-Progress (1 + $donePeriods) 'period' $nextPeriod }
-      else { Set-Progress (1 + $donePeriods) 'blocks' }
     }
+    $script:ProgressStage = 'blocks'
+    $script:ProgressPeriod = ''
 
     foreach ($periodKey in $PeriodKeys) {
       $statusCollected = $false
@@ -3633,7 +3642,6 @@ try {
 
     $GenerationStage = 'local_limits'
     Receive-BlocksIfReady $true
-    Set-Progress (2 + $PeriodKeys.Count) 'final'
     Update-ClaudeLocalQuota
     Update-CodexSessionQuota
     Write-Snapshot $false
@@ -3652,7 +3660,6 @@ try {
       Step-QuotaState
     }
     $GenerationStage = 'final_publish'
-    Set-Progress $script:ProgressTotal 'final'
     Write-Snapshot $true
   } catch {
     $GenerationFailed = $true

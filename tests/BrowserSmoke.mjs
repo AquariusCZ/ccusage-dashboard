@@ -389,7 +389,9 @@ async function main() {
   assert.equal(quotaOnlyState.detailsHidden, true);
   assert.equal(quotaOnlyState.quotaCards, 1, "Only the Codex card belongs to the codex filter.");
   assert.equal(quotaOnlyState.codexPlan, true);
-  assert.equal(quotaOnlyState.loaderHidden, true);
+  // The loader now carries the collector progress and stays until the first usage
+  // revision, so a quota-only page is still behind it by design.
+  assert.equal(quotaOnlyState.loaderHidden, false, "The loader must stay up until the first usage revision");
   assert.equal(quotaOnlyState.bootError, null);
   assert.equal(quotaOnlyState.overflow, 0);
 
@@ -408,6 +410,8 @@ async function main() {
       quotaLoading: document.querySelector('#quota').textContent.includes('\u6b63\u5728\u83b7\u53d6\u989d\u5ea6'),
       usagePending: document.querySelector('#app').classList.contains('usage-pending'),
       heroShown: getComputedStyle(document.querySelector('.hero')).display !== 'none',
+      loaderHidden: getComputedStyle(document.querySelector('#loader')).display === 'none' ||
+        document.querySelector('#loader').classList.contains('done'),
       bootError: window.__BOOT_ERROR__ || null,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
     };
@@ -420,6 +424,7 @@ async function main() {
   assert.equal(partialState.updating, true);
   assert.equal(partialState.quotaLoading, true);
   assert.equal(partialState.bootError, null);
+  assert.equal(partialState.loaderHidden, true, "The loader must be gone once usage is ready");
   assert.equal(partialState.overflow, 0);
 
   const duplicateProbe = await evaluate(`(function () {

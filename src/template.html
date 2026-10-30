@@ -533,15 +533,17 @@
 
   /* First paint: one block per collector step, the same block language as the
      quota meters. It only advances when a step really finished. */
-  .usage-wait .pw { display: flex; gap: 2px; inline-size: min(15rem, 42vw); flex: none; --off: var(--card-2); }
-  .usage-wait .pw i {
+  .pw { display: flex; gap: 2px; inline-size: min(15rem, 42vw); flex: none; --off: var(--card-2); }
+  .pw i {
     flex: 1; block-size: 12px; border-radius: 1px;
     background: var(--off);
     transition: background var(--dur) var(--ease);
   }
-  .usage-wait .pw i.on { background: var(--claude); }
-  .usage-wait .pw i.next { outline: 1px solid color-mix(in oklab, var(--claude) 55%, transparent); outline-offset: -1px; }
+  .pw i.on { background: var(--claude); }
+  .pw i.next { outline: 1px solid color-mix(in oklab, var(--claude) 55%, transparent); outline-offset: -1px; }
   .usage-wait .copy { display: grid; gap: .1rem; }
+  #loader .pw { inline-size: min(18rem, 62vw); margin-block-start: 1.1rem; margin-inline: auto; --off: color-mix(in oklab, var(--ink) 9%, transparent); }
+  #loader .usage-progress { display: block; margin-block-start: .5rem; }
   .usage-progress { color: var(--ink-2); font: 600 .7rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
   .usage-wait.failed .pw { display: none; }
 
@@ -911,8 +913,9 @@
 <div id="loader" role="status" aria-live="polite">
   <div class="boot">
     <span class="brand-badge"><svg aria-hidden="true"><use href="#i-mark"/></svg></span>
-    <div class="boot-line"></div>
     <p id="bootMessage">读取本地用量…</p>
+    <div class="pw" id="bootProgress" role="progressbar" aria-valuemin="0" aria-valuemax="9" aria-valuenow="0"><i></i></div>
+    <span class="usage-progress" id="bootProgressLabel"></span>
   </div>
 </div>
 
@@ -2275,9 +2278,15 @@ addEventListener("error", function (event) {
   // Quota can be published before the first usage report; usage sections then wait
   // behind one status card instead of rendering zeros.
   var usageIntroShown = false;
+  var loaderDismissed = false;
   function syncUsage() {
     var ready = usageReady();
     $("app").classList.toggle("usage-pending", !ready);
+    if (ready && !loaderDismissed) {
+      loaderDismissed = true;
+      $("loader").classList.add("done");
+      setTimeout(function () { $("loader").style.display = "none"; }, 340);
+    }
     if (ready) {
       if (!usageIntroShown) { usageIntroShown = true; introWindow(700); }
       renderUsage(true);
@@ -2304,8 +2313,8 @@ addEventListener("error", function (event) {
   // The first-paint bar reports finished collector steps, so it only moves when work
   // actually finished; the page never animates a guess at how long a scan takes.
   function renderProgress() {
-    var bar = document.querySelector(".usage-wait .pw");
-    var copy = document.querySelector(".usage-progress");
+    var bar = document.getElementById("bootProgress") || document.querySelector(".usage-wait .pw");
+    var copy = document.getElementById("bootProgressLabel") || document.querySelector(".usage-progress");
     if (!bar || !copy) return;
     var p = data && data.progress;
     if (!p || !n(p.total)) { copy.textContent = ""; return; }
@@ -2514,8 +2523,6 @@ addEventListener("error", function (event) {
       clearInterval(bootTimer);
       $("app").classList.add("show");
       introWindow(900);
-      $("loader").classList.add("done");
-      setTimeout(function () { $("loader").style.display = "none"; }, 340);
     } else {
       var currencyChanged = JSON.stringify(previousCurrency) !== JSON.stringify(data.currency);
       var nextReport = data.reports ? data.reports[period] : null;
@@ -2530,6 +2537,9 @@ addEventListener("error", function (event) {
         !previousData.generationError !== !data.generationError;
       if (currencyChanged || runStateChanged || (wasPending && usageReady()) ||
           JSON.stringify(previousLimits) !== JSON.stringify(data.limits)) renderQuota();
+      // The loader owns the only progress bar, and every revision carries a new done
+      // count, so it must be refreshed here as well as on the first paint.
+      renderProgress();
       if (usageChanged) syncUsage();
     }
   };
