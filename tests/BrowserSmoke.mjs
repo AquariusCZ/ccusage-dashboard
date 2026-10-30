@@ -755,6 +755,31 @@ async function main() {
     overflow: 0
   }, JSON.stringify(hoursState));
 
+  // A Free plan has no metered window, so its quota card must not be part of the page;
+  // a metered plan must still render it. This is the single decision the card exists for.
+  const freePlanState = await evaluate(`(function () {
+    var free = JSON.parse(JSON.stringify(${JSON.stringify(finalSnapshot)}));
+    free.runId = 'free-plan-browser-smoke';
+    free.revision = 90;
+    free.complete = true;
+    free.limits.codexQuota = { ok: false, reason: 'official_account' };
+    free.limits.codex = {
+      ok: true, planType: 'free', source: 'app_server', stale: false,
+      observedAt: new Date().toISOString(),
+      primary: { used_percent: 0, window_minutes: 43200, resets_at: Math.floor(Date.now() / 1000) + 86400 },
+      secondary: null
+    };
+    window.__DATA__ = free;
+    window.__render__();
+    var card = function (key) { return document.querySelector('#quota .quota[data-q="' + key + '"]'); };
+    var seen = null;
+    try { seen = JSON.parse(localStorage.getItem('ai-usage-ledger-prefs') || '{}').lastQuota; } catch (e) {}
+    return { codex: Boolean(card('codex')), claude: Boolean(card('claude')), seen: seen };
+  })()`);
+  assert.equal(freePlanState.codex, false, "A Free plan must not render a Codex quota card");
+  assert.equal(freePlanState.claude, true, "The Claude card stays");
+  assert.deepEqual(freePlanState.seen, { codex: false }, "The Free answer is remembered for the next launch");
+
   const staleIncompleteSnapshot = structuredClone(finalSnapshot);
   staleIncompleteSnapshot.runId = "stale-incomplete-browser-smoke";
   staleIncompleteSnapshot.revision = 1;

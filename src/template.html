@@ -1400,11 +1400,24 @@ addEventListener("error", function (event) {
       }
       var codexWindowMetered = codexMetered(off, cq);
       var codexPlanLabel = CODEX_PLAN[String(off.planType || "").toLowerCase()] || "";
-      var codexSummary = codexWindowMetered
-        ? codexHeadline(off, cq)
-        : (codexPlanLabel ? codexPlanLabel + " · " : "") + "无计量额度";
-      out.push(quotaCard("codex", "Codex 额度", "var(--codex)", body, codexSummary,
-        quotaOpenFor("codex", codexWindowMetered || populated && cq.ok), populated ? "" : "quota-unavailable"));
+      var codexSettled = off.ok === true || cq.ok === true;
+      // A plan with no metered window cannot block anything, so the card is not part of
+      // the page at all. Until the first quota answer lands the previous run's answer
+      // decides, which keeps the row from appearing and disappearing on every launch.
+      var codexSeen = prefs.lastQuota && prefs.lastQuota.codex;
+      var codexShow = codexWindowMetered || (!codexSettled && codexSeen === true);
+      if (codexSettled && codexSeen !== codexWindowMetered) {
+        prefs.lastQuota = prefs.lastQuota || {};
+        prefs.lastQuota.codex = codexWindowMetered;
+        savePrefs();
+      }
+      if (codexShow) {
+        var codexSummary = codexWindowMetered
+          ? codexHeadline(off, cq)
+          : (codexPlanLabel ? codexPlanLabel + " · " : "") + "无计量额度";
+        out.push(quotaCard("codex", "Codex 额度", "var(--codex)", body, codexSummary,
+          quotaOpenFor("codex", true), populated ? "" : "quota-unavailable"));
+      }
     }
 
     host.innerHTML = out.join("");

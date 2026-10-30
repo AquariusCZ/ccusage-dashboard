@@ -285,10 +285,11 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   one per period, one window-curve read, one final publish) and `stage` names the step that
   is running. The first-paint bar is determinate from that, never a timed animation.
 - Remember the reader's folds and views in `localStorage` under `ai-usage-ledger-prefs`: a
-  quota card opens on its last choice, otherwise only when the plan has a metered window (a
-  Free plan has none, so its meters are noise), and a provider card keeps its cost/token
-  view. A fold or view change is a transition, never a re-render jump, and
-  `prefers-reduced-motion` collapses all of it.
+  provider card keeps its cost/token view, and a quota card is only rendered when its plan
+  has a metered window (a Free plan has none, so the card is absent rather than empty).
+  While the first quota read is pending, the previous run's answer decides, so the row does
+  not appear and disappear on every launch. A fold or view change is a transition, never a
+  re-render jump, and `prefers-reduced-motion` collapses all of it.
 - Treat `limits[]` as authoritative for "am I blocked", not just `five_hour` / `seven_day`.
 
 ## Type and visual rules
