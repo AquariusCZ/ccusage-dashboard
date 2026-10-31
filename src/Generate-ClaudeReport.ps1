@@ -1193,6 +1193,10 @@ function ConvertTo-FxRates($Rates) {
 # failed read or fetch leaves USD only and never interrupts the report.
 function Get-ExchangeRates {
   $fallback = [pscustomobject]@{ base = 'USD'; rates = @{ USD = 1.0 }; stale = $true; fetchedAt = $null }
+  # One attempt per process: a failed fetch must not be retried by every caller.
+  if ($script:FxAttempted) { return $script:FxResult }
+  $script:FxAttempted = $true
+  $script:FxResult = $fallback
   try {
     if (Test-Path -LiteralPath $FxCachePath) {
       $cached = [IO.File]::ReadAllText($FxCachePath) | ConvertFrom-Json
@@ -1206,28 +1210,30 @@ function Get-ExchangeRates {
       if ($ageMilliseconds -ge -60000 -and $ageMilliseconds -le $FxCacheMaxAgeMilliseconds) {
         $rates = ConvertTo-FxRates $cached.rates
         if ($rates.Count -ge 4) {
-          return [pscustomobject]@{
+          $script:FxResult = [pscustomobject]@{
             base = 'USD'; rates = $rates; stale = $false; fetchedAt = $cachedAt.ToString('o')
           }
+          return $script:FxResult
         }
       }
     }
   } catch {}
   try {
-    $response = Invoke-BoundedJsonRequest -Uri $FxRatesUri -Method GET -Headers @{} -TimeoutSeconds 6 -MaxBytes 65536
+    $response = Invoke-BoundedJsonRequest -Uri $FxRatesUri -Method GET -Headers @{} -TimeoutSeconds 2 -MaxBytes 65536
     if ($response.ok -and $response.value -and $response.value.rates) {
       $rates = ConvertTo-FxRates $response.value.rates
       if ($rates.Count -ge 2) {
         $fetchedAt = [DateTimeOffset]::UtcNow
         $envelope = [ordered]@{ fetchedAt = $fetchedAt.ToString('o'); rates = $rates }
         [void](Write-TextFileWithRetry $FxCachePath ($envelope | ConvertTo-Json -Depth 5 -Compress))
-        return [pscustomobject]@{
+        $script:FxResult = [pscustomobject]@{
           base = 'USD'; rates = $rates; stale = $false; fetchedAt = $fetchedAt.ToString('o')
         }
+        return $script:FxResult
       }
     }
   } catch {}
-  return $fallback
+  return $script:FxResult
 }
 
 <#
@@ -3666,7 +3672,7 @@ try {
   Set-Progress 1 'period' $PeriodKeys[0]
 
   # The quota reads above are already in flight; this synchronous table costs at
-  # most six seconds and must land before the first revision so the currency
+  # most two seconds and must land before the first revision so the currency
   # selector has rates on the first paint.
   $exchangeRates = Get-ExchangeRates
 

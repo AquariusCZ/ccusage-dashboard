@@ -277,7 +277,7 @@
   #app:not(.usage-pending) .usage-wait { display: none; }
 
   /* ── hero ── */
-  .hero { margin-block-start: .85rem; padding: 1.15rem 1.25rem; display: grid; grid-template-columns: minmax(10rem, .75fr) minmax(18rem, 1.5fr) auto; align-items: center; gap: 1rem 1.4rem; }
+  .hero { position: relative; overflow: hidden; margin-block-start: .85rem; padding: 1.15rem 1.25rem; display: grid; grid-template-columns: minmax(10rem, .75fr) minmax(18rem, 1.5fr) auto; align-items: center; gap: 1rem 1.4rem; }
   .hero-label { color: var(--muted); font-size: .75rem; letter-spacing: 0; }
   .hero-figure { display: block; margin-block-start: .5rem; color: var(--claude); }
   .hero-spark { inline-size: 100%; min-inline-size: 0; block-size: 4.5rem; }
@@ -291,6 +291,28 @@
     font-size: .65rem; padding: .05rem .3rem; cursor: pointer;
   }
   .hero-facts .unit-btn:hover { color: var(--ink); border-color: var(--ink); }
+
+  /* The completion beat: one soft band crosses the hero card once, the way a
+     printed report catches the light as it is closed. No pieces, no randomness. */
+  .sweep {
+    position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    background: linear-gradient(105deg,
+      transparent 32%,
+      color-mix(in oklab, #fff 62%, transparent) 50%,
+      transparent 68%);
+    translate: -100% 0;
+  }
+  .sweep.run { animation: sweep-across 820ms var(--ease-out) 1 both; }
+  @keyframes sweep-across {
+    0%   { opacity: 0; translate: -100% 0; }
+    12%  { opacity: .85; }
+    72%  { opacity: .55; }
+    100% { opacity: 0; translate: 100% 0; }
+  }
+  @media (prefers-color-scheme: dark) {
+    html:not([data-cs="light"]) .sweep { background: linear-gradient(105deg, transparent 32%, color-mix(in oklab, #fff 26%, transparent) 50%, transparent 68%); }
+  }
+  html[data-cs="dark"] .sweep { background: linear-gradient(105deg, transparent 32%, color-mix(in oklab, #fff 26%, transparent) 50%, transparent 68%); }
 
   /* ── provider cards ── */
   .prov { padding: 1rem 1.1rem; --p: var(--claude); display: grid; gap: .7rem; }
@@ -608,23 +630,6 @@
     opacity: 0; translate: 8px 0; transition: opacity 200ms ease, translate 200ms ease;
   }
   .toast.show { opacity: 1; translate: 0 0; }
-
-  /* One-shot confetti: thin paper chips burst from the hero figure, arc upward,
-     then fall while they rotate and squash on X so they read as fluttering paper. */
-  .confetti-layer { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
-  .confetti {
-    position: fixed; z-index: 96; pointer-events: none; opacity: 0;
-    inline-size: var(--w, 4px); block-size: var(--h, 8px); background: var(--claude);
-    will-change: transform, opacity;
-    animation: confetti-fall var(--dur, 1200ms) cubic-bezier(.15, .6, .35, 1) var(--delay, 0ms) forwards;
-  }
-  @keyframes confetti-fall {
-    0%   { opacity: 0; transform: translate(0, 0) rotate(0deg) scaleX(1); }
-    8%   { opacity: 1; }
-    38%  { transform: translate(calc(var(--dx) * .5), -56px) rotate(calc(var(--rot) * .35)) scaleX(.75); }
-    82%  { opacity: 1; transform: translate(calc(var(--dx) * .92), calc(var(--dy) * .72)) rotate(calc(var(--rot) * .85)) scaleX(1); }
-    100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--rot)) scaleX(.85); }
-  }
 
   /* The OS preference is a default, not a verdict: the topbar switch writes
      data-motion="full" and the page plays its motion anyway. */
@@ -1195,6 +1200,7 @@
   </section>
 
   <section class="card hero usage-block" aria-label="合计参考成本">
+    <div class="sweep" id="heroSweep" aria-hidden="true"></div>
     <div>
       <p class="hero-label" id="heroLabel">合计 · API 参考价</p>
       <span class="hero-figure" id="heroFigure"></span>
@@ -2569,46 +2575,17 @@ addEventListener("error", function (event) {
   // The bar's own 220 ms fill finishes first, then it rests at full for 160 ms before
   // the loader fades and the already-painted page slides up from under it.
   var BAR_FILL_MS = 220, HANDOFF_HOLD_MS = 160, HANDOFF_MS = 300;
-  // The reveal is the only moment worth celebrating, and only when the reader asked
-  // for motion; revisions afterwards must never replay it.
-  var confettiPlayed = false;
-  var CONFETTI_COUNT = 36, CONFETTI_WAVE_MS = 80, CONFETTI_LIFE_MS = 1700;
-  // Even widths only: an odd chip lands on half pixels and smears at 1x.
-  var CONFETTI_SIZES = [6, 8, 10];
-  function playConfetti() {
-    if (confettiPlayed || document.documentElement.dataset.motion !== "full") return;
-    confettiPlayed = true;
-    var colors = ["var(--claude)", "var(--codex)", "var(--deepseek)", "var(--ink)", "var(--warn)"];
-    // The chips leave the hero figure's top centre; without a laid-out rect the
-    // viewport's top centre is the honest fallback.
-    var hero = $("heroFigure");
-    var rect = hero ? hero.getBoundingClientRect() : null;
-    var originX = rect && rect.width ? rect.left + rect.width / 2 : window.innerWidth / 2;
-    var originY = rect && rect.height ? rect.top + rect.height / 2 - 10 : 0;
-    var layer = document.createElement("div");
-    layer.className = "confetti-layer";
-    for (var index = 0; index < CONFETTI_COUNT; index++) {
-      var chip = document.createElement("span");
-      // A bar is 1:2 or 2:1; the rest are squares. Seven in ten stay elongated so the
-      // burst reads as paper rather than dots.
-      var size = CONFETTI_SIZES[Math.floor(Math.random() * CONFETTI_SIZES.length)];
-      var bar = Math.random() < .7, tall = Math.random() < .5;
-      var side = Math.random() < .5 ? -1 : 1;
-      chip.className = "confetti";
-      chip.style.left = originX.toFixed(1) + "px";
-      chip.style.top = originY.toFixed(1) + "px";
-      chip.style.setProperty("--w", (bar && !tall ? size * 2 : size) + "px");
-      chip.style.setProperty("--h", (bar && tall ? size * 2 : size) + "px");
-      chip.style.setProperty("--dx", (side * (24 + Math.random() * 64)).toFixed(0) + "px");
-      chip.style.setProperty("--dy", (26 + Math.random() * 18).toFixed(1) + "vh");
-      chip.style.setProperty("--rot", (side * (240 + Math.random() * 480)).toFixed(0) + "deg");
-      chip.style.setProperty("--dur", (900 + Math.random() * 400).toFixed(0) + "ms");
-      chip.style.setProperty("--delay", (Math.floor(index / (CONFETTI_COUNT / 3)) * CONFETTI_WAVE_MS + Math.random() * 60).toFixed(0) + "ms");
-      chip.style.background = colors[Math.floor(Math.random() * colors.length)];
-      layer.appendChild(chip);
+  // The reveal is the only moment worth marking, and only when the reader asked
+  // for motion; revisions afterwards must never replay it. One band of light
+  // crosses the hero card: the hero card is the report's cover, so the sweep says
+  // "finished", not "party".
+  function playSweep() {
+    if (document.documentElement.dataset.motion !== "full") return;
+    var sweep = $("heroSweep");
+    if (sweep && !sweep.classList.contains("run")) {
+      sweep.classList.add("run");
+      setTimeout(function () { sweep.classList.remove("run"); }, 900);
     }
-    document.body.appendChild(layer);
-    setTimeout(function () { layer.remove(); }, CONFETTI_LIFE_MS);
   }
   function syncUsage() {
     var ready = usageReady();
@@ -2627,7 +2604,7 @@ addEventListener("error", function (event) {
       }, BAR_FILL_MS + HANDOFF_HOLD_MS);
       setTimeout(function () {
         $("loader").style.display = "none";
-        setTimeout(playConfetti, 340);
+        setTimeout(playSweep, 340);
       }, BAR_FILL_MS + HANDOFF_HOLD_MS + HANDOFF_MS + 60);
     }
     if (ready) {

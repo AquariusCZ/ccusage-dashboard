@@ -181,6 +181,11 @@ $payload = [ordered]@{
   generationError = $null
   period = '30days'
   currency = [ordered]@{ code = $CurrencyCode; rate = $CurrencyRate; symbol = $CurrencySymbol }
+  fx = [ordered]@{
+    base      = 'USD'
+    fetchedAt = $AsOf.ToString('o')
+    rates     = [ordered]@{ USD = 1.0; EUR = 0.92; CNY = 7.2; JPY = 150.0; GBP = 0.79 }
+  }
   pricingNote = 'Synthetic API reference price estimate.'
   source = [ordered]@{ name = 'CodeBurn'; version = '0.9.27' }
   providers = @('claude', 'codex', 'deepseek')
