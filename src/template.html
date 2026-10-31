@@ -16,6 +16,10 @@
     document.querySelector('meta[name="color-scheme"]').content = saved;
     document.documentElement.dataset.cs = saved;
   }
+  /* Same idea for motion: decide before the first frame, not after it. */
+  var motion = null;
+  try { motion = localStorage.getItem("ai-usage-ledger-motion"); } catch (e) {}
+  if (motion === "full") document.documentElement.dataset.motion = "full";
 }
 </script>
 <style>
@@ -568,9 +572,11 @@
   .rank-fill { transition: inline-size var(--dur-slow) var(--ease-out); }
   .meter .blocks i { transition: inline-size var(--dur-slow) var(--ease-out); }
 
+  /* The OS preference is a default, not a verdict: the topbar switch writes
+     data-motion="full" and the page plays its motion anyway. */
   @media (prefers-reduced-motion: reduce) {
-    .boot-line::after { animation: none; inline-size: 100%; }
-    *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
+    html:not([data-motion="full"]) .boot-line::after { animation: none; inline-size: 100%; }
+    html:not([data-motion="full"]) *, html:not([data-motion="full"]) *::before, html:not([data-motion="full"]) *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
   }
   @media (pointer: coarse) { .seg button, .iconbtn { min-block-size: 42px; } }
 }
@@ -1099,6 +1105,9 @@
         <button type="button" data-filter="codex" aria-pressed="false"><svg width="26" height="26" aria-hidden="true"><use href="#i-codex"/></svg><span translate="no">Codex</span></button>
         <button type="button" data-filter="deepseek" aria-pressed="false" hidden><svg width="26" height="26" aria-hidden="true"><use href="#i-deepseek"/></svg><span translate="no">DeepSeek</span></button>
       </div>
+      <button type="button" class="iconbtn" id="motionBtn" aria-pressed="false" aria-label="动效">
+        <svg width="18" height="18" aria-hidden="true"><use href="#i-chart"/></svg><span class="sr-only">始终播放动效</span>
+      </button>
       <button type="button" class="iconbtn" id="themeBtn" aria-pressed="false" aria-label="深色主题">
         <svg width="18" height="18" aria-hidden="true"><use href="#i-theme"/></svg><span class="sr-only">深色主题</span>
       </button>
@@ -2688,6 +2697,27 @@ addEventListener("error", function (event) {
     syncTheme(); repaintAll();
   });
   syncTheme();
+
+  /* Motion opt-in: Windows "animation effects" off makes Chromium report a
+     reduce preference, and that default leaves the reader no way back. */
+  var motionKey = "ai-usage-ledger-motion";
+  function syncMotion() {
+    var full = document.documentElement.dataset.motion === "full", button = $("motionBtn");
+    button.setAttribute("aria-pressed", String(full));
+    button.setAttribute("aria-label", "动效");
+    button.querySelector(".sr-only").textContent = "始终播放动效";
+  }
+  $("motionBtn").addEventListener("click", function () {
+    if (document.documentElement.dataset.motion === "full") {
+      delete document.documentElement.dataset.motion;
+      try { localStorage.removeItem(motionKey); } catch (e) {}
+    } else {
+      document.documentElement.dataset.motion = "full";
+      try { localStorage.setItem(motionKey, "full"); } catch (e) {}
+    }
+    syncMotion();
+  });
+  syncMotion();
 
   var q = new URLSearchParams(location.search);
   if (["all", "claude", "codex", "deepseek"].indexOf(q.get("provider")) >= 0) filter = q.get("provider");
