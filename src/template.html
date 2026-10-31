@@ -431,12 +431,16 @@
   .boot p { margin-block-start: .85rem; color: var(--muted); font-size: .75rem; }
   @keyframes sweep { from { translate: -100% 0; } to { translate: 300% 0; } }
 
+  /* Parallel dashboard blocks arrive together (Vercel's rule: staggering parallel
+     data invents a hierarchy it does not have); only ordered lists cascade, at the
+     20ms per item Linear uses. */
   /* The page paints under the still-opaque loader (`prepaint`); the reveal only moves
-     the already-painted surface, so a heavy first layout cannot swallow the transition. */
-  #app { opacity: 0; translate: 0 6px; }
+     the already-painted surface, so a heavy first layout cannot swallow the transition.
+     The 0.995 scale is the depth cue: a surface settling into place, not a zoom. */
+  #app { opacity: 0; translate: 0 6px; scale: .995; }
   #app.prepaint { opacity: 1; }
   #app.show { opacity: 1; }
-  #app.reveal { translate: 0 0; transition: translate 320ms var(--ease-out); }
+  #app.reveal { translate: 0 0; scale: 1; transition: translate 320ms var(--ease-out), scale 320ms var(--ease-out); }
   #app.show .hero { animation-delay: 45ms; }
   #app.show #split .card:nth-child(1) { animation-delay: 90ms; }
   #app.show #split .card:nth-child(2) { animation-delay: 135ms; }
@@ -455,8 +459,17 @@
   #app.intro .series-line.draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-line .85s cubic-bezier(.2,.8,.2,1) forwards; }
   #app.intro .marker { animation: marker-in .36s .48s cubic-bezier(.2,.9,.3,1.4) backwards; }
   #app.intro .cell { animation: cell-in .3s cubic-bezier(.2,.8,.2,1) backwards; }
+  /* Ordered lists are the only place where sequence carries meaning, so they cascade
+     one row at a time; the delay is written per element as --row-i. */
+  #app.intro .rank,
+  #app.intro #modelLegend > span,
+  #app.intro #details tbody tr {
+    animation: row-in 240ms var(--ease-out) backwards;
+    animation-delay: calc(var(--row-i, 0) * 20ms);
+  }
 
   @keyframes card-in { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
+  @keyframes row-in { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
   @keyframes tile-in { from { opacity: 0; translate: -7px 0; } to { opacity: 1; translate: 0 0; } }
   @keyframes grow-x { from { scale: 0 1; } to { scale: 1 1; } }
   @keyframes block-pop { from { opacity: .2; scale: 1 .25; } to { opacity: 1; scale: 1 1; } }
@@ -2429,8 +2442,8 @@ addEventListener("error", function (event) {
     });
     ro.observe(host);
 
-    $("modelLegend").innerHTML = parts.map(function (part) {
-      return '<span><i style="background:' + part.color + '"></i>' + esc(part.name) +
+    $("modelLegend").innerHTML = parts.map(function (part, index) {
+      return '<span style="--row-i:' + Math.min(index, 12) + '"><i style="background:' + part.color + '"></i>' + esc(part.name) +
         (part.provider ? " · " + pname(part.provider) : "") + " <b>" + money(part.value) + "</b> " +
         (part.value / total * 100).toFixed(1) + "%</span>";
     }).join("");
@@ -2442,9 +2455,9 @@ addEventListener("error", function (event) {
     $("projectTotal").textContent = projects.length > 8 ? "8 / " + projects.length + " 个项目" : projects.length + " 个项目";
     if (!projects.length) { host.innerHTML = '<p class="empty">当前筛选暂无项目数据</p>'; return; }
     var max = Math.max.apply(null, projects.map(function (x) { return n(x.item.cost); }).concat([1]));
-    host.innerHTML = projects.slice(0, 8).map(function (x) {
+    host.innerHTML = projects.slice(0, 8).map(function (x, index) {
       var it = x.item, name = it.name || it.path || "未命名项目";
-      return '<div class="rank" style="--p:' + pcolor(x.p) + '">' +
+      return '<div class="rank" style="--p:' + pcolor(x.p) + ';--row-i:' + Math.min(index, 12) + '">' +
         '<div class="rank-name"><b title="' + esc(it.path || name) + '">' + esc(name) + "</b>" +
         '<span translate="no">' + pname(x.p) + " · " + int(it.sessions) + " 会话</span></div>" +
         '<div class="rank-track"><div class="rank-fill" style="inline-size:' + (n(it.cost) / max * 100).toFixed(1) + '%"></div></div>' +
@@ -2467,21 +2480,21 @@ addEventListener("error", function (event) {
     var sessions = collect("topSessions").slice(0, 40);
     // 项目明细 is the longest table, so it sits last and stays collapsed
     $("details").innerHTML =
-      block("模型明细", models.length, table(["模型", "提供商", "调用", "Tokens", "参考成本"], models.map(function (x) {
+      block("模型明细", models.length, table(["模型", "提供商", "调用", "Tokens", "参考成本"], models.map(function (x, index) {
         var m = x.item, t = n(m.inputTokens) + n(m.outputTokens) + n(m.cacheReadTokens) + n(m.cacheWriteTokens);
           var tokenText = m.kind === "unattributed" || (m.tokensPartial && !t) ? "-" : (m.tokensPartial ? "≥" : "") + kmb(t);
-        return "<tr><td>" + esc(m.kind === "unattributed" ? "未归属成本" : m.name) + "</td><td>" + tag(x.p) + '</td><td class="num">' + (m.kind === "unattributed" ? "-" : int(m.calls)) +
+        return '<tr style="--row-i:' + Math.min(index, 12) + '"><td>' + esc(m.kind === "unattributed" ? "未归属成本" : m.name) + "</td><td>" + tag(x.p) + '</td><td class="num">' + (m.kind === "unattributed" ? "-" : int(m.calls)) +
           '</td><td class="num">' + tokenText + '</td><td class="num">' + money(m.cost) + "</td></tr>";
       })), innerWidth > 720) +
-      block("高用量会话", sessions.length, table(["会话", "提供商", "日期", "项目", "调用", "参考成本"], sessions.map(function (x) {
+      block("高用量会话", sessions.length, table(["会话", "提供商", "日期", "项目", "调用", "参考成本"], sessions.map(function (x, index) {
         var s = x.item;
-        return '<tr><td class="num">' + esc(String(s.sessionId || "").slice(0, 13)) + "</td><td>" + tag(x.p) + "</td><td>" + esc(s.date || "-") +
+        return '<tr style="--row-i:' + Math.min(index, 12) + '"><td class="num">' + esc(String(s.sessionId || "").slice(0, 13)) + "</td><td>" + tag(x.p) + "</td><td>" + esc(s.date || "-") +
           '</td><td class="truncate">' + esc(s.project || "-") + '</td><td class="num">' + int(s.calls) +
           '</td><td class="num">' + money(s.cost) + "</td></tr>";
       })), false) +
-      block("项目明细", projects.length, table(["项目", "提供商", "会话", "调用", "参考成本"], projects.map(function (x) {
+      block("项目明细", projects.length, table(["项目", "提供商", "会话", "调用", "参考成本"], projects.map(function (x, index) {
         var it = x.item;
-        return '<tr><td class="truncate" title="' + esc(it.path || "") + '">' + esc(it.name || it.path || "未命名项目") + "</td><td>" + tag(x.p) +
+        return '<tr style="--row-i:' + Math.min(index, 12) + '"><td class="truncate" title="' + esc(it.path || "") + '">' + esc(it.name || it.path || "未命名项目") + "</td><td>" + tag(x.p) +
           '</td><td class="num">' + int(it.sessions) + '</td><td class="num">' + int(it.calls) + '</td><td class="num">' + money(it.cost) + "</td></tr>";
       })), false);
   }
@@ -2558,12 +2571,12 @@ addEventListener("error", function (event) {
     confettiPlayed = true;
     var colors = ["var(--claude)", "var(--codex)", "var(--deepseek)", "var(--ink)"];
     var fragment = document.createDocumentFragment();
-    for (var index = 0; index < 24; index++) {
+    for (var index = 0; index < 16; index++) {
       var dot = document.createElement("span");
       dot.className = "confetti";
       dot.style.setProperty("--dx", (Math.random() * 320 - 160).toFixed(0) + "px");
       dot.style.setProperty("--rot", (180 + Math.random() * 360).toFixed(0) + "deg");
-      dot.style.setProperty("--delay", Math.floor(Math.random() * 161) + "ms");
+      dot.style.setProperty("--delay", Math.floor(Math.random() * 121) + "ms");
       dot.style.setProperty("--s", (4 + Math.random() * 3).toFixed(1) + "px");
       dot.style.background = colors[index % colors.length];
       fragment.appendChild(dot);
@@ -2571,7 +2584,7 @@ addEventListener("error", function (event) {
     document.body.appendChild(fragment);
     setTimeout(function () {
       Array.prototype.forEach.call(document.querySelectorAll(".confetti"), function (dot) { dot.remove(); });
-    }, 900);
+    }, 820);
   }
   function syncUsage() {
     var ready = usageReady();
