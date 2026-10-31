@@ -30,6 +30,8 @@ $CCUsageTimeoutMilliseconds = 120000
 $CodexQuotaTimeoutMilliseconds = 30000
 $ClaudeQuotaTimeoutSeconds = 20
 $LocalQuotaMaxAgeMilliseconds = [int64](7 * 24 * 60 * 60 * 1000)
+$FxCacheMaxAgeMilliseconds = [int64](24 * 60 * 60 * 1000)
+$FxRatesUri = 'https://api.frankfurter.dev/v1/latest?from=USD&to=EUR,CNY,JPY,GBP,HKD,KRW'
 $ClaudeDesktopPackageFamily = 'Claude_pzs8sxrjxfjjc'
 $CodexHelperScript = Join-Path $AppDir 'codex-rate-limits.mjs'
 $RuntimeRoot = Join-Path $env:TEMP 'ClaudeUsage'
@@ -56,6 +58,8 @@ $ReadLeasePath = Join-Path $RuntimeRoot 'report-read.lease'
 $RunStatePath = Join-Path $RuntimeRoot 'report-run.state'
 $RunOwnerPath = Join-Path $RuntimeRoot 'report-run.owner.json'
 $RetryRequestPath = Join-Path $RuntimeRoot 'report-retry.request'
+$FxCachePath = Join-Path $RuntimeRoot 'fx-rates.json'
+$exchangeRates = [pscustomobject]@{ base = 'USD'; rates = @{ USD = 1.0 }; stale = $true; fetchedAt = $null }
 $OutHtml = Join-Path $OutDir 'report.html'
 $OutData = Join-Path $OutDir 'data.js'
 $OutFailure = Join-Path $OutDir 'failure.js'
@@ -1155,6 +1159,75 @@ function Invoke-BoundedJsonRequest {
     if ($client) { try { $client.Dispose() } catch {} }
     if ($ownsHandler -and $Handler) { try { $Handler.Dispose() } catch {} }
   }
+}
+
+# Exchange rates are rendered numbers only: a three-letter code maps to units of
+# that currency per USD. Public and unauthenticated, so nothing here is a secret.
+function ConvertTo-FxRateValue($Value) {
+  if ($null -eq $Value) { return $null }
+  $number = 0.0
+  if ($Value -is [string]) {
+    if (-not [double]::TryParse($Value, [Globalization.NumberStyles]::Float,
+        [Globalization.CultureInfo]::InvariantCulture, [ref]$number)) { return $null }
+  } else {
+    try { $number = [double]$Value } catch { return $null }
+  }
+  if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or
+      $number -le 0 -or $number -ge 10000) { return $null }
+  return $number
+}
+
+function ConvertTo-FxRates($Rates) {
+  $safe = [ordered]@{ USD = 1.0 }
+  if ($null -eq $Rates) { return $safe }
+  foreach ($property in $Rates.PSObject.Properties) {
+    if ($property.Name -cnotmatch '\A[A-Z]{3}\z' -or $property.Name -ceq 'USD') { continue }
+    $value = ConvertTo-FxRateValue $property.Value
+    if ($null -ne $value) { $safe[$property.Name] = $value }
+  }
+  return $safe
+}
+
+# The page switches currency locally, so it needs one USD-based table. Fetch at
+# most once a day from a public endpoint and cache it under the runtime root; a
+# failed read or fetch leaves USD only and never interrupts the report.
+function Get-ExchangeRates {
+  $fallback = [pscustomobject]@{ base = 'USD'; rates = @{ USD = 1.0 }; stale = $true; fetchedAt = $null }
+  try {
+    if (Test-Path -LiteralPath $FxCachePath) {
+      $cached = [IO.File]::ReadAllText($FxCachePath) | ConvertFrom-Json
+      $cachedAt = [DateTimeOffset]::MinValue
+      $ageMilliseconds = 0.0
+      if ([DateTimeOffset]::TryParse([string]$cached.fetchedAt,
+          [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind,
+          [ref]$cachedAt)) {
+        $ageMilliseconds = ([DateTimeOffset]::UtcNow - $cachedAt).TotalMilliseconds
+      }
+      if ($ageMilliseconds -ge -60000 -and $ageMilliseconds -le $FxCacheMaxAgeMilliseconds) {
+        $rates = ConvertTo-FxRates $cached.rates
+        if ($rates.Count -ge 4) {
+          return [pscustomobject]@{
+            base = 'USD'; rates = $rates; stale = $false; fetchedAt = $cachedAt.ToString('o')
+          }
+        }
+      }
+    }
+  } catch {}
+  try {
+    $response = Invoke-BoundedJsonRequest -Uri $FxRatesUri -Method GET -Headers @{} -TimeoutSeconds 6 -MaxBytes 65536
+    if ($response.ok -and $response.value -and $response.value.rates) {
+      $rates = ConvertTo-FxRates $response.value.rates
+      if ($rates.Count -ge 2) {
+        $fetchedAt = [DateTimeOffset]::UtcNow
+        $envelope = [ordered]@{ fetchedAt = $fetchedAt.ToString('o'); rates = $rates }
+        [void](Write-TextFileWithRetry $FxCachePath ($envelope | ConvertTo-Json -Depth 5 -Compress))
+        return [pscustomobject]@{
+          base = 'USD'; rates = $rates; stale = $false; fetchedAt = $fetchedAt.ToString('o')
+        }
+      }
+    }
+  } catch {}
+  return $fallback
 }
 
 <#
@@ -3077,6 +3150,11 @@ function Write-Snapshot([bool]$Complete) {
     generationError = $GenerationError
     period = $Period
     currency = $displayCurrency
+    fx = [ordered]@{
+      base      = 'USD'
+      fetchedAt = $exchangeRates.fetchedAt
+      rates     = $exchangeRates.rates
+    }
     pricingNote = 'API reference price estimate; subscription plans and custom providers may bill differently.'
     source = $sourceRecord
     providers = $providers.ToArray()
@@ -3586,6 +3664,11 @@ try {
   Step-QuotaState
   # The local quota read is the first finished step; periods start next.
   Set-Progress 1 'period' $PeriodKeys[0]
+
+  # The quota reads above are already in flight; this synchronous table costs at
+  # most six seconds and must land before the first revision so the currency
+  # selector has rates on the first paint.
+  $exchangeRates = Get-ExchangeRates
 
   # CodeBurn is NOT concurrency-safe: overlapping invocations leak each other's
   # rows, so a `--provider codex` run can come back holding the union of both

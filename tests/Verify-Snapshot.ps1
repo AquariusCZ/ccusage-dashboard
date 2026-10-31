@@ -449,8 +449,8 @@ function Assert-ClaudeBlocks($Blocks, [string]$Path) {
 }
 
 Assert-Fields $data '$' `
-  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'progress', 'reports', 'limits', 'appDir') `
-  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'progress', 'reports', 'limits', 'appDir')
+  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'fx', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'progress', 'reports', 'limits', 'appDir') `
+  @('generatedAt', 'runId', 'revision', 'complete', 'generationError', 'period', 'currency', 'fx', 'pricingNote', 'source', 'providers', 'periods', 'plannedPeriods', 'progress', 'reports', 'limits', 'appDir')
 if (-not (Test-IsoTimestamp $data.generatedAt)) { throw 'Snapshot generatedAt metadata is invalid.' }
 Assert-String $data.runId 'runId' 128 $false
 Assert-Int64 $data.revision 'revision'
@@ -474,6 +474,25 @@ if ($currencyCode -eq 'USD') {
   throw 'Snapshot non-USD currency rate must be positive or null when unavailable.'
 }
 Assert-String $data.currency.symbol 'currency.symbol' 64
+Assert-Fields $data.fx 'fx' @('base', 'fetchedAt', 'rates') @('base', 'fetchedAt', 'rates')
+if (-not ($data.fx.base -is [string]) -or $data.fx.base -notmatch '\A[A-Za-z]{3}\z') {
+  throw 'Snapshot fx base is invalid.'
+}
+Assert-NullableTimestamp $data.fx.fetchedAt 'fx.fetchedAt'
+if (-not (Test-Record $data.fx.rates)) { throw 'Snapshot fx rates is not a record.' }
+$fxCodes = @($data.fx.rates.PSObject.Properties | ForEach-Object { $_.Name })
+if ($fxCodes -cnotcontains 'USD') { throw 'Snapshot fx rates must include USD.' }
+foreach ($fxCode in $fxCodes) {
+  if ($fxCode -cnotmatch '\A[A-Z]{3}\z') { throw "Snapshot fx rate code $fxCode is invalid." }
+  $fxValue = $data.fx.rates.$fxCode
+  if (-not (Test-JsonFiniteNumber $fxValue) -or
+      [double]$fxValue -le 0 -or [double]$fxValue -ge 10000) {
+    throw "Snapshot fx rate $fxCode is invalid."
+  }
+  if ($fxCode -ceq 'USD' -and [double]$fxValue -ne 1) {
+    throw 'Snapshot fx USD rate must be exactly 1.'
+  }
+}
 Assert-String $data.pricingNote 'pricingNote' 4096 $false
 Assert-Fields $data.source 'source' @('name', 'version') @('name', 'version', 'local')
 Assert-String $data.source.name 'source.name' 128 $false

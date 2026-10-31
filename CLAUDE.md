@@ -163,6 +163,11 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 - When the user has selected a non-USD CodeBurn display currency, CodeBurn may refresh
   its public Frankfurter exchange-rate cache. Convert durable status USD amounts with
   the reported rate before merging, and keep CodeBurn plus ccusage costs in one currency.
+- The page's currency switch converts locally from one USD-based table published in the
+  snapshot. The generator fetches `api.frankfurter.dev` once per 24 hours (unauthenticated,
+  6 s budget, 64 KiB cap, cached under the runtime root) and degrades to USD-only when the
+  fetch fails; the request carries no credential and no usage data, and the page never
+  calls out. Amounts stay quoted in CodeBurn's configured currency in the report itself.
 - CodeBurn 0.9.19's report overview is durable while its model rows are limited to
   currently readable sessions. Reconcile model costs through CodeBurn's public local
   `status --format menubar-json` output; never read or parse CodeBurn's private cache.

@@ -186,6 +186,11 @@
   /* The switch acknowledges the click itself: the tint lands fast, then fades back
      over the rest of the 600 ms the class stays on the button. */
   .iconbtn.flash { background: color-mix(in oklab, var(--claude) 22%, var(--card)); border-color: var(--claude); transition: background-color 160ms ease, border-color 160ms ease; }
+  .cur {
+    block-size: 38px; min-block-size: 38px; border: 1px solid var(--line-2); border-radius: var(--r-pill);
+    background: var(--card); color: var(--ink-2); font: 600 .7rem var(--mono); padding: 0 .5rem; cursor: pointer;
+  }
+  .cur:hover { color: var(--ink); border-color: var(--ink); }
 
   .notice {
     display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .9rem;
@@ -1145,6 +1150,7 @@
       <button type="button" class="iconbtn" id="motionBtn" aria-pressed="false" aria-label="动效">
         <svg width="18" height="18" aria-hidden="true"><use href="#i-motion"/></svg><span class="sr-only">始终播放动效</span>
       </button>
+      <select id="currencySel" class="cur" aria-label="显示货币" hidden></select>
       <button type="button" class="iconbtn" id="themeBtn" aria-pressed="false" aria-label="深色主题">
         <svg width="18" height="18" aria-hidden="true"><use href="#i-theme"/></svg><span class="sr-only">深色主题</span>
       </button>
@@ -1336,17 +1342,56 @@ addEventListener("error", function (event) {
     if (typeof value === "string") return { code: value, rate: value === "USD" ? 1 : null };
     return value || { code: "USD", rate: 1, symbol: "$" };
   }
+  function fxRate(code) {
+    var fx = data && data.fx;
+    if (fx && fx.rates && fx.rates[code]) {
+      var rate = Number(fx.rates[code]);
+      return isFinite(rate) && rate > 0 ? rate : null;
+    }
+    return null;
+  }
+  function shownCurrency() {
+    var wanted = prefs.currency ? String(prefs.currency).toUpperCase() : "";
+    if (wanted && fxRate(wanted)) return wanted;
+    return String(currencyInfo().code || "USD").toUpperCase();
+  }
+  // Report amounts are quoted in data.currency.code, while the snapshot's table is
+  // USD-based: fold the amount back to USD, then apply the selected rate.
+  function convertToShown(v) {
+    var base = Number(currencyInfo().rate);
+    var target = fxRate(shownCurrency());
+    if (!target) return n(v);
+    if (!isFinite(base) || base <= 0) base = 1;
+    return n(v) / base * target;
+  }
+  function currencySymbol(code) {
+    try {
+      var parts = new Intl.NumberFormat("en-US", {
+        style: "currency", currency: code, currencyDisplay: code === "USD" ? "symbol" : "code"
+      }).formatToParts(0);
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].type === "currency") return parts[i].value;
+      }
+    } catch (e) {}
+    return code;
+  }
   function money(v, cents) {
-    v = n(v);
-    var code = String(currencyInfo().code || "USD").toUpperCase();
+    v = convertToShown(v);
+    var code = shownCurrency();
     var standard = new Intl.NumberFormat("en-US", { style: "currency", currency: code }).resolvedOptions().maximumFractionDigits;
     var frac = standard === 0 ? 0 : (cents === true || (cents !== false && Math.abs(v) < 1000) ? standard : 0);
     var number = new Intl.NumberFormat("en-US", { minimumFractionDigits: frac, maximumFractionDigits: frac }).format(v);
-    return code === "USD" ? "$" + number : code + " " + number;
+    var symbol = currencySymbol(code);
+    return symbol + (/^[A-Z]+$/.test(symbol) ? " " : "") + number;
   }
+  // ccusage window amounts are USD. Without a table, keep the configured rate path
+  // so an older snapshot behaves exactly as before.
   function convertUsd(v) {
-    var rate = Number(currencyInfo().rate);
-    return isFinite(rate) && rate > 0 ? n(v) * rate : null;
+    var legacy = Number(currencyInfo().rate);
+    var target = fxRate(shownCurrency());
+    if (!target) return isFinite(legacy) && legacy > 0 ? n(v) * legacy : null;
+    if (!isFinite(legacy) || legacy <= 0) return null;
+    return convertToShown(n(v) * legacy);
   }
   var TOKEN_UNITS = ["auto", "cn", "exact"];
   var TOKEN_UNIT_LABEL = { auto: "K/M/B", cn: "万·亿", exact: "精确" };
@@ -2676,6 +2721,35 @@ addEventListener("error", function (event) {
       (data.generationError ? " · 部分更新失败，请重新启动" : data.complete === false ? " · 更新中" : " · 更新完成");
   }
 
+  /* The selector is a local re-expression of the same snapshot: the configured
+     currency leads, every other published rate follows, and no rate table means
+     the control stays hidden. */
+  function renderCurrency() {
+    var select = $("currencySel");
+    if (!select) return;
+    var fx = data && data.fx;
+    var rates = fx && fx.rates && typeof fx.rates === "object" ? fx.rates : {};
+    var codes = Object.keys(rates).filter(function (c) { return /^[A-Z]{3}$/.test(c); });
+    if (codes.indexOf("USD") < 0) codes.push("USD");
+    codes = codes.filter(function (c, i) { return codes.indexOf(c) === i; });
+    var own = String(currencyInfo().code || "USD").toUpperCase();
+    var shown = shownCurrency();
+    if (codes.indexOf(shown) < 0) shown = codes.indexOf(own) >= 0 ? own : codes[0];
+    codes.sort(function (a, b) {
+      if (a === own) return -1;
+      if (b === own) return 1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    var signature = codes.join("|") + ">" + shown;
+    select.hidden = codes.length < 2;
+    if (select.dataset.sig === signature) return;
+    select.dataset.sig = signature;
+    if (codes.length < 2) { select.textContent = ""; return; }
+    select.innerHTML = codes.map(function (c) {
+      return '<option value="' + c + '"' + (c === shown ? " selected" : "") + ">" + c + "</option>";
+    }).join("");
+  }
+
   function syncSeg(seg) {
     var pressed = seg.querySelector('button[aria-pressed="true"]');
     if (!pressed) { seg.dataset.indicator = "0"; return; }
@@ -2760,6 +2834,11 @@ addEventListener("error", function (event) {
     $("themeColor").setAttribute("content", dark ? "#11140f" : "#ecebe6");
   }
   mq.addEventListener("change", function () { syncTheme(); repaintAll(); });
+  $("currencySel").addEventListener("change", function () {
+    prefs.currency = $("currencySel").value;
+    savePrefs();
+    render();
+  });
   $("themeBtn").addEventListener("click", function () {
     if (document.documentElement.dataset.cs) {
       delete document.documentElement.dataset.cs;
@@ -2863,6 +2942,7 @@ addEventListener("error", function (event) {
     var nextPeriods = data.periods ? data.periods.join("|") : "";
     if (firstRender || previousPeriods !== nextPeriods) buildPeriodSeg();
     renderStamp();
+    renderCurrency();
     $("source").textContent = (data.source && data.source.name ? data.source.name : "本地统计") + (data.source && data.source.version ? " " + data.source.version : "");
     $("location").textContent = data.appDir || "";
     if (firstRender) {
