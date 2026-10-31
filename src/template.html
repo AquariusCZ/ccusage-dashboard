@@ -609,15 +609,21 @@
   }
   .toast.show { opacity: 1; translate: 0 0; }
 
-  /* One-shot pixel confetti once the loader has handed the page over. */
+  /* One-shot confetti: thin paper chips burst from the hero figure, arc upward,
+     then fall while they rotate and squash on X so they read as fluttering paper. */
+  .confetti-layer { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
   .confetti {
-    position: fixed; top: 12%; left: 50%; z-index: 96; pointer-events: none;
-    inline-size: var(--s, 5px); block-size: var(--s, 5px); background: var(--claude);
-    animation: confetti-fall 700ms ease-in forwards; animation-delay: var(--delay, 0ms);
+    position: fixed; z-index: 96; pointer-events: none;
+    inline-size: var(--w, 4px); block-size: var(--h, 8px); background: var(--claude);
+    will-change: transform, opacity;
+    animation: confetti-fall var(--dur, 1200ms) cubic-bezier(.15, .6, .35, 1) var(--delay, 0ms) forwards;
   }
   @keyframes confetti-fall {
-    from { transform: translate(0, 0) scale(1); opacity: 1; }
-    to { transform: translate(var(--dx, 0px), 60vh) rotate(var(--rot, 0deg)) scale(.4); opacity: 0; }
+    0%   { opacity: 0; transform: translate(0, 0) rotate(0deg) scaleX(1); }
+    8%   { opacity: 1; }
+    38%  { transform: translate(calc(var(--dx) * .55), -56px) rotate(calc(var(--rot) * .35)) scaleX(.75); }
+    78%  { opacity: 1; transform: translate(calc(var(--dx) * .92), calc(var(--dy) * .72)) rotate(calc(var(--rot) * .85)) scaleX(1); }
+    100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--rot)) scaleX(.85); }
   }
 
   /* The OS preference is a default, not a verdict: the topbar switch writes
@@ -2566,25 +2572,39 @@ addEventListener("error", function (event) {
   // The reveal is the only moment worth celebrating, and only when the reader asked
   // for motion; revisions afterwards must never replay it.
   var confettiPlayed = false;
+  var CONFETTI_COUNT = 30, CONFETTI_WAVE_MS = 80, CONFETTI_LIFE_MS = 1780;
   function playConfetti() {
     if (confettiPlayed || document.documentElement.dataset.motion !== "full") return;
     confettiPlayed = true;
-    var colors = ["var(--claude)", "var(--codex)", "var(--deepseek)", "var(--ink)"];
-    var fragment = document.createDocumentFragment();
-    for (var index = 0; index < 16; index++) {
-      var dot = document.createElement("span");
-      dot.className = "confetti";
-      dot.style.setProperty("--dx", (Math.random() * 320 - 160).toFixed(0) + "px");
-      dot.style.setProperty("--rot", (180 + Math.random() * 360).toFixed(0) + "deg");
-      dot.style.setProperty("--delay", Math.floor(Math.random() * 121) + "ms");
-      dot.style.setProperty("--s", (4 + Math.random() * 3).toFixed(1) + "px");
-      dot.style.background = colors[index % colors.length];
-      fragment.appendChild(dot);
+    var colors = ["var(--claude)", "var(--codex)", "var(--deepseek)", "var(--ink)", "var(--warn)"];
+    // The chips leave the hero figure's top centre; without a laid-out rect the
+    // viewport's top centre is the honest fallback.
+    var hero = $("heroFigure");
+    var rect = hero ? hero.getBoundingClientRect() : null;
+    var originX = rect && rect.width ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    var originY = rect && rect.height ? rect.top + rect.height / 2 - 10 : 0;
+    var layer = document.createElement("div");
+    layer.className = "confetti-layer";
+    for (var index = 0; index < CONFETTI_COUNT; index++) {
+      var chip = document.createElement("span");
+      var size = 3 + Math.random() * 3;
+      var wide = Math.random() < .5;
+      var side = Math.random() < .5 ? -1 : 1;
+      chip.className = "confetti";
+      chip.style.left = originX.toFixed(1) + "px";
+      chip.style.top = originY.toFixed(1) + "px";
+      chip.style.setProperty("--w", (wide ? size * 2 : size).toFixed(1) + "px");
+      chip.style.setProperty("--h", (wide ? size : size * 2).toFixed(1) + "px");
+      chip.style.setProperty("--dx", (side * (60 + Math.random() * 120)).toFixed(0) + "px");
+      chip.style.setProperty("--dy", (45 + Math.random() * 30).toFixed(1) + "vh");
+      chip.style.setProperty("--rot", (side * (360 + Math.random() * 540)).toFixed(0) + "deg");
+      chip.style.setProperty("--dur", (1000 + Math.random() * 500).toFixed(0) + "ms");
+      chip.style.setProperty("--delay", (Math.floor(index / (CONFETTI_COUNT / 3)) * CONFETTI_WAVE_MS + Math.random() * 60).toFixed(0) + "ms");
+      chip.style.background = colors[Math.floor(Math.random() * colors.length)];
+      layer.appendChild(chip);
     }
-    document.body.appendChild(fragment);
-    setTimeout(function () {
-      Array.prototype.forEach.call(document.querySelectorAll(".confetti"), function (dot) { dot.remove(); });
-    }, 820);
+    document.body.appendChild(layer);
+    setTimeout(function () { layer.remove(); }, CONFETTI_LIFE_MS);
   }
   function syncUsage() {
     var ready = usageReady();
