@@ -613,7 +613,7 @@
      then fall while they rotate and squash on X so they read as fluttering paper. */
   .confetti-layer { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
   .confetti {
-    position: fixed; z-index: 96; pointer-events: none;
+    position: fixed; z-index: 96; pointer-events: none; opacity: 0;
     inline-size: var(--w, 4px); block-size: var(--h, 8px); background: var(--claude);
     will-change: transform, opacity;
     animation: confetti-fall var(--dur, 1200ms) cubic-bezier(.15, .6, .35, 1) var(--delay, 0ms) forwards;
@@ -621,8 +621,8 @@
   @keyframes confetti-fall {
     0%   { opacity: 0; transform: translate(0, 0) rotate(0deg) scaleX(1); }
     8%   { opacity: 1; }
-    38%  { transform: translate(calc(var(--dx) * .55), -56px) rotate(calc(var(--rot) * .35)) scaleX(.75); }
-    78%  { opacity: 1; transform: translate(calc(var(--dx) * .92), calc(var(--dy) * .72)) rotate(calc(var(--rot) * .85)) scaleX(1); }
+    38%  { transform: translate(calc(var(--dx) * .5), -56px) rotate(calc(var(--rot) * .35)) scaleX(.75); }
+    82%  { opacity: 1; transform: translate(calc(var(--dx) * .92), calc(var(--dy) * .72)) rotate(calc(var(--rot) * .85)) scaleX(1); }
     100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--rot)) scaleX(.85); }
   }
 
@@ -2572,7 +2572,9 @@ addEventListener("error", function (event) {
   // The reveal is the only moment worth celebrating, and only when the reader asked
   // for motion; revisions afterwards must never replay it.
   var confettiPlayed = false;
-  var CONFETTI_COUNT = 30, CONFETTI_WAVE_MS = 80, CONFETTI_LIFE_MS = 1780;
+  var CONFETTI_COUNT = 36, CONFETTI_WAVE_MS = 80, CONFETTI_LIFE_MS = 1700;
+  // Even widths only: an odd chip lands on half pixels and smears at 1x.
+  var CONFETTI_SIZES = [6, 8, 10];
   function playConfetti() {
     if (confettiPlayed || document.documentElement.dataset.motion !== "full") return;
     confettiPlayed = true;
@@ -2587,18 +2589,20 @@ addEventListener("error", function (event) {
     layer.className = "confetti-layer";
     for (var index = 0; index < CONFETTI_COUNT; index++) {
       var chip = document.createElement("span");
-      var size = 3 + Math.random() * 3;
-      var wide = Math.random() < .5;
+      // A bar is 1:2 or 2:1; the rest are squares. Seven in ten stay elongated so the
+      // burst reads as paper rather than dots.
+      var size = CONFETTI_SIZES[Math.floor(Math.random() * CONFETTI_SIZES.length)];
+      var bar = Math.random() < .7, tall = Math.random() < .5;
       var side = Math.random() < .5 ? -1 : 1;
       chip.className = "confetti";
       chip.style.left = originX.toFixed(1) + "px";
       chip.style.top = originY.toFixed(1) + "px";
-      chip.style.setProperty("--w", (wide ? size * 2 : size).toFixed(1) + "px");
-      chip.style.setProperty("--h", (wide ? size : size * 2).toFixed(1) + "px");
-      chip.style.setProperty("--dx", (side * (60 + Math.random() * 120)).toFixed(0) + "px");
-      chip.style.setProperty("--dy", (45 + Math.random() * 30).toFixed(1) + "vh");
-      chip.style.setProperty("--rot", (side * (360 + Math.random() * 540)).toFixed(0) + "deg");
-      chip.style.setProperty("--dur", (1000 + Math.random() * 500).toFixed(0) + "ms");
+      chip.style.setProperty("--w", (bar && !tall ? size * 2 : size) + "px");
+      chip.style.setProperty("--h", (bar && tall ? size * 2 : size) + "px");
+      chip.style.setProperty("--dx", (side * (24 + Math.random() * 64)).toFixed(0) + "px");
+      chip.style.setProperty("--dy", (26 + Math.random() * 18).toFixed(1) + "vh");
+      chip.style.setProperty("--rot", (side * (240 + Math.random() * 480)).toFixed(0) + "deg");
+      chip.style.setProperty("--dur", (900 + Math.random() * 400).toFixed(0) + "ms");
       chip.style.setProperty("--delay", (Math.floor(index / (CONFETTI_COUNT / 3)) * CONFETTI_WAVE_MS + Math.random() * 60).toFixed(0) + "ms");
       chip.style.background = colors[Math.floor(Math.random() * colors.length)];
       layer.appendChild(chip);
