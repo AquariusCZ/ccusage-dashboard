@@ -179,10 +179,13 @@
     min-inline-size: 38px; min-block-size: 38px; display: grid; place-items: center;
     border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--card); color: var(--ink-2); cursor: pointer;
     box-shadow: 2px 2px 0 color-mix(in oklab, var(--edge) 45%, transparent);
-    transition: color .16s ease, border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+    transition: color .16s ease, border-color .16s ease, transform .16s ease, box-shadow .16s ease, background-color 600ms var(--ease-out);
   }
   .iconbtn:hover { color: var(--ink); border-color: var(--ink); transform: translate(-1px, -1px); box-shadow: 3px 3px 0 color-mix(in oklab, var(--edge) 48%, transparent); }
   .iconbtn:active { transform: translate(1px, 1px); box-shadow: none; }
+  /* The switch acknowledges the click itself: the tint lands fast, then fades back
+     over the rest of the 600 ms the class stays on the button. */
+  .iconbtn.flash { background: color-mix(in oklab, var(--claude) 22%, var(--card)); border-color: var(--claude); transition: background-color 160ms ease, border-color 160ms ease; }
 
   .notice {
     display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .9rem;
@@ -277,6 +280,12 @@
   .hero-facts div { display: grid; }
   .hero-facts span { color: var(--muted); font-size: .75rem; }
   .hero-facts b { color: var(--ink); font: 700 .75rem/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+  .hero-facts .unit-btn {
+    margin-inline-start: .35rem; vertical-align: 1px; font-family: var(--font); color: var(--ink-2);
+    border: 1px solid var(--line-2); border-radius: var(--r-item); background: var(--card-2);
+    font-size: .65rem; padding: .05rem .3rem; cursor: pointer;
+  }
+  .hero-facts .unit-btn:hover { color: var(--ink); border-color: var(--ink); }
 
   /* ── provider cards ── */
   .prov { padding: 1rem 1.1rem; --p: var(--claude); display: grid; gap: .7rem; }
@@ -571,6 +580,27 @@
   details[open] > summary svg.chev { rotate: 90deg; }
   .rank-fill { transition: inline-size var(--dur-slow) var(--ease-out); }
   .meter .blocks i { transition: inline-size var(--dur-slow) var(--ease-out); }
+
+  /* Click feedback for the motion switch: a short toast that stays readable even
+     when the OS asks for reduced motion (it only fades). */
+  .toast {
+    position: fixed; top: 66px; right: 24px; z-index: 95; pointer-events: none;
+    background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-card);
+    box-shadow: var(--shadow); padding: .5rem .8rem; font-size: .75rem;
+    opacity: 0; translate: 8px 0; transition: opacity 200ms ease, translate 200ms ease;
+  }
+  .toast.show { opacity: 1; translate: 0 0; }
+
+  /* One-shot pixel confetti once the loader has handed the page over. */
+  .confetti {
+    position: fixed; top: 12%; left: 50%; z-index: 96; pointer-events: none;
+    inline-size: var(--s, 5px); block-size: var(--s, 5px); background: var(--claude);
+    animation: confetti-fall 700ms ease-in forwards; animation-delay: var(--delay, 0ms);
+  }
+  @keyframes confetti-fall {
+    from { transform: translate(0, 0) scale(1); opacity: 1; }
+    to { transform: translate(var(--dx, 0px), 60vh) rotate(var(--rot, 0deg)) scale(.4); opacity: 0; }
+  }
 
   /* The OS preference is a default, not a verdict: the topbar switch writes
      data-motion="full" and the page plays its motion anyway. */
@@ -1068,6 +1098,13 @@
   <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M4 19.5h16"/><path d="M4.5 15.5c3-6.5 5.5 1.5 8-3.5 1.4-2.8 2.6-4 5-4.5"/>
   </symbol>
+  <symbol id="i-motion" viewBox="0 0 12 12" fill="currentColor" shape-rendering="crispEdges">
+    <rect x="9" y="1" width="3" height="1"/><rect x="8" y="2" width="3" height="1"/>
+    <rect x="7" y="3" width="3" height="1"/><rect x="8" y="4" width="3" height="1"/>
+    <rect x="9" y="5" width="3" height="1"/>
+    <rect x="1" y="7" width="3" height="1"/><rect x="0" y="8" width="4" height="1"/>
+    <rect x="1" y="9" width="3" height="1"/>
+  </symbol>
   <symbol id="i-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <rect x="3.5" y="4.5" width="17" height="15" rx="3.2"/><path d="M3.5 9.6h17M10.6 9.6v9.9"/>
   </symbol>
@@ -1106,7 +1143,7 @@
         <button type="button" data-filter="deepseek" aria-pressed="false" hidden><svg width="26" height="26" aria-hidden="true"><use href="#i-deepseek"/></svg><span translate="no">DeepSeek</span></button>
       </div>
       <button type="button" class="iconbtn" id="motionBtn" aria-pressed="false" aria-label="动效">
-        <svg width="18" height="18" aria-hidden="true"><use href="#i-chart"/></svg><span class="sr-only">始终播放动效</span>
+        <svg width="18" height="18" aria-hidden="true"><use href="#i-motion"/></svg><span class="sr-only">始终播放动效</span>
       </button>
       <button type="button" class="iconbtn" id="themeBtn" aria-pressed="false" aria-label="深色主题">
         <svg width="18" height="18" aria-hidden="true"><use href="#i-theme"/></svg><span class="sr-only">深色主题</span>
@@ -1311,8 +1348,20 @@ addEventListener("error", function (event) {
     var rate = Number(currencyInfo().rate);
     return isFinite(rate) && rate > 0 ? n(v) * rate : null;
   }
+  var TOKEN_UNITS = ["auto", "cn", "exact"];
+  var TOKEN_UNIT_LABEL = { auto: "K/M/B", cn: "万·亿", exact: "精确" };
+  function tokenUnit() {
+    return TOKEN_UNITS.indexOf(prefs.tokenUnit) >= 0 ? prefs.tokenUnit : "auto";
+  }
   function kmb(v) {
     v = n(v);
+    var unit = tokenUnit();
+    if (unit === "exact") return int(v);
+    if (unit === "cn") {
+      if (v >= 1e8) return (v / 1e8).toFixed(1) + "亿";
+      if (v >= 1e4) return (v / 1e4).toFixed(1) + "万";
+      return int(v);
+    }
     if (v >= 1e9) return (v / 1e9).toFixed(v >= 1e10 ? 1 : 2) + "B";
     if (v >= 1e6) return (v / 1e6).toFixed(v >= 1e7 ? 1 : 2) + "M";
     if (v >= 1e3) return (v / 1e3).toFixed(v >= 1e4 ? 1 : 2) + "K";
@@ -1963,7 +2012,9 @@ addEventListener("error", function (event) {
     fitHeroFigure();
     if (heroChanged && scopeChanged) pulse($("heroFigure"));
     $("heroFacts").innerHTML = [
-      ["调用", int(calls)], ["会话", int(sess)], ["Tokens", kmb(toks)],
+      ["调用", int(calls)], ["会话", int(sess)],
+      ["Tokens" + '<button class="unit-btn" type="button" aria-label="切换 tokens 单位">' +
+        TOKEN_UNIT_LABEL[tokenUnit()] + "</button>", kmb(toks)],
       ["缓存读占比", (toks ? (cr / toks * 100).toFixed(1) : "0") + "%"]
     ].map(function (f) { return "<div><span>" + f[0] + "</span><b>" + f[1] + "</b></div>"; }).join("");
 
@@ -2454,6 +2505,29 @@ addEventListener("error", function (event) {
   // The bar's own 220 ms fill finishes first, then it rests at full for 160 ms before
   // the loader fades and the already-painted page slides up from under it.
   var BAR_FILL_MS = 220, HANDOFF_HOLD_MS = 160, HANDOFF_MS = 300;
+  // The reveal is the only moment worth celebrating, and only when the reader asked
+  // for motion; revisions afterwards must never replay it.
+  var confettiPlayed = false;
+  function playConfetti() {
+    if (confettiPlayed || document.documentElement.dataset.motion !== "full") return;
+    confettiPlayed = true;
+    var colors = ["var(--claude)", "var(--codex)", "var(--deepseek)", "var(--ink)"];
+    var fragment = document.createDocumentFragment();
+    for (var index = 0; index < 24; index++) {
+      var dot = document.createElement("span");
+      dot.className = "confetti";
+      dot.style.setProperty("--dx", (Math.random() * 320 - 160).toFixed(0) + "px");
+      dot.style.setProperty("--rot", (180 + Math.random() * 360).toFixed(0) + "deg");
+      dot.style.setProperty("--delay", Math.floor(Math.random() * 161) + "ms");
+      dot.style.setProperty("--s", (4 + Math.random() * 3).toFixed(1) + "px");
+      dot.style.background = colors[index % colors.length];
+      fragment.appendChild(dot);
+    }
+    document.body.appendChild(fragment);
+    setTimeout(function () {
+      Array.prototype.forEach.call(document.querySelectorAll(".confetti"), function (dot) { dot.remove(); });
+    }, 900);
+  }
   function syncUsage() {
     var ready = usageReady();
     $("app").classList.toggle("usage-pending", !ready);
@@ -2469,7 +2543,10 @@ addEventListener("error", function (event) {
           requestAnimationFrame(function () { $("app").classList.add("reveal"); });
         });
       }, BAR_FILL_MS + HANDOFF_HOLD_MS);
-      setTimeout(function () { $("loader").style.display = "none"; }, BAR_FILL_MS + HANDOFF_HOLD_MS + HANDOFF_MS + 60);
+      setTimeout(function () {
+        $("loader").style.display = "none";
+        setTimeout(playConfetti, 340);
+      }, BAR_FILL_MS + HANDOFF_HOLD_MS + HANDOFF_MS + 60);
     }
     if (ready) {
       if (!usageIntroShown) { usageIntroShown = true; introWindow(700); }
@@ -2707,6 +2784,25 @@ addEventListener("error", function (event) {
     button.setAttribute("aria-label", "动效");
     button.querySelector(".sr-only").textContent = "始终播放动效";
   }
+  var toastNode = null, toastTimer = null;
+  function showToast(text) {
+    if (toastNode) { clearTimeout(toastTimer); toastNode.remove(); toastNode = null; }
+    var node = document.createElement("div");
+    node.className = "toast";
+    node.setAttribute("role", "status");
+    node.textContent = text;
+    document.body.appendChild(node);
+    toastNode = node;
+    // Two frames let the initial (offset, transparent) style land before the slide.
+    requestAnimationFrame(function () { requestAnimationFrame(function () { node.classList.add("show"); }); });
+    toastTimer = setTimeout(function () {
+      node.classList.remove("show");
+      toastTimer = setTimeout(function () {
+        node.remove();
+        if (toastNode === node) toastNode = null;
+      }, 220);
+    }, 1600);
+  }
   $("motionBtn").addEventListener("click", function () {
     if (document.documentElement.dataset.motion === "full") {
       delete document.documentElement.dataset.motion;
@@ -2716,8 +2812,21 @@ addEventListener("error", function (event) {
       try { localStorage.setItem(motionKey, "full"); } catch (e) {}
     }
     syncMotion();
+    var button = $("motionBtn");
+    button.classList.remove("flash");
+    void button.offsetWidth;
+    button.classList.add("flash");
+    setTimeout(function () { button.classList.remove("flash"); }, 600);
+    showToast(document.documentElement.dataset.motion === "full" ? "动效已开启" : "动效已跟随系统");
   });
   syncMotion();
+  $("heroFacts").addEventListener("click", function (event) {
+    var trigger = event.target && event.target.closest ? event.target.closest(".unit-btn") : null;
+    if (!trigger) return;
+    prefs.tokenUnit = TOKEN_UNITS[(TOKEN_UNITS.indexOf(tokenUnit()) + 1) % TOKEN_UNITS.length];
+    savePrefs();
+    if (data) renderUsage(true);
+  });
 
   var q = new URLSearchParams(location.search);
   if (["all", "claude", "codex", "deepseek"].indexOf(q.get("provider")) >= 0) filter = q.get("provider");
