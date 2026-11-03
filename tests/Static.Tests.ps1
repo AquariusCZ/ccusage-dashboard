@@ -98,6 +98,14 @@ if (-not $uninstaller.Contains('$managedRelativeFiles = @(Get-ChildItem -Literal
   throw 'The repository uninstaller does not derive managed mirrors from the canonical src inventory.'
 }
 if (-not $template.Contains('id="modelDonut"')) { throw 'The model composition chart is missing.' }
+# The usage boards mirror the generator's progress steps: startup, then the Claude report,
+# then the Codex report. A step added, dropped or reordered on either side must fail here.
+$beadSteps = @([regex]::Matches($template, '\{ board: "([a-z]+)", ms: \d+') | ForEach-Object { $_.Groups[1].Value })
+if (($beadSteps -join ',') -ne 'deepseek,claude,codex' -or
+    -not $generator.Contains('$script:ProgressTotal = 3') -or
+    -not $generator.Contains("foreach (`$provider in @('claude', 'codex'))")) {
+  throw 'The usage boards no longer mirror the generator progress steps.'
+}
 # The root-level runtime is an installed mirror, so a checkout must launch its own
 # src\ copy first; otherwise an updated src\ silently runs an older mirror.
 $silentLauncher = [IO.File]::ReadAllText((Join-Path $root 'src\dashboard.vbs'))

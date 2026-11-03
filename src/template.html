@@ -20,6 +20,7 @@
   var motion = null;
   try { motion = localStorage.getItem("ai-usage-ledger-motion"); } catch (e) {}
   if (motion === "full") document.documentElement.dataset.motion = "full";
+  else if (motion === "off") document.documentElement.dataset.motion = "off";
 }
 </script>
 <style>
@@ -125,14 +126,15 @@
     touch-action: manipulation;
     -webkit-tap-highlight-color: color-mix(in oklab, var(--claude) 18%, transparent);
   }
-  :where(button, summary, a, [tabindex]):focus-visible {
+  :where(button, summary, a, select, [tabindex]):focus-visible {
     outline: 2px solid var(--codex);
     outline-offset: 2px;
     border-radius: var(--r-item);
   }
   @media (forced-colors: active) {
+    .wait-status .caret { forced-color-adjust: none; background: CanvasText; }
     .card, .tile { border: 1px solid CanvasText; }
-    :where(button, summary):focus-visible { outline: 2px solid Highlight; }
+    :where(button, summary, select):focus-visible { outline: 2px solid Highlight; }
   }
   /* pixel numerals sit on the text baseline like a glyph would */
   .pixtype { display: inline-block; vertical-align: baseline; }
@@ -147,6 +149,7 @@
     border-radius: var(--r-card);
     box-shadow: var(--shadow);
   }
+  .card-pad { padding: 1rem 1.1rem; }
 
   /* ── header ── */
   .topbar { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem 1rem; }
@@ -161,13 +164,14 @@
   .wordmark { color: var(--ink); line-height: 1; display: block; }
   .brand p { color: var(--muted); font-size: .75rem; margin-block-start: .3rem; overflow-wrap: anywhere; }
   .topbar-actions { display: flex; align-items: center; gap: .45rem; margin-inline-start: auto; flex-wrap: wrap; }
+  .topbar-tools { display: flex; align-items: center; gap: .45rem; }
 
   .seg { display: flex; gap: 2px; padding: 3px; background: var(--card-2); border: 1px solid var(--line-2); border-radius: var(--r-pill); box-shadow: inset 1px 1px 0 var(--card); }
   .seg button {
     min-block-size: 30px; padding-inline: .8rem; border-radius: var(--r-pill);
     display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
     color: var(--ink-2); cursor: pointer; font-size: .75rem; white-space: nowrap; border: 1px solid transparent;
-    transition: background-color .16s ease, color .16s ease, transform .16s ease, box-shadow .16s ease;
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
   }
   .seg button:hover:not([aria-pressed="true"]) { color: var(--ink); background: color-mix(in oklab, var(--ink) 7%, transparent); }
   .seg button[aria-pressed="true"] { background: var(--ink); color: var(--card); border-color: var(--ink); font-weight: 600; box-shadow: 2px 2px 0 color-mix(in oklab, var(--edge) 55%, transparent); transform: translate(-1px, -1px); }
@@ -179,16 +183,17 @@
     min-inline-size: 38px; min-block-size: 38px; display: grid; place-items: center;
     border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--card); color: var(--ink-2); cursor: pointer;
     box-shadow: 2px 2px 0 color-mix(in oklab, var(--edge) 45%, transparent);
-    transition: color .16s ease, border-color .16s ease, transform .16s ease, box-shadow .16s ease, background-color 600ms var(--ease-out);
+    transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
   }
   .iconbtn:hover { color: var(--ink); border-color: var(--ink); transform: translate(-1px, -1px); box-shadow: 3px 3px 0 color-mix(in oklab, var(--edge) 48%, transparent); }
   .iconbtn:active { transform: translate(1px, 1px); box-shadow: none; }
-  /* The switch acknowledges the click itself: the tint lands fast, then fades back
-     over the rest of the 600 ms the class stays on the button. */
-  .iconbtn.flash { background: color-mix(in oklab, var(--claude) 22%, var(--card)); border-color: var(--claude); transition: background-color 160ms ease, border-color 160ms ease; }
+  /* The motion toggle keeps a filled state instead of flashing, so the control
+     itself tells the reader whether motion is on. */
+  #motionBtn[aria-pressed="true"],
+  #motionBtn[aria-pressed="true"]:hover { background: var(--ink); border-color: var(--ink); color: var(--card); }
   .cur {
     block-size: 38px; min-block-size: 38px; border: 1px solid var(--line-2); border-radius: var(--r-pill);
-    background: var(--card); color: var(--ink-2); font: 600 .7rem var(--mono); padding: 0 .5rem; cursor: pointer;
+    background: var(--card); color: var(--ink-2); font: 600 .75rem var(--mono); padding: 0 .5rem; cursor: pointer;
   }
   .cur:hover { color: var(--ink); border-color: var(--ink); }
 
@@ -202,7 +207,7 @@
   }
   .notice b { color: light-dark(#8a5406, #f0a72a); }
   .notice .live { display: inline-flex; align-items: center; gap: .4rem; margin-inline-start: auto; white-space: nowrap; }
-  .notice .live::before { content: ""; inline-size: 7px; block-size: 7px; border-radius: 50%; background: var(--good); }
+  .notice .live::before { content: ""; inline-size: 7px; block-size: 7px; border-radius: 1px; background: var(--good); }
 
   /* ── sections ── */
   .section { margin-block-start: 1.35rem; }
@@ -218,7 +223,6 @@
   .quota { padding: 1rem 1.1rem; display: grid; gap: .85rem; align-content: start; }
   .quota-head { display: flex; align-items: center; gap: .5rem; }
   .quota-head .dot { inline-size: 10px; block-size: 10px; border-radius: 1px; background: var(--p); flex: none; box-shadow: 2px 2px 0 color-mix(in oklab, var(--p) 35%, transparent); }
-  .quota-head h3 { font-size: .75rem; }
   .quota-unavailable { overflow: hidden; }
   .quota-offline {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem;
@@ -245,7 +249,7 @@
   /* A relay names its own plan, so the note has to shrink rather than overflow. */
   .meter-note { margin-inline-start: auto; color: var(--muted); font-size: .75rem; white-space: nowrap; min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; }
   .blocks { display: flex; gap: 2px; }
-  .blocks i { flex: 1; block-size: 12px; border-radius: 1px; background: var(--off); transform-origin: bottom; }
+  .blocks i { flex: 1; block-size: 12px; border-radius: 1px; background: var(--off); }
   .meter-foot { display: flex; gap: .5rem; color: var(--muted); font-size: .75rem; }
   .meter-foot :last-child { margin-inline-start: auto; }
   .alarm {
@@ -267,14 +271,50 @@
   .meter-reset { color: var(--muted); font: 600 .75rem/1.5 var(--mono); }
   .meter-row.is-reset .blocks i { opacity: .5; }
 
-  /* Quota arrives before the first usage report; usage sections wait in one place. */
-  .usage-wait { margin-block-start: .85rem; padding: .8rem 1.1rem; display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; }
-  .usage-wait .boot-line { inline-size: min(14rem, 40vw); block-size: 6px; margin: 0; flex: none; }
-  .usage-wait p { color: var(--muted); font-size: .75rem; margin: 0; }
-  .usage-wait.failed { display: block; }
-  .usage-wait.failed .boot-line { display: none; }
+  /* The page is its own first frame. Usage waits in the hero's slot: one pegboard per
+     collector step, assembled bead by bead, so the reader sees which provider is being
+     collected and how far along it is while the quota above is already readable. */
+  .usage-wait { margin-block-start: .85rem; padding: 1rem 1.25rem 1.1rem; display: grid; justify-items: center; gap: .9rem; }
+  .usage-wait .hero-label { justify-self: start; }
+  .wait-status { margin: 0; display: flex; align-items: center; gap: .35rem; min-block-size: 1.4em; color: var(--ink-2); font-size: .75rem; }
+  .wait-status .caret { inline-size: 6px; block-size: 11px; background: currentColor; }
+  .usage-wait.failed .wait-status { color: light-dark(#a5251e, #ff8b80); }
+  .usage-wait.failed .caret { display: none; }
   #app.usage-pending .usage-block { display: none; }
   #app:not(.usage-pending) .usage-wait { display: none; }
+  /* With usage hidden the footer would sit right under the quota and flash there. */
+  #app.usage-pending footer { visibility: hidden; }
+  .boards { display: flex; justify-content: center; gap: clamp(1rem, 3vw, 1.75rem); }
+  .board { margin: 0; display: grid; justify-items: center; gap: .55rem; --p: var(--claude); }
+  .board[data-p="codex"] { --p: var(--codex); }
+  .board[data-p="deepseek"] { --p: var(--deepseek); }
+  .pegboard {
+    inline-size: clamp(96px, 10vw, 128px); aspect-ratio: 1; padding: 6px;
+    background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-card); box-shadow: var(--shadow);
+  }
+  .pegboard svg { display: block; inline-size: 100%; block-size: 100%; overflow: visible; }
+  .peg { fill: color-mix(in oklab, var(--ink) 17%, transparent); }
+  /* An open ring is a bead still being placed; ironing closes it into the solid mark. */
+  .bead { opacity: 0; }
+  .bead.on { opacity: 1; }
+  .bead-body { fill: var(--p); r: .42px; }
+  .bead-hole { fill: var(--card); r: .16px; }
+  .board.ironed .bead-body { r: .52px; }
+  .board.ironed .bead-hole { r: 0px; }
+  .board.ironed .peg { opacity: 0; }
+  .board-cap { display: flex; align-items: baseline; gap: .45rem; color: var(--muted); font-size: .75rem; white-space: nowrap; }
+  .board-cap b { color: var(--ink-2); font-weight: 700; }
+  /* The state word stays in body text for contrast; its colour lives in the marker. */
+  .board-state { display: inline-flex; align-items: center; gap: .3rem; color: var(--ink-2); }
+  .board-state::before { content: ""; inline-size: 7px; block-size: 7px; border-radius: 1px; background: var(--line-2); }
+  .board[data-state="run"] .board-state::before { background: var(--p); }
+  .board[data-state="done"] .board-state::before { background: var(--good); }
+  .board[data-state="halt"] .board-state::before { background: var(--danger); }
+  /* Startup punches the pegs row by row, on every board. */
+  .pegs > g { opacity: 0; }
+  .pegs > g.on { opacity: 1; }
+  /* Remembered quota cards hold their shape until the first answer replaces them. */
+  .meter-row.is-skeleton .meter-pct, .quota.is-placeholder .prov-stats b { color: var(--muted); }
 
   /* ── hero ── */
   .hero { position: relative; overflow: hidden; margin-block-start: .85rem; padding: 1.15rem 1.25rem; display: grid; grid-template-columns: minmax(10rem, .75fr) minmax(18rem, 1.5fr) auto; align-items: center; gap: 1rem 1.4rem; }
@@ -285,34 +325,6 @@
   .hero-facts div { display: grid; }
   .hero-facts span { color: var(--muted); font-size: .75rem; }
   .hero-facts b { color: var(--ink); font: 700 .75rem/1.3 var(--mono); font-variant-numeric: tabular-nums; }
-  .hero-facts .unit-btn {
-    margin-inline-start: .35rem; vertical-align: 1px; font-family: var(--font); color: var(--ink-2);
-    border: 1px solid var(--line-2); border-radius: var(--r-item); background: var(--card-2);
-    font-size: .65rem; padding: .05rem .3rem; cursor: pointer;
-  }
-  .hero-facts .unit-btn:hover { color: var(--ink); border-color: var(--ink); }
-
-  /* The completion beat: one soft band crosses the hero card once, the way a
-     printed report catches the light as it is closed. No pieces, no randomness. */
-  .sweep {
-    position: absolute; inset: 0; pointer-events: none; opacity: 0;
-    background: linear-gradient(105deg,
-      transparent 32%,
-      color-mix(in oklab, #fff 62%, transparent) 50%,
-      transparent 68%);
-    translate: -100% 0;
-  }
-  .sweep.run { animation: sweep-across 820ms var(--ease-out) 1 both; }
-  @keyframes sweep-across {
-    0%   { opacity: 0; translate: -100% 0; }
-    12%  { opacity: .85; }
-    72%  { opacity: .55; }
-    100% { opacity: 0; translate: 100% 0; }
-  }
-  @media (prefers-color-scheme: dark) {
-    html:not([data-cs="light"]) .sweep { background: linear-gradient(105deg, transparent 32%, color-mix(in oklab, #fff 26%, transparent) 50%, transparent 68%); }
-  }
-  html[data-cs="dark"] .sweep { background: linear-gradient(105deg, transparent 32%, color-mix(in oklab, #fff 26%, transparent) 50%, transparent 68%); }
 
   /* ── provider cards ── */
   .prov { padding: 1rem 1.1rem; --p: var(--claude); display: grid; gap: .7rem; }
@@ -323,7 +335,10 @@
   .prov-share { margin-inline-start: auto; padding: .15rem .5rem; border: 1px solid color-mix(in oklab, var(--p) 42%, var(--line)); border-radius: var(--r-item); background: color-mix(in oklab, var(--p) 11%, var(--card)); color: var(--ink); font-size: .75rem; font-weight: 600; }
   .prov-cost-row { display: flex; align-items: end; gap: .35rem; flex-wrap: wrap; min-inline-size: 0; }
   .prov-cost { display: inline-block; max-inline-size: 100%; color: var(--p); }
-  .prov-cost + span { color: var(--muted); font-size: .75rem; }
+  .fig-caption { margin-inline-start: .5rem; color: var(--muted); font-size: .75rem; font-weight: 400; white-space: nowrap; }
+  .fig-unit { margin-inline-start: .18em; font: 700 12px/1 var(--mono); color: inherit; vertical-align: baseline; }
+  .fig-unit-latin { margin-inline-start: .36em; }
+  .fig-prefix { font: 600 12px/1 var(--mono); color: var(--muted); margin-inline-end: .25rem; vertical-align: baseline; }
   .prov-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
   .prov-stats span { display: block; color: var(--muted); font-size: .75rem; }
   .prov-stats b { display: block; font: 700 .75rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
@@ -349,9 +364,6 @@
   /* ── tiles ── */
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: .6rem; }
   .tile { padding: .75rem .85rem; border: 1px solid var(--line); border-radius: var(--r-item); background: var(--card-2); }
-  .tile:nth-child(2) { animation-delay: 55ms; }
-  .tile:nth-child(3) { animation-delay: 110ms; }
-  .tile:nth-child(4) { animation-delay: 165ms; }
   .tile span { display: block; color: var(--muted); font-size: .75rem; }
   .tile .big { display: block; margin-block: .3rem .15rem; color: var(--tint, var(--ink)); }
   .tile em { display: block; color: var(--ink-2); font-size: .75rem; font-style: normal; }
@@ -367,7 +379,7 @@
   .rank-val { font: 600 .75rem/1 var(--mono); font-variant-numeric: tabular-nums; text-align: end; }
 
   /* ── tables ── */
-  .scroller { overflow-x: auto; scrollbar-width: thin; border-radius: var(--r-item); }
+  .scroller { overflow-x: auto; scrollbar-width: thin; border-radius: 0; }
   table { inline-size: 100%; font-size: .75rem; }
   th, td { padding: .5rem .7rem; text-align: end; white-space: nowrap; border-block-end: 1px solid var(--line); }
   th:first-child, td:first-child { text-align: start; }
@@ -376,17 +388,17 @@
   tbody tr { content-visibility: auto; contain-intrinsic-block-size: auto 2.1lh; }
   tbody tr:hover { background: color-mix(in oklab, var(--claude) 7%, transparent); }
   .tag { display: inline-flex; align-items: center; gap: .35rem; color: var(--ink-2); }
-  .tag::before { content: ""; inline-size: 9px; block-size: 9px; border-radius: 3px; background: var(--p); }
+  .tag::before { content: ""; inline-size: 9px; block-size: 9px; border-radius: 1px; background: var(--p); }
   .truncate { max-inline-size: 20rem; overflow: hidden; text-overflow: ellipsis; }
 
-  details { border-radius: var(--r-item); overflow: clip; }
+  details { overflow: clip; }
   details + details { margin-block-start: .5rem; }
   summary {
     min-block-size: 48px; display: flex; align-items: center; gap: .55rem; cursor: pointer;
     font-weight: 600; font-size: .75rem; padding-inline: 1rem; background: var(--card-2);
   }
   summary .count { color: var(--muted); font: 500 .75rem/1 var(--mono); }
-  summary .chev { margin-inline-start: auto; color: var(--muted); transition: rotate .18s ease; }
+  summary .chev { margin-inline-start: auto; color: var(--muted); transition: rotate var(--dur) var(--ease-out); }
   details[open] summary .chev { rotate: 90deg; }
 
   .empty { display: grid; place-items: center; min-block-size: 4rem; padding: .9rem; border-radius: var(--r-item); background: var(--card-2); color: var(--muted); font-size: .75rem; text-align: center; text-wrap: pretty; }
@@ -406,99 +418,58 @@
   .chart-box { inline-size: 100%; }
   .chart { display: block; inline-size: 100%; block-size: auto; overflow: visible; }
   .gridline { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
-  .axis { fill: var(--muted); font: 12px var(--mono); font-variant-numeric: tabular-nums; }
-  .callout { fill: var(--ink); font: 600 12px var(--mono); font-variant-numeric: tabular-nums; }
+  .axis { fill: var(--muted); font: .75rem var(--mono); font-variant-numeric: tabular-nums; }
+  .callout { fill: var(--ink); font: 600 .75rem var(--mono); font-variant-numeric: tabular-nums; }
   .series-line { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
   .series-line.draw { stroke-dasharray: none; stroke-dashoffset: 0; }
   .hit { fill: transparent; cursor: crosshair; }
   [data-tip]:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-  .marker { stroke: var(--card); stroke-width: 2.5; transform-box: fill-box; transform-origin: center; }
+  .marker { stroke: var(--card); stroke-width: 2.5; }
   .arc-fill { fill: none; stroke-linecap: round; }
   /* polar spokes are wide strokes; a round cap would balloon each one into a
      blob that overlaps its neighbours */
   .spoke { fill: none; stroke-linecap: butt; }
   .cell {
     shape-rendering: crispEdges; stroke: color-mix(in oklab, var(--card) 54%, var(--line)); stroke-width: 1;
-    transform-box: fill-box; transform-origin: center;
-    transition: filter .14s ease, stroke .14s ease, stroke-width .14s ease;
+    transition: filter var(--dur-fast) var(--ease-out), stroke var(--dur-fast) var(--ease-out), stroke-width var(--dur-fast) var(--ease-out);
   }
   .cell:hover, .cell:focus { filter: brightness(1.08) saturate(1.08); stroke: var(--ink); stroke-width: 2; }
   .cell-off { stroke: var(--line); stroke-dasharray: 2 2; }
   .heat-scale { gap: .25rem !important; }
-  .heat-scale i { inline-size: 14px; }
+  .heat-scale i { inline-size: 14px; block-size: 14px; }
   .heat-bounds { color: var(--muted); }
   .heat-bounds b { color: var(--ink-2); }
 
   #tip {
     position: fixed; z-index: 70; pointer-events: none; opacity: 0;
-    padding: .5rem .65rem; border: 1px solid light-dark(#575b54, #c4c9bb); border-radius: var(--r-item);
-    background: light-dark(#26292f, #eef1f6); color: light-dark(#fff, #12141a);
-    box-shadow: 3px 3px 0 rgb(0 0 0 / .28);
-    box-sizing: border-box; max-inline-size: calc(100vw - 1rem);
+    padding: .45rem .6rem; border: 1px solid var(--line-2); border-radius: var(--r-card);
+    background: var(--card); color: var(--ink); box-shadow: var(--shadow);
+    box-sizing: border-box; max-inline-size: min(22rem, calc(100vw - 1rem));
     white-space: pre-line; overflow-wrap: anywhere;
-    font: .75rem/1.55 var(--mono); font-variant-numeric: tabular-nums;
-    transition: opacity .12s ease;
+    font: .75rem/1.65 var(--font); font-variant-numeric: tabular-nums;
+    transition: opacity var(--dur-fast) var(--ease);
   }
 
-  #loader { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: var(--canvas); transition: opacity 300ms var(--ease-out), translate 300ms var(--ease-out); }
-  #loader.done { opacity: 0; translate: 0 -8px; pointer-events: none; }
-  .boot { inline-size: min(26rem, calc(100vw - 2.5rem)); text-align: center; }
-  .boot .brand-badge { margin-inline: auto; }
-  .boot-line { block-size: 8px; border: 1px solid var(--line-2); border-radius: 1px; margin-block-start: 1.3rem; background: var(--card-2); overflow: hidden; }
-  .boot-line::after {
-    content: ""; display: block; inline-size: 38%; block-size: 100%;
-    background: var(--claude);
-    animation: sweep 1.25s ease-in-out infinite;
-  }
-  .boot p { margin-block-start: .85rem; color: var(--muted); font-size: .75rem; }
-  @keyframes sweep { from { translate: -100% 0; } to { translate: 300% 0; } }
+  /* Entrance runs once, when usage is revealed (`#app.intro`); later revisions never
+     replay it. Parallel blocks arrive together (Vercel's rule: staggering parallel data
+     invents a hierarchy it does not have), so whole sections fade in 20 ms apart, only
+     data marks move (bars grow from their baseline, the trend line draws once), and the
+     one ordered list cascades at the 20 ms per row Linear uses. */
+  #app.intro .usage-block { animation: section-in var(--dur-slow) var(--ease-out) backwards; animation-delay: calc(var(--section-i, 0) * var(--stagger)); }
+  #app.intro .rail i, #app.intro .rank-fill { animation: grow-x var(--dur-long) var(--ease-out) backwards; }
+  #app.intro .series-area { animation: section-in var(--dur-long) var(--ease-out) backwards; }
+  #app.intro .series-line.draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-line var(--dur-long) var(--ease-out) forwards; }
+  #app.intro .marker { animation: section-in var(--dur) var(--ease-out) var(--dur-long) backwards; }
+  #app.intro .rank { animation: row-in var(--dur-slow) var(--ease-out) backwards; animation-delay: calc(var(--row-i, 0) * var(--stagger)); }
+  /* Quota meters are placed block by block once, when their first answer replaces the
+     remembered placeholder: the same gesture as the beads below them. */
+  #quota .quota.placing .blocks i { animation: place 1ms steps(1, end) backwards; animation-delay: calc(var(--i, 0) * var(--stagger-fine)); }
 
-  /* Parallel dashboard blocks arrive together (Vercel's rule: staggering parallel
-     data invents a hierarchy it does not have); only ordered lists cascade, at the
-     20ms per item Linear uses. */
-  /* The page paints under the still-opaque loader (`prepaint`); the reveal only moves
-     the already-painted surface, so a heavy first layout cannot swallow the transition.
-     The 0.995 scale is the depth cue: a surface settling into place, not a zoom. */
-  #app { opacity: 0; translate: 0 6px; scale: .995; }
-  #app.prepaint { opacity: 1; }
-  #app.show { opacity: 1; }
-  #app.reveal { translate: 0 0; scale: 1; transition: translate 320ms var(--ease-out), scale 320ms var(--ease-out); }
-  #app.show .hero { animation-delay: 45ms; }
-  #app.show #split .card:nth-child(1) { animation-delay: 90ms; }
-  #app.show #split .card:nth-child(2) { animation-delay: 135ms; }
-  #app.show #split .card:nth-child(3) { animation-delay: 175ms; }
-
-  /* Entrance runs once, in the intro window; later revisions must not replay it. */
-  #app.show.intro .card { animation: card-in .44s cubic-bezier(.2,.8,.2,1) both; }
-  #app.intro .blocks i { animation: block-pop .32s cubic-bezier(.2,.8,.2,1) backwards; }
-  #app.intro .rail i { animation: grow-x .58s cubic-bezier(.2,.8,.2,1) backwards; }
-  #app.intro .tile { animation: tile-in .4s cubic-bezier(.2,.8,.2,1) backwards; }
-  #app.intro .tile:nth-child(2) { animation-delay: 55ms; }
-  #app.intro .tile:nth-child(3) { animation-delay: 110ms; }
-  #app.intro .tile:nth-child(4) { animation-delay: 165ms; }
-  #app.intro .rank-fill { animation: grow-x .65s cubic-bezier(.2,.8,.2,1) backwards; }
-  #app.intro .series-area { animation: area-in .6s ease-out backwards; }
-  #app.intro .series-line.draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-line .85s cubic-bezier(.2,.8,.2,1) forwards; }
-  #app.intro .marker { animation: marker-in .36s .48s cubic-bezier(.2,.9,.3,1.4) backwards; }
-  #app.intro .cell { animation: cell-in .3s cubic-bezier(.2,.8,.2,1) backwards; }
-  /* Ordered lists are the only place where sequence carries meaning, so they cascade
-     one row at a time; the delay is written per element as --row-i. */
-  #app.intro .rank,
-  #app.intro #modelLegend > span,
-  #app.intro #details tbody tr {
-    animation: row-in 240ms var(--ease-out) backwards;
-    animation-delay: calc(var(--row-i, 0) * 20ms);
-  }
-
-  @keyframes card-in { from { opacity: 0; translate: 0 10px; } to { opacity: 1; translate: 0 0; } }
-  @keyframes row-in { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
-  @keyframes tile-in { from { opacity: 0; translate: -7px 0; } to { opacity: 1; translate: 0 0; } }
-  @keyframes grow-x { from { scale: 0 1; } to { scale: 1 1; } }
-  @keyframes block-pop { from { opacity: .2; scale: 1 .25; } to { opacity: 1; scale: 1 1; } }
+  @keyframes section-in { from { opacity: 0; } }
+  @keyframes row-in { from { opacity: 0; translate: 0 4px; } }
+  @keyframes grow-x { from { scale: 0 1; } }
   @keyframes draw-line { to { stroke-dashoffset: 0; } }
-  @keyframes area-in { from { opacity: 0; } to { opacity: 1; } }
-  @keyframes marker-in { from { opacity: 0; scale: .2; } to { opacity: 1; scale: 1; } }
-  @keyframes cell-in { from { opacity: 0; scale: .45; } to { opacity: 1; scale: 1; } }
+  @keyframes place { from { opacity: 0; } }
   @keyframes live-pulse { 0%, 100% { opacity: .45; scale: .8; } 50% { opacity: 1; scale: 1; } }
   @keyframes port-blink { 0%, 45% { opacity: 1; } 46%, 100% { opacity: .38; } }
 }
@@ -512,12 +483,25 @@
     .hero { grid-template-columns: 1fr; }
     .hero-spark { min-inline-size: 0; }
     .activity-split { grid-template-columns: 1fr; }
+    /* On a phone the quota fills the first screen, so the usage progress docks to the
+       bottom edge as one compact strip instead of waiting below the fold. */
+    .usage-wait {
+      position: sticky; inset-block-end: 10px; z-index: 6;
+      grid-template-columns: auto minmax(0, 1fr); justify-items: start; align-items: center;
+      gap: .7rem; padding: .55rem .7rem;
+    }
+    .usage-wait .hero-label, .usage-wait .board-cap { display: none; }
+    .usage-wait .boards { order: -1; gap: .4rem; }
+    .usage-wait .pegboard {
+      inline-size: 48px; padding: 3px; border-radius: var(--r-item);
+      box-shadow: 2px 2px 0 color-mix(in oklab, var(--edge) 45%, transparent);
+    }
   }
   @media (max-width: 420px) {
     .shell { padding-inline: .6rem; }
     .seg button { padding-inline: .6rem; }
     .prov-stats { gap: .25rem; }
-    .section.card { padding-inline: .8rem !important; }
+    .card-pad { padding-inline: .8rem; }
     .quota-offline { grid-template-columns: auto minmax(0, 1fr); }
     .quota-local-ok { grid-column: 2; }
   }
@@ -528,15 +512,22 @@
      below collapses all of it. */
   /* Motion follows IBM Carbon's productive scale (carbondesignsystem.com/elements/motion):
      standard cubic-bezier(.2,0,.38,.9), entrance cubic-bezier(0,0,.38,.9), and the
-     110/150/240 ms tokens for fades, small movement and expansion. Carbon's checklist
-     keeps micro-interactions at 90-120 ms with ease-out on user input, which is what the
-     segmented pill and the card hover use. */
+     70/110/150/240/400 ms tokens for a bead landing, fades, small movement, expansion
+     and the one-time data draw. Carbon's checklist keeps micro-interactions at 90-120 ms
+     with ease-out on user input, which is what the segmented pill and the card hover use. */
   :root {
     --ease: cubic-bezier(.2, 0, .38, .9);
     --ease-out: cubic-bezier(0, 0, .38, .9);
+    --dur-micro: 70ms;
     --dur-fast: 110ms;
     --dur: 150ms;
     --dur-slow: 240ms;
+    --dur-long: 400ms;
+    /* Sequencing, not durations: one item after another (Linear's 20 ms), the finer step
+       for a meter's 28 blocks, and the caret blinking at the system rate. */
+    --stagger: 20ms;
+    --stagger-fine: 12ms;
+    --caret-blink: 1.06s;
   }
 
   /* Segmented controls: one pill slides between pressed items, so a filter change
@@ -560,25 +551,22 @@
   .prov:active { translate: 0 0; }
   .prov:focus-visible { outline: 2px solid var(--p); outline-offset: 2px; }
   .prov-figures { display: grid; min-inline-size: 0; }
-  .prov-figures > span { grid-area: 1 / 1; transition: opacity var(--dur) var(--ease-out), translate var(--dur) var(--ease-out); }
+  .prov-figures > span { grid-area: 1 / 1; color: var(--p); transition: opacity var(--dur) var(--ease-out), translate var(--dur) var(--ease-out); }
   .prov-tokens { opacity: 0; translate: 0 10px; }
   .prov[data-view="tokens"] .prov-cost { opacity: 0; translate: 0 -10px; }
   .prov[data-view="tokens"] .prov-tokens { opacity: 1; translate: 0 0; }
-  .prov[data-view="tokens"] .prov-unit-cost { display: none; }
-  .prov-unit-tokens { display: none; }
-  .prov[data-view="tokens"] .prov-unit-tokens { display: inline; }
 
-  /* A plan with no metered window says so in one line; the meters fold away. */
   .quota-head h3 { margin: 0; font-size: .75rem; font-weight: 700; }
   .quota-note { margin-inline-start: auto; color: var(--muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
   .quota-toggle {
-    inline-size: 24px; block-size: 24px; display: grid; place-items: center; flex: none;
+    inline-size: 30px; block-size: 30px; display: grid; place-items: center; flex: none;
     border: 1px solid var(--line-2); border-radius: var(--r-item); background: var(--card); color: var(--ink-2);
     cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
   }
   .quota-toggle:hover { background: var(--card-2); color: var(--ink); border-color: var(--line-2); }
   .quota-toggle svg { transition: rotate var(--dur) var(--ease-out); }
   .quota[data-open="1"] .quota-toggle svg { rotate: 90deg; }
+  /* A plan with no metered window says so in one line; the meters fold away. */
   .quota-body {
     display: grid; grid-template-rows: 1fr;
     transition: grid-template-rows var(--dur-slow) var(--ease-out), opacity var(--dur) var(--ease-out);
@@ -588,32 +576,33 @@
   /* Two open quota cards stay equal height; a folded one shrinks to its head. */
   #quota .quota[data-open="0"] { align-self: start; }
 
-  /* First paint: one block per collector step, the same block language as the
-     quota meters. The fill creeps toward the next step without passing it. */
-  .pw { display: flex; gap: 3px; inline-size: min(20rem, 56vw); flex: none; position: relative; --off: var(--card-2); padding: 2px; background: var(--card-2); box-shadow: inset 1px 1px 0 var(--line-2), inset -1px -1px 0 var(--card); }
-  .pw i {
-    position: relative; flex: 1; block-size: 10px; border-radius: 1px;
-    background: var(--off);
-    overflow: hidden;
-  }
-  .pw i b {
-    position: absolute; inset-block: 0; inset-inline-start: 0; inline-size: 0;
-    background-image: linear-gradient(90deg, #c62828 0%, #e8730c 34%, #d4b106 62%, #2ea043 100%);
-    background-size: var(--bar-w, 100%) 100%;
-    background-position-x: calc(-1 * var(--cell-x, 0px));
-    background-repeat: no-repeat;
-    border-radius: 1px;
-    transition: inline-size 220ms linear;
-  }
-  .usage-wait .copy { display: grid; gap: .1rem; }
-  #loader .pw { inline-size: min(18rem, 62vw); margin-block-start: 1.1rem; margin-inline: auto; --off: color-mix(in oklab, var(--ink) 9%, transparent); }
-  #loader .usage-progress { display: block; margin-block-start: .5rem; }
-  .usage-progress { color: var(--ink-2); font: 600 .7rem/1.4 var(--mono); font-variant-numeric: tabular-nums; }
-  .usage-wait.failed .pw { display: none; }
+  /* Beads: the pegs are punched once, row by row; a bead lands slightly large and settles;
+     ironing closes its ring and fuses it with its neighbours. The caret blinks on the
+     running step so a long step never looks frozen. */
+  .pegs > g { transition: opacity var(--dur-micro) linear; }
+  .bead { scale: 1.6; transform-box: fill-box; transform-origin: center;
+    transition: opacity var(--dur-micro) linear, scale var(--dur-fast) var(--ease-out); }
+  .bead.on { scale: 1; }
+  .bead-body, .bead-hole { transition: r var(--dur) var(--ease); }
+  .peg { transition: opacity var(--dur) linear; }
+  .wait-status .caret { animation: caret var(--caret-blink) linear infinite; }
+  @keyframes caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 
-  /* Shared micro-motion: new figures rise in, disclosures fade their body. */
+  /* Reveal: only the usage slot and the bead boards travel. The root is not captured, so
+     the quota above stays live and clickable, and the morph stays within Carbon's 240 ms. */
+  :root { view-transition-name: none; }
+  ::view-transition { pointer-events: none; }
+  ::view-transition-group(*) { animation-duration: var(--dur-slow); animation-timing-function: var(--ease); }
+  /* The wait card is taller than the hero it becomes. Clip the slot while it shrinks and
+     let the old content leave before the hero arrives (Material's fade-through), so the
+     two never print over each other or over the section below. */
+  ::view-transition-group(usage-slot) { overflow: clip; overflow-clip-margin: 4px; }
+  ::view-transition-old(usage-slot) { animation-duration: var(--dur-micro); }
+  ::view-transition-new(usage-slot) { animation-delay: var(--dur-micro); animation-duration: var(--dur); }
+
+  /* Shared micro-motion: a figure the reader re-scoped rises in, disclosures fade their body. */
   @keyframes fig-in { from { opacity: 0; translate: 0 7px; } to { opacity: 1; translate: 0 0; } }
-  #app.intro .is-new { animation: fig-in var(--dur-slow) var(--ease-out); }
+  .is-new { animation: fig-in var(--dur-slow) var(--ease-out); }
   details[open] > *:not(summary) { animation: fade-in var(--dur) var(--ease-out); }
   @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
   details > summary svg.chev { transition: rotate var(--dur) var(--ease-out); }
@@ -621,22 +610,13 @@
   .rank-fill { transition: inline-size var(--dur-slow) var(--ease-out); }
   .meter .blocks i { transition: inline-size var(--dur-slow) var(--ease-out); }
 
-  /* Click feedback for the motion switch: a short toast that stays readable even
-     when the OS asks for reduced motion (it only fades). */
-  .toast {
-    position: fixed; top: 66px; right: 24px; z-index: 95; pointer-events: none;
-    background: var(--card); border: 1px solid var(--line-2); border-radius: var(--r-card);
-    box-shadow: var(--shadow); padding: .5rem .8rem; font-size: .75rem;
-    opacity: 0; translate: 8px 0; transition: opacity 200ms ease, translate 200ms ease;
-  }
-  .toast.show { opacity: 1; translate: 0 0; }
-
   /* The OS preference is a default, not a verdict: the topbar switch writes
      data-motion="full" and the page plays its motion anyway. */
   @media (prefers-reduced-motion: reduce) {
-    html:not([data-motion="full"]) .boot-line::after { animation: none; inline-size: 100%; }
     html:not([data-motion="full"]) *, html:not([data-motion="full"]) *::before, html:not([data-motion="full"]) *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
   }
+  /* The topbar switch can also turn motion off when the OS allows it. */
+  html[data-motion="off"] *, html[data-motion="off"] *::before, html[data-motion="off"] *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
   @media (pointer: coarse) { .seg button, .iconbtn { min-block-size: 42px; } }
 }
 </style>
@@ -1145,22 +1125,13 @@
   </symbol>
 </defs></svg>
 
-<div id="loader" role="status" aria-live="polite">
-  <div class="boot">
-    <span class="brand-badge"><svg aria-hidden="true"><use href="#i-mark"/></svg></span>
-    <p id="bootMessage">读取本地用量…</p>
-    <div class="pw" id="bootProgress" role="progressbar" aria-valuemin="0" aria-valuemax="9" aria-valuenow="0"><i></i></div>
-    <span class="usage-progress" id="bootProgressLabel"></span>
-  </div>
-</div>
-
-<main class="shell" id="app">
+<main class="shell usage-pending" id="app">
   <header class="topbar">
     <div class="brand">
       <span class="brand-badge"><svg aria-hidden="true"><use href="#i-mark"/></svg></span>
       <div>
         <h1><span class="wordmark" id="wordmark"></span><span class="sr-only">AI Usage</span></h1>
-        <p id="stamp" role="status" aria-live="polite" aria-atomic="true">等待数据</p>
+        <p id="stamp" role="status" aria-live="polite" aria-atomic="true">正在读取本地数据…</p>
       </div>
     </div>
     <div class="topbar-actions">
@@ -1171,13 +1142,15 @@
         <button type="button" data-filter="codex" aria-pressed="false"><svg width="26" height="26" aria-hidden="true"><use href="#i-codex"/></svg><span translate="no">Codex</span></button>
         <button type="button" data-filter="deepseek" aria-pressed="false" hidden><svg width="26" height="26" aria-hidden="true"><use href="#i-deepseek"/></svg><span translate="no">DeepSeek</span></button>
       </div>
-      <button type="button" class="iconbtn" id="motionBtn" aria-pressed="false" aria-label="动效">
-        <svg width="18" height="18" aria-hidden="true"><use href="#i-motion"/></svg><span class="sr-only">始终播放动效</span>
-      </button>
-      <select id="currencySel" class="cur" aria-label="显示货币" hidden></select>
-      <button type="button" class="iconbtn" id="themeBtn" aria-pressed="false" aria-label="深色主题">
-        <svg width="18" height="18" aria-hidden="true"><use href="#i-theme"/></svg><span class="sr-only">深色主题</span>
-      </button>
+      <div class="topbar-tools">
+        <button type="button" class="iconbtn" id="motionBtn" aria-pressed="false" aria-label="动效">
+          <svg width="18" height="18" aria-hidden="true"><use href="#i-motion"/></svg><span class="sr-only">动效</span>
+        </button>
+        <select id="currencySel" class="cur" aria-label="显示货币" hidden></select>
+        <button type="button" class="iconbtn" id="themeBtn" aria-pressed="false" aria-label="深色主题">
+          <svg width="18" height="18" aria-hidden="true"><use href="#i-theme"/></svg><span class="sr-only">深色主题</span>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -1186,21 +1159,18 @@
     <span class="live">会话数据不会上传</span>
   </p>
 
-  <section class="section" aria-label="当前额度" style="margin-block-start:.75rem">
+  <section class="section" aria-label="当前额度">
     <h2 class="sr-only">当前额度</h2>
     <div class="grid-2" id="quota"></div>
   </section>
 
-  <section class="card usage-wait" role="status" aria-live="polite">
-    <div class="pw" role="progressbar" aria-valuemin="0" aria-valuemax="6" aria-valuenow="0" aria-label="采集进度"><i></i></div>
-    <div class="copy">
-      <p>正在读取本地用量…</p>
-      <span class="usage-progress"></span>
-    </div>
+  <section class="card usage-wait" id="usageWait">
+    <p class="hero-label" id="waitLabel">合计 · API 参考价</p>
+    <div class="boards" id="boards" role="progressbar" aria-label="用量汇总进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+    <p class="wait-status" role="status" aria-live="polite"><span id="bootMessage">读取额度与本地记录</span><i class="caret" aria-hidden="true"></i></p>
   </section>
 
   <section class="card hero usage-block" aria-label="合计参考成本">
-    <div class="sweep" id="heroSweep" aria-hidden="true"></div>
     <div>
       <p class="hero-label" id="heroLabel">合计 · API 参考价</p>
       <span class="hero-figure" id="heroFigure"></span>
@@ -1209,9 +1179,23 @@
     <div class="hero-facts" id="heroFacts"></div>
   </section>
 
-  <section class="grid-2 usage-block" id="split" aria-label="提供商成本对比" style="margin-block-start:.75rem"></section>
+  <section class="section usage-block">
+    <div class="section-head">
+      <h2 class="h2">提供商对比</h2>
+      <span class="cap">点击卡片切换成本 / tokens</span>
+      <div class="tools">
+        <span class="cap">Tokens 单位</span>
+        <div class="seg" id="unitSeg" role="group" aria-label="Tokens 单位">
+          <button type="button" data-unit="auto" aria-pressed="true">K/M/B</button>
+          <button type="button" data-unit="cn" aria-pressed="false">万·亿</button>
+          <button type="button" data-unit="exact" aria-pressed="false">精确</button>
+        </div>
+      </div>
+    </div>
+    <div class="grid-2" id="split"></div>
+  </section>
 
-  <section class="section card usage-block" style="padding:1rem 1.1rem">
+  <section class="section card card-pad usage-block">
     <div class="section-head">
       <h2 class="h2">每日参考成本</h2>
       <div class="tools">
@@ -1227,7 +1211,7 @@
     <div class="scroller hide" id="trendTable"></div>
   </section>
 
-  <section class="section card usage-block" style="padding:1rem 1.1rem">
+  <section class="section card card-pad usage-block">
     <div class="section-head">
       <h2 class="h2">活跃度与时段</h2>
       <span class="total tools" id="heatRange"></span>
@@ -1246,7 +1230,7 @@
   </section>
 
   <section class="section grid-2 usage-block">
-    <div class="card" style="padding:1rem 1.1rem">
+    <div class="card card-pad">
       <div class="section-head">
         <h2 class="h2">模型构成</h2>
         <span class="total tools" id="modelTotal"></span>
@@ -1254,7 +1238,7 @@
       <div class="chart-box" id="modelDonut"></div>
       <p class="legend" id="modelLegend" style="margin-block-start:.7rem"></p>
     </div>
-    <div class="card" style="padding:1rem 1.1rem">
+    <div class="card card-pad">
       <div class="section-head">
         <h2 class="h2">项目排行</h2>
         <span class="total tools" id="projectTotal"></span>
@@ -1295,11 +1279,22 @@ addEventListener("error", function (event) {
   // the way it was left instead of guessing again.
   var PREF_KEY = "ai-usage-ledger-prefs";
   var prefs = (function () {
+    var parsed = null;
     try {
       var raw = localStorage.getItem(PREF_KEY);
-      var parsed = raw ? JSON.parse(raw) : null;
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch (e) { return {}; }
+      parsed = raw ? JSON.parse(raw) : null;
+    } catch (e) {}
+    function plain(v) { return !!v && typeof v === "object" && !Array.isArray(v); }
+    if (!plain(parsed)) return {};
+    // Every file:// page shares this store, so an older build or any other local page may
+    // have written it: nested maps that are not plain objects are dropped and rebuilt on
+    // the next write, instead of throwing on the first property assignment.
+    ["quota", "view", "lastQuota", "quotaShape"].forEach(function (key) {
+      if (parsed[key] != null && !plain(parsed[key])) delete parsed[key];
+    });
+    if (parsed.lastProviders != null && !(Array.isArray(parsed.lastProviders) &&
+        parsed.lastProviders.every(function (p) { return typeof p === "string"; }))) delete parsed.lastProviders;
+    return parsed;
   })();
   function savePrefs() {
     try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) {}
@@ -1307,17 +1302,6 @@ addEventListener("error", function (event) {
 
   function $(id) { return document.getElementById(id); }
 
-  var bootMessages = [
-    "读取本地用量…",
-    "获取 Claude 额度…",
-    "计算参考成本…",
-    "生成报表…"
-  ];
-  var bootIndex = 0;
-  var bootTimer = setInterval(function () {
-    bootIndex = (bootIndex + 1) % bootMessages.length;
-    $("bootMessage").textContent = bootMessages[bootIndex];
-  }, 1700);
   window.__fail__ = function () {
     var failure = window.__GENERATION_FAILURE__ || {};
     if (["initial_generation_failed", "partial_generation_failed"].indexOf(failure.reason) < 0 ||
@@ -1327,20 +1311,18 @@ addEventListener("error", function (event) {
     if (data && String(failure.runId || "") !== String(data.runId || "")) return;
     if (!data && failure.reason !== "initial_generation_failed") return;
     terminalFailure = true;
-    clearInterval(bootTimer);
     if (data) {
       renderQuota();
       var stamp = $("stamp");
       if (!stamp.textContent.includes("数据生成失败")) {
         stamp.textContent = stamp.textContent.replace(" · 更新中", " · 数据生成失败，请重新启动");
       }
-      var wait = document.querySelector(".usage-wait");
-      if (wait) {
-        wait.classList.add("failed");
-        wait.querySelector("p").textContent = "本地用量读取失败，请重新启动";
-      }
+      if (usageReady()) revealUsage();
+      else waitFailed("本地用量读取失败，请重新启动");
     } else {
-      $("bootMessage").textContent = "数据生成失败，请重新启动";
+      $("stamp").textContent = "数据生成失败";
+      bootQuota("未读取");
+      waitFailed("数据生成失败，请重新启动");
     }
   };
 
@@ -1419,23 +1401,26 @@ addEventListener("error", function (event) {
     return convertToShown(n(v) * legacy);
   }
   var TOKEN_UNITS = ["auto", "cn", "exact"];
-  var TOKEN_UNIT_LABEL = { auto: "K/M/B", cn: "万·亿", exact: "精确" };
   function tokenUnit() {
     return TOKEN_UNITS.indexOf(prefs.tokenUnit) >= 0 ? prefs.tokenUnit : "auto";
   }
-  function kmb(v) {
+  function kmbParts(v) {
     v = n(v);
     var unit = tokenUnit();
-    if (unit === "exact") return int(v);
+    if (unit === "exact") return { num: int(v), unit: "" };
     if (unit === "cn") {
-      if (v >= 1e8) return (v / 1e8).toFixed(1) + "亿";
-      if (v >= 1e4) return (v / 1e4).toFixed(1) + "万";
-      return int(v);
+      if (v >= 1e8) return { num: (v / 1e8).toFixed(1), unit: "亿" };
+      if (v >= 1e4) return { num: (v / 1e4).toFixed(1), unit: "万" };
+      return { num: int(v), unit: "" };
     }
-    if (v >= 1e9) return (v / 1e9).toFixed(v >= 1e10 ? 1 : 2) + "B";
-    if (v >= 1e6) return (v / 1e6).toFixed(v >= 1e7 ? 1 : 2) + "M";
-    if (v >= 1e3) return (v / 1e3).toFixed(v >= 1e4 ? 1 : 2) + "K";
-    return int(v);
+    if (v >= 1e9) return { num: (v / 1e9).toFixed(v >= 1e10 ? 1 : 2), unit: "B" };
+    if (v >= 1e6) return { num: (v / 1e6).toFixed(v >= 1e7 ? 1 : 2), unit: "M" };
+    if (v >= 1e3) return { num: (v / 1e3).toFixed(v >= 1e4 ? 1 : 2), unit: "K" };
+    return { num: int(v), unit: "" };
+  }
+  function kmb(v) {
+    var parts = kmbParts(v);
+    return parts.num + parts.unit;
   }
   function clock(v) {
     var d = new Date(v);
@@ -1533,6 +1518,19 @@ addEventListener("error", function (event) {
     var count = String(text).toUpperCase().split("").filter(function (c) { return GLYPHS[c]; }).length;
     return count ? (count * 6 - 1) * px : 0;
   }
+  // Currency codes are set as small text, not giant pixel letters, so the width
+  // estimate has to ignore them the same way `figure` does.
+  function figureWidth(text) {
+    var value = String(text), lead = /^([A-Z]{3})\s+/.exec(value);
+    if (lead && lead[1] !== "USD") value = value.slice(lead[0].length);
+    return pixelWidth(value, 1);
+  }
+  // The prefix is fixed 12px text, so it is reserved in CSS pixels, not
+  // pixel-grid units; `figureWidth` deliberately covers only the numerals.
+  function figurePrefixReserve(text) {
+    var lead = /^([A-Z]{3})\s+/.exec(String(text));
+    return lead && lead[1] !== "USD" ? 28 : 0;
+  }
   // `pos` places the result inside another SVG; omit it for inline HTML use.
   function pixel(text, px, color, pos) {
     var chars = String(text).toUpperCase().split("").filter(function (c) { return GLYPHS[c]; });
@@ -1558,8 +1556,34 @@ addEventListener("error", function (event) {
       ' width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h +
       '" aria-hidden="true" focusable="false" fill="' + (color || "currentColor") + '" shape-rendering="crispEdges">' + rects + "</svg>";
   }
-  function figure(text, px, color) {
-    return pixel(text, px, color) + '<span class="sr-only">' + esc(text) + "</span>";
+  function figure(text, px, color, unit) {
+    text = String(text);
+    var prefix = "", lead = /^([A-Z]{3})\s+/.exec(text);
+    if (lead && lead[1] !== "USD") { prefix = lead[1]; text = text.slice(lead[0].length); }
+    var out = prefix ? '<span class="fig-prefix" aria-hidden="true">' + esc(prefix) + "</span>" : "";
+    var glyphs = "", symbols = "";
+    var unitPx = Math.max(12, Math.min(16, Math.round(px * 3.2)));
+    var unitStyle = ' style="font-size:' + unitPx + 'px"';
+    // Latin K/M/B caps sit lower than a full-height CJK glyph at the same font
+    // size, so scale the Latin suffix until its cap height matches 万/亿 — the
+    // number and its unit then read as one system instead of two sizes.
+    var latinUnit = /^[A-Z]+$/.test(unit || "");
+    var suffixClass = "fig-unit" + (latinUnit ? " fig-unit-latin" : "");
+    var suffixStyle = ' style="font-size:' + (latinUnit ? Math.round(unitPx * 1.35) : unitPx) + 'px"';
+    function flushGlyphs() { if (glyphs) { out += pixel(glyphs, px, color); glyphs = ""; } }
+    function flushSymbols() {
+      if (!symbols) return;
+      out += '<span class="fig-unit" aria-hidden="true"' + unitStyle + ">" + esc(symbols) + "</span>";
+      symbols = "";
+    }
+    for (var i = 0; i < text.length; i++) {
+      var ch = text.charAt(i);
+      if (GLYPHS[ch.toUpperCase()]) { flushSymbols(); glyphs += ch; }
+      else { flushGlyphs(); symbols += ch; }
+    }
+    flushGlyphs(); flushSymbols();
+    if (unit) out += '<span class="' + suffixClass + '" aria-hidden="true"' + suffixStyle + ">" + esc(unit) + "</span>";
+    return out + '<span class="sr-only">' + esc(prefix ? prefix + " " + text : text) + esc(unit || "") + "</span>";
   }
 
   var PROVIDER_NAME = { claude: "Claude", codex: "Codex", deepseek: "DeepSeek" };
@@ -1567,13 +1591,13 @@ addEventListener("error", function (event) {
   function pname(p) { return PROVIDER_NAME[p] || p; }
   function pcolor(p) { return PROVIDER_COLOR[p] || "var(--muted)"; }
   function shown() { return filter === "all" ? providerList() : [filter]; }
-  // The snapshot names the providers it actually produced. A user with no local
-  // DeepSeek record keeps the two-provider page it has always had.
+  // The snapshot names the providers the run shows: its plan until the first report
+  // lands, then what the published reports carry. A user with no local DeepSeek record
+  // keeps the two-provider page it has always had.
   function providerList() {
     var list = data && data.providers;
     return Array.isArray(list) && list.length ? list : ["claude", "codex"];
   }
-  function hasProvider(p) { return providerList().indexOf(p) >= 0; }
   function report(p, key) {
     var slot = data && data.reports && data.reports[key || period];
     return (slot && slot[p]) || {};
@@ -1620,12 +1644,21 @@ addEventListener("error", function (event) {
     var sizing = fixedWidth ? ' style="inline-size:' + w + 'px;min-inline-size:' + w + 'px"' : "";
     return '<svg class="chart"' + sizing + ' width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" role="group" aria-label="' + esc(label) + '">';
   }
+  // Shared tooltip placement: above the anchor when it fits, below otherwise,
+  // then clamped to the viewport.
+  function placeTip(tip, x, y, belowY) {
+    var gap = 12, pad = 8;
+    var w = tip.offsetWidth, h = tip.offsetHeight;
+    var left = Math.max(pad, Math.min(x + gap, innerWidth - w - pad));
+    var top = y - h - gap;
+    if (top < pad) top = (belowY == null ? y : belowY) + gap;
+    top = Math.max(pad, Math.min(top, innerHeight - h - pad));
+    tip.style.insetInlineStart = left + "px";
+    tip.style.insetBlockStart = top + "px";
+  }
   function wireHover(host) {
     var tip = $("tip");
-    function position(x, y) {
-      tip.style.insetInlineStart = Math.max(8, Math.min(x + 14, innerWidth - tip.offsetWidth - 8)) + "px";
-      tip.style.insetBlockStart = Math.max(8, Math.min(y - 14, innerHeight - tip.offsetHeight - 8)) + "px";
-    }
+    function position(x, y, belowY) { placeTip(tip, x, y, belowY); }
     function show(el, x, y) {
       tip.textContent = el.dataset.tip;
       tip.style.opacity = "1";
@@ -1633,8 +1666,10 @@ addEventListener("error", function (event) {
         var box = el.getBoundingClientRect();
         x = box.left + box.width / 2;
         y = box.top;
+        position(x, y, box.bottom);
+      } else {
+        position(x, y);
       }
-      position(x, y);
     }
     function hide() { tip.style.opacity = "0"; }
     var items = Array.from(host.querySelectorAll("[data-tip]"));
@@ -1674,6 +1709,42 @@ addEventListener("error", function (event) {
       }, true);
     }
   }
+  // Non-chart [data-tip] elements use the same card as the chart tooltip.
+  // This controller leaves tabindex/role untouched: buttons keep their button
+  // semantics and plain labels stay non-focusable.
+  function initTipTips() {
+    var tip = $("tip");
+    function owner(target) {
+      if (!target || !target.closest) return null;
+      var el = target.closest("[data-tip]");
+      return el && !el.closest(".chart") ? el : null;
+    }
+    function show(el) {
+      tip.textContent = el.dataset.tip;
+      tip.style.opacity = "1";
+      var box = el.getBoundingClientRect();
+      placeTip(tip, box.left + box.width / 2, box.top, box.bottom);
+    }
+    function hide() { tip.style.opacity = "0"; }
+    document.addEventListener("pointerover", function (e) {
+      var el = owner(e.target);
+      if (!el || (e.relatedTarget && el.contains(e.relatedTarget))) return;
+      show(el);
+    });
+    document.addEventListener("pointerout", function (e) {
+      var el = owner(e.target);
+      if (!el || (e.relatedTarget && el.contains(e.relatedTarget))) return;
+      hide();
+    });
+    document.addEventListener("focusin", function (e) {
+      var el = owner(e.target);
+      if (el) show(el);
+    });
+    document.addEventListener("focusout", function (e) {
+      var el = owner(e.target);
+      if (el) hide();
+    });
+  }
   function niceMax(v) {
     if (v <= 0) return 1;
     var mag = Math.pow(10, Math.floor(Math.log10(v)));
@@ -1695,9 +1766,15 @@ addEventListener("error", function (event) {
     var out = "";
     for (var i = 0; i < blocks; i++) {
       var at = (i + 1) / blocks * 100;
-      out += '<i style="background:' + (i < filled ? sevColor(at) : "var(--card-2)") + '"></i>';
+      // --i orders the one-time placement when the first real answer lands.
+      out += '<i style="--i:' + i + ";background:" + (i < filled ? sevColor(at) : "var(--card-2)") + '"></i>';
     }
     return '<div class="blocks" style="--off:var(--card-2)" aria-hidden="true">' + out + "</div>";
+  }
+  // cells: [label, value] pairs already escaped by the caller.
+  function statsRow(cells, ruled) {
+    return '<div class="prov-stats"' + (ruled ? ' style="border-block-start:1px solid var(--line);padding-block-start:.65rem"' : "") + ">" +
+      cells.map(function (cell) { return "<div><span>" + cell[0] + "</span><b>" + cell[1] + "</b></div>"; }).join("") + "</div>";
   }
   function meterRow(label, pct, resetsAt, note) {
     var sev = sevColor(pct);
@@ -1871,6 +1948,7 @@ addEventListener("error", function (event) {
     return used == null ? "" : "剩余 " + Math.max(0, 100 - used).toFixed(0) + "%";
   }
 
+  var lastQuotaHtml = null;
   function renderQuota() {
     var host = $("quota"), out = [];
     var q = (data.limits && data.limits.claudeQuota) || {};
@@ -1908,6 +1986,9 @@ addEventListener("error", function (event) {
           alarm = '<p class="alarm"><svg aria-hidden="true"><use href="#i-alert"/></svg>' +
             (q.stale ? "缓存显示 " + esc(names.join("、")) + "已用尽，当前状态待刷新" : esc(names.join("、")) + "已用尽，相关请求会被拒绝") + "</p>";
         }
+      } else if (settled(q.reason) === "loading") {
+        // Still being read: hold the remembered shape instead of collapsing to one line.
+        rows = skeletonRows("claude", false);
       } else {
         rows = '<p class="empty">' + esc(quotaReason(settled(q.reason))) + (usageReady() ? "，本地用量统计仍可查看。" : "") + "</p>";
       }
@@ -1950,7 +2031,7 @@ addEventListener("error", function (event) {
         extra = windowStats(pending, pending, pending);
       }
 
-      var claudeSummary = "";
+      var claudeSummary = !q.ok && settled(q.reason) === "loading" ? "正在获取额度" : "";
       if (q.ok && q.fiveHour && q.fiveHour.utilization != null) {
         claudeSummary = "剩余 " + Math.max(0, 100 - n(q.fiveHour.utilization)).toFixed(0) + "%";
       }
@@ -2010,10 +2091,10 @@ addEventListener("error", function (event) {
         // A ChatGPT login never consults the relay, so its own reason is the one to show.
         var codexReason = settled(cq.reason === "official_account" || !cq.reason ? off.reason : cq.reason);
         var quotaLoading = codexReason === "loading" && data.complete === false;
-        body = '<div class="quota-offline" role="status">' +
+        // Still being read: hold the remembered shape; the head says it is loading.
+        body = quotaLoading ? skeletonRows("codex", true) : '<div class="quota-offline" role="status">' +
           '<span class="quota-port" aria-hidden="true"><i></i><i></i><i></i><i></i></span>' +
-          '<span class="quota-offline-copy"><b>' + (quotaLoading ? "正在获取额度" : "暂无额度数据") +
-          "</b><span>" + (quotaLoading ? "稍候自动更新" : esc(codexQuotaReason(codexReason))) + "</span></span>" +
+          '<span class="quota-offline-copy"><b>暂无额度数据</b><span>' + esc(codexQuotaReason(codexReason)) + "</span></span>" +
           (usageReady() ? '<span class="quota-local-ok">本地统计正常</span>' : "") + "</div>";
       }
       var codexWindowMetered = codexMetered(off, cq);
@@ -2030,7 +2111,7 @@ addEventListener("error", function (event) {
         savePrefs();
       }
       if (codexShow) {
-        var codexSummary = codexWindowMetered
+        var codexSummary = quotaLoading ? "正在获取额度" : codexWindowMetered
           ? codexHeadline(off, cq)
           : (codexPlanLabel ? codexPlanLabel + " · " : "") + "无计量额度";
         out.push(quotaCard("codex", "Codex 额度", "var(--codex)", body, codexSummary,
@@ -2039,8 +2120,18 @@ addEventListener("error", function (event) {
     }
 
     var nextQuotaHtml = out.join("");
-    if (nextQuotaHtml === host.innerHTML) return;
+    // Compared with what was generated last, not with innerHTML: the browser re-serializes
+    // markup (`<use/>` comes back as `<use></use>`), so the DOM never equals the string.
+    if (nextQuotaHtml === lastQuotaHtml) return;
+    lastQuotaHtml = nextQuotaHtml;
+    var fresh = ["claude", "codex"].filter(function (key) {
+      var card = host.querySelector('.quota[data-q="' + key + '"]');
+      return !!card && (card.classList.contains("is-placeholder") || !!card.querySelector(".is-skeleton"));
+    });
     host.innerHTML = nextQuotaHtml;
+    holdQuotaBoxes();
+    rememberQuotaShape();
+    if (motionEffective()) placeQuota(fresh);
   }
 
   /* ─────────────────────────────── ② hero ── */
@@ -2061,6 +2152,13 @@ addEventListener("error", function (event) {
   }
   function rowTotal(r) { return shown().reduce(function (s, p) { return s + r[p]; }, 0); }
 
+  // Shared by the hero and the usage wait card, so the label does not change when one
+  // becomes the other.
+  function heroLabelText(providers) {
+    var suffix = filter === "deepseek" ? " · 实际计费"
+      : (filter === "all" && providers.indexOf("deepseek") >= 0 ? " · 合计成本" : " · API 参考价");
+    return (filter === "all" ? providers.map(pname).join(" + ") + " 合计" : pname(filter)) + suffix;
+  }
   var lastHeroScope = null;
   function renderHero() {
     var sel = shown();
@@ -2073,9 +2171,7 @@ addEventListener("error", function (event) {
     var toks = sum(sel.map(function (p) { return tokTotal(tokens(p)); }));
     var cr = sum(sel.map(function (p) { return n(tokens(p).cacheRead); }));
 
-    var suffix = filter === "deepseek" ? " · 实际计费"
-      : (filter === "all" && hasProvider("deepseek") ? " · 合计成本" : " · API 参考价");
-    $("heroLabel").textContent = (filter === "all" ? shown().map(pname).join(" + ") + " 合计" : pname(filter)) + suffix;
+    $("heroLabel").textContent = heroLabelText(shown());
     var nextHeroText = money(total, false);
     var heroChanged = window.__heroFigureText != null && window.__heroFigureText !== nextHeroText;
     window.__heroFigureText = nextHeroText;
@@ -2083,8 +2179,7 @@ addEventListener("error", function (event) {
     if (heroChanged && scopeChanged) pulse($("heroFigure"));
     $("heroFacts").innerHTML = [
       ["调用", int(calls)], ["会话", int(sess)],
-      ["Tokens" + '<button class="unit-btn" type="button" aria-label="切换 tokens 单位">' +
-        TOKEN_UNIT_LABEL[tokenUnit()] + "</button>", kmb(toks)],
+      ["Tokens", kmb(toks)],
       ["缓存读占比", (toks ? (cr / toks * 100).toFixed(1) : "0") + "%"]
     ].map(function (f) { return "<div><span>" + f[0] + "</span><b>" + f[1] + "</b></div>"; }).join("");
 
@@ -2110,24 +2205,57 @@ addEventListener("error", function (event) {
 
   function fitHeroFigure() {
     var host = $("heroFigure"), text = window.__heroFigureText || "$0.00";
-    var available = Math.max(120, Math.floor(host.parentElement.clientWidth || 0));
-    var px = Math.max(3, Math.min(7, Math.floor((available - 2) / Math.max(1, pixelWidth(text, 1)))));
+    var available = Math.max(120, Math.floor(host.parentElement.clientWidth || 0)) - figurePrefixReserve(text);
+    var px = Math.max(3, Math.min(7, Math.floor((available - 2) / Math.max(1, figureWidth(text)))));
     host.innerHTML = figure(text, px, "var(--claude)");
   }
   function fitProviderFigures() {
-    // One scale per card: the cost string decides the pixel size and the token view
-    // inherits it, so toggling never resizes the figure under the cursor.
-    document.querySelectorAll(".prov").forEach(function (card) {
-      var hosts = Array.prototype.slice.call(card.querySelectorAll(".prov-figures [data-figure-text]"));
-      if (!hosts.length) return;
-      var reference = hosts[0].dataset.figureText || "";
-      var available = Math.max(96, Math.floor(hosts[0].parentElement.clientWidth || 0));
-      var px = Math.max(2, Math.min(5, Math.floor((available - 2) / Math.max(1, pixelWidth(reference, 1)))));
-      hosts.forEach(function (host) {
+    // Cost and tokens are independent scales: each view sizes from its own widest
+    // figure, so changing the token unit (K/M/B -> 精确) cannot shrink the cost.
+    var cards = Array.prototype.slice.call(document.querySelectorAll(".prov"));
+    if (!cards.length) return;
+    var rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    var captionReserve = Math.round(96 * rootPx / 16);
+    var buckets = { cost: { maxWidth: 0, minAvailable: Infinity }, tokens: { maxWidth: 0, minAvailable: Infinity } };
+    var items = cards.map(function (card) {
+      var row = card.querySelector(".prov-cost-row");
+      var available = Math.max(96, (row ? row.clientWidth : card.clientWidth) - captionReserve);
+      var hosts = {};
+      ["cost", "tokens"].forEach(function (view) {
+        var host = card.querySelector(".prov-" + view);
+        if (!host) return;
+        hosts[view] = host;
+        var hostAvailable = available - figurePrefixReserve(host.dataset.figureText || "");
+        buckets[view].minAvailable = Math.min(buckets[view].minAvailable, hostAvailable);
+        buckets[view].maxWidth = Math.max(buckets[view].maxWidth, figureWidth(host.dataset.figureText || ""));
+      });
+      return hosts;
+    });
+    var px = {
+      cost: Math.max(2, Math.min(5, Math.floor((buckets.cost.minAvailable - 2) / Math.max(1, buckets.cost.maxWidth)))),
+      tokens: Math.max(2, Math.min(5, Math.floor((buckets.tokens.minAvailable - 2) / Math.max(1, buckets.tokens.maxWidth))))
+    };
+    items.forEach(function (hosts) {
+      ["cost", "tokens"].forEach(function (view) {
+        var host = hosts[view];
+        if (!host) return;
         var text = host.dataset.figureText || "";
         if (!text) { host.innerHTML = ""; return; }
-        host.innerHTML = figure(text, px, getComputedStyle(host).color);
+        var caption = host.dataset.figureCaption || "";
+        host.innerHTML = figure(text, px[view], getComputedStyle(host).color, host.dataset.figureUnit || "") +
+          (caption ? '<span class="fig-caption">' + esc(caption) + "</span>" : "");
       });
+    });
+  }
+  function fitTileFigures() {
+    // Tiles are narrow, so fit the widest figure to the tile's content box and
+    // clamp; a wide $123,456.78 must not spill into the next tile.
+    Array.prototype.slice.call(document.querySelectorAll("#activityTiles .tile .big")).forEach(function (host) {
+      var text = host.dataset.figureText || "";
+      if (!text) { host.innerHTML = ""; return; }
+      var available = Math.max(2, host.clientWidth || 0);
+      var px = Math.max(2, Math.min(4, Math.floor((available - 2) / Math.max(1, figureWidth(text)))));
+      host.innerHTML = figure(text, px, host.parentElement.style.getPropertyValue("--tint") || "var(--ink)");
     });
   }
 
@@ -2145,7 +2273,8 @@ addEventListener("error", function (event) {
         return '<span><i style="background:' + k.css + '"></i>' + k.label + " <b>" + kmb(t[k.key]) + "</b></span>";
       }).join("");
       var costText = money(cost(p));
-      var tokenText = kmb(tokTotal(t));
+      var tokenParts = kmbParts(tokTotal(t));
+      var tokenText = tokenParts.num;
       var view = prefs.view && prefs.view[p] === "tokens" ? "tokens" : "cost";
       return '<article class="card prov" style="--p:' + pcolor(p) + '" data-p="' + p +
         '" data-view="' + view + '" role="button" tabindex="0" aria-pressed="' + (view === "tokens") +
@@ -2154,11 +2283,9 @@ addEventListener("error", function (event) {
         '<span translate="no">' + pname(p) + "</span></span>" +
         '<span class="prov-share">' + (grand ? (cost(p) / grand * 100).toFixed(1) : "0") + "%</span></div>" +
         '<div class="prov-cost-row"><span class="prov-figures">' +
-        '<span class="prov-cost" data-figure-text="' + esc(costText) + '"></span>' +
-        '<span class="prov-tokens" data-figure-text="' + esc(tokenText) + '"></span>' +
-        "</span>" +
-        '<span class="prov-unit-cost">' + (p === "deepseek" ? "实际计费" : "API 参考价") + "</span>" +
-        '<span class="prov-unit-tokens">tokens</span></div>' +
+        '<span class="prov-cost" data-figure-text="' + esc(costText) + '" data-figure-caption="' + (p === "deepseek" ? "实际计费" : "API 参考价") + '"></span>' +
+        '<span class="prov-tokens" data-figure-text="' + esc(tokenText) + '" data-figure-unit="' + esc(tokenParts.unit) + '" data-figure-caption="tokens"></span>' +
+        "</span></div>" +
         '<div class="prov-stats">' +
           "<div><span>调用</span><b>" + int(o.calls) + "</b></div>" +
           "<div><span>会话</span><b>" + int(o.sessions) + "</b></div>" +
@@ -2280,9 +2407,8 @@ addEventListener("error", function (event) {
       ["最长连续", int(best) + " 天", "本周期", "var(--c4)"],
       ["单日峰值", money(peak.value), peak.date, "var(--claude)"]
     ].map(function (t) {
-      var tileScale = String(t[1]).length > 6 ? 3 : 4;
       return '<article class="tile" style="--tint:' + t[3] + '"><span>' + t[0] + "</span>" +
-        '<span class="big">' + figure(t[1], tileScale, t[3]) + "</span><em>" + esc(t[2]) + "</em></article>";
+        '<span class="big" data-figure-text="' + esc(String(t[1])) + '"></span><em>' + esc(t[2]) + "</em></article>";
     }).join("");
 
     var sorted = active.map(function (x) { return x.value; }).sort(function (a, b) { return a - b; });
@@ -2332,10 +2458,11 @@ addEventListener("error", function (event) {
 
     $("heatLegend").innerHTML =
       '<span><i style="background:var(--card-2);border:1px dashed var(--line-2)"></i>无用量</span>' +
-      '<span class="heat-scale">低' + RAMP.map(function (c, i) { return '<i style="background:' + c + '" title="强度 ' + (i + 1) + '/5"></i>'; }).join("") + "高</span>" +
+      '<span class="heat-scale">低' + RAMP.map(function (c, i) { return '<i style="background:' + c + '" data-tip="强度 ' + (i + 1) + '/5"></i>'; }).join("") + "高</span>" +
       (sorted.length ? '<span class="heat-bounds">对数色阶 <b>' + money(scaleLow) + '</b>–<b>' + money(scaleHigh) + '</b></span>' : '');
 
     renderHours(rows);
+    fitTileFigures();
   }
 
   function renderHours(rows) {
@@ -2468,9 +2595,12 @@ addEventListener("error", function (event) {
     if (!projects.length) { host.innerHTML = '<p class="empty">当前筛选暂无项目数据</p>'; return; }
     var max = Math.max.apply(null, projects.map(function (x) { return n(x.item.cost); }).concat([1]));
     host.innerHTML = projects.slice(0, 8).map(function (x, index) {
-      var it = x.item, name = it.name || it.path || "未命名项目";
+      var it = x.item, name = it.name || it.path || "未命名项目", path = it.path || "";
+      var nameAttrs = path
+        ? ' tabindex="0" data-tip="' + esc(path) + '" aria-label="' + esc(name + "，路径 " + path) + '"'
+        : "";
       return '<div class="rank" style="--p:' + pcolor(x.p) + ';--row-i:' + Math.min(index, 12) + '">' +
-        '<div class="rank-name"><b title="' + esc(it.path || name) + '">' + esc(name) + "</b>" +
+        '<div class="rank-name"><b' + nameAttrs + ">" + esc(name) + "</b>" +
         '<span translate="no">' + pname(x.p) + " · " + int(it.sessions) + " 会话</span></div>" +
         '<div class="rank-track"><div class="rank-fill" style="inline-size:' + (n(it.cost) / max * 100).toFixed(1) + '%"></div></div>' +
         '<div class="rank-val">' + money(it.cost) + "</div></div>";
@@ -2505,8 +2635,11 @@ addEventListener("error", function (event) {
           '</td><td class="num">' + money(s.cost) + "</td></tr>";
       })), false) +
       block("项目明细", projects.length, table(["项目", "提供商", "会话", "调用", "参考成本"], projects.map(function (x, index) {
-        var it = x.item;
-        return '<tr style="--row-i:' + Math.min(index, 12) + '"><td class="truncate" title="' + esc(it.path || "") + '">' + esc(it.name || it.path || "未命名项目") + "</td><td>" + tag(x.p) +
+        var it = x.item, label = it.name || it.path || "未命名项目", path = it.path || "";
+        var cellAttrs = path
+          ? ' data-tip="' + esc(path) + '" aria-label="' + esc(label + "，路径 " + path) + '"'
+          : "";
+        return '<tr style="--row-i:' + Math.min(index, 12) + '"><td class="truncate"' + cellAttrs + ">" + esc(label) + "</td><td>" + tag(x.p) +
           '</td><td class="num">' + int(it.sessions) + '</td><td class="num">' + int(it.calls) + '</td><td class="num">' + money(it.cost) + "</td></tr>";
       })), false);
   }
@@ -2568,123 +2701,460 @@ addEventListener("error", function (event) {
     var slot = data && data.reports && data.reports[period];
     return !!(slot && slot.claude && slot.codex);
   }
-  // Quota can be published before the first usage report; usage sections then wait
-  // behind one status card instead of rendering zeros.
-  var usageIntroShown = false;
-  var loaderDismissed = false;
-  // The bar's own 220 ms fill finishes first, then it rests at full for 160 ms before
-  // the loader fades and the already-painted page slides up from under it.
-  var BAR_FILL_MS = 220, HANDOFF_HOLD_MS = 160, HANDOFF_MS = 300;
-  // The reveal is the only moment worth marking, and only when the reader asked
-  // for motion; revisions afterwards must never replay it. One band of light
-  // crosses the hero card: the hero card is the report's cover, so the sweep says
-  // "finished", not "party".
-  function playSweep() {
-    if (document.documentElement.dataset.motion !== "full") return;
-    var sweep = $("heroSweep");
-    if (sweep && !sweep.classList.contains("run")) {
-      sweep.classList.add("run");
-      setTimeout(function () { sweep.classList.remove("run"); }, 900);
-    }
-  }
+  // Usage waits in the hero's slot while the quota above it is already readable. The
+  // reveal, not the readable revision, releases `usage-pending`: the boards finish and
+  // hand over to the hero first, then later revisions follow readiness directly.
+  var usageRevealed = false, usageRevealing = false, revealTransition = null, usageRenderPending = false;
   function syncUsage() {
     var ready = usageReady();
-    $("app").classList.toggle("usage-pending", !ready);
-    if (ready && !loaderDismissed) {
-      loaderDismissed = true;
-      paintBar(1, 12);
-      setTimeout(function () {
-        $("loader").classList.add("done");
-        $("app").classList.add("show");
-        // The page was painted on its first render, under the loader. Two frames make
-        // sure that paint landed before the slide starts from it.
-        requestAnimationFrame(function () {
-          requestAnimationFrame(function () { $("app").classList.add("reveal"); });
-        });
-      }, BAR_FILL_MS + HANDOFF_HOLD_MS);
-      setTimeout(function () {
-        $("loader").style.display = "none";
-        setTimeout(playSweep, 340);
-      }, BAR_FILL_MS + HANDOFF_HOLD_MS + HANDOFF_MS + 60);
-    }
-    if (ready) {
-      if (!usageIntroShown) { usageIntroShown = true; introWindow(700); }
-      renderUsage(true);
-    }
-  }
-  var introTimer = null;
-  function introWindow(milliseconds) {
-    var app = $("app");
-    app.classList.add("intro");
-    clearTimeout(introTimer);
-    introTimer = setTimeout(function () { app.classList.remove("intro"); }, milliseconds);
+    $("app").classList.toggle("usage-pending", !ready || !usageRevealed);
+    if (ready && usageRevealed) {
+      // A revision inside the morph would replace the chips the boards are flying into;
+      // it is drawn when the morph lands. A later one ends the entrance before redrawing,
+      // so nothing restarts from zero.
+      if (revealTransition) usageRenderPending = true;
+      else { stopIntro(); renderUsage(true); }
+    } else if (ready) beadFinish();
+    syncSegs();
   }
   function render() {
-    var picker = document.querySelector('[data-filter="deepseek"]');
-    if (picker) picker.hidden = !hasProvider("deepseek");
-    if (filter !== "all" && !hasProvider(filter)) filter = "all";
+    // The page is interactive from its first frame; before any snapshot a filter change
+    // only re-draws what is already known.
+    if (!data) { bootQuota($("usageWait").classList.contains("failed") ? "未读取" : ""); if (bead) beadLayout(); syncSegs(); return; }
+    syncProviderFilter();
     renderQuota();
-    renderProgress();
+    if (bead && !usageRevealed) beadLayout();
     syncSegs();
     syncUsage();
   }
 
-  var PROGRESS_STAGE = { quota: "读取额度", period: "汇总用量", blocks: "窗口曲线", final: "收尾" };
-  // The first-paint bar reports finished collector steps and creeps toward the next
-  // one, so the page shows motion without ever claiming a step that has not finished.
-  var barShown = 0, barTimer = null;
-  function paintBar(fraction, total) {
-    var bar = document.getElementById("bootProgress") || document.querySelector(".usage-wait .pw");
-    if (!bar) return;
-    var cells = bar.children;
-    bar.style.setProperty("--bar-w", bar.getBoundingClientRect().width + "px");
-    for (var index = 0; index < cells.length; index++) {
-      var local = Math.max(0, Math.min(1, fraction * 12 - index));
-      var fill = cells[index].firstChild;
-      if (fill) fill.style.inlineSize = (local * 100).toFixed(2) + "%";
-      cells[index].style.setProperty("--cell-x", cells[index].offsetLeft + "px");
+  /* ── usage progress: one pegboard per collector step ──
+     The generator publishes `progress.done` out of 3: its first snapshot ends startup
+     (the quota reads start and the local DeepSeek ledger is read), then the default
+     period's Claude report lands, then its Codex report, in that fixed order. Startup
+     punches every board's pegs row by row, so it shows on any setup; DeepSeek's beads
+     land with it because its rows are read then. Inside a running step beads land at a
+     constant rate taken from deliberately long expected times: a step reaches 90% when it
+     should be done and keeps slowing after that, so a normal run never stalls and a quick
+     step simply jumps ahead. A board is complete only when its step is. */
+  var BEAD_STEPS = [
+    { board: "deepseek", ms: 2100, text: "读取额度与本地记录", state: "读取中" },
+    { board: "claude", ms: 4300, text: "汇总 Claude 用量", state: "汇总中" },
+    { board: "codex", ms: 2900, text: "汇总 Codex 用量", state: "汇总中" }
+  ];
+  var BEAD_ORDER = ["claude", "codex", "deepseek"];   // the provider cards' order below
+  var BEAD_CATCH_UP_MS = 240, BEAD_HOLD_MS = 150, BEAD_FINISH_CAP_MS = 2000;
+  var BEAD_TOTAL_MS = BEAD_STEPS.reduce(function (sum, step) { return sum + step.ms; }, 0);
+  var bead = null;
+  function beadState() {
+    return { boards: {}, providers: rememberedProviders(), startAt: [performance.now(), null, null], doneAt: [null, null, null],
+      doneFrac: [0, 0, 0], finishing: false, stopped: false, broken: false, frame: 0, timer: 0, pct: -1, text: "" };
+  }
+  // The board is the mark's own grid, read from its symbol: the beads are its cells, row by
+  // row from the top like a printer, so the progress front stays easy to read.
+  function beadMark(p) {
+    var symbol = document.getElementById("i-" + p);
+    var box = symbol && symbol.viewBox && symbol.viewBox.baseVal;
+    var cells = symbol ? Array.prototype.map.call(symbol.querySelectorAll("circle"), function (c) {
+      return { x: Number(c.getAttribute("cx")), y: Number(c.getAttribute("cy")) };
+    }).sort(function (a, b) { return a.y - b.y || a.x - b.x; }) : [];
+    return { size: box && box.width > 0 ? Math.round(box.width) : 16, cells: cells };
+  }
+  function beadBoard(p) {
+    var mark = beadMark(p), pegs = "";
+    for (var r = 0; r < mark.size; r++) {
+      pegs += "<g>";
+      for (var c = 0; c < mark.size; c++) pegs += '<circle class="peg" cx="' + (c + .5) + '" cy="' + (r + .5) + '" r=".13"/>';
+      pegs += "</g>";
     }
+    var beads = mark.cells.map(function (b) {
+      return '<g class="bead"><circle class="bead-body" cx="' + b.x + '" cy="' + b.y + '" r=".42"/>' +
+        '<circle class="bead-hole" cx="' + b.x + '" cy="' + b.y + '" r=".16"/></g>';
+    }).join("");
+    var fig = document.createElement("figure");
+    fig.className = "board";
+    fig.dataset.p = p;
+    fig.dataset.state = "wait";
+    fig.innerHTML = '<div class="pegboard"><svg viewBox="0 0 ' + mark.size + " " + mark.size + '" aria-hidden="true"><g class="pegs">' +
+      pegs + "</g><g>" + beads + '</g></svg></div><figcaption class="board-cap" aria-hidden="true"><b translate="no">' +
+      esc(pname(p)) + '</b><span class="board-state">等待</span></figcaption>';
+    return { el: fig, pegboard: fig.firstChild, rows: fig.querySelectorAll(".pegs > g"), pegRows: 0,
+      beads: fig.querySelectorAll(".bead"), placed: 0, state: "wait", ironedAt: 0 };
   }
-  function startTrickle(bar, total) {
-    if (barTimer) return;
-    barTimer = setInterval(function () {
-      var done = n(data && data.progress && data.progress.done);
-      var ceiling = Math.min(0.99, (done + 0.92) / total);
-      if (ceiling > barShown) barShown = barShown + (ceiling - barShown) * 0.16;
-      if (barShown > ceiling) barShown = ceiling;
-      paintBar(barShown, total);
-    }, 160);
+  // Before the first snapshot the previous run's providers decide, so a DeepSeek board
+  // does not appear a moment later and push the other two aside. CodeBurn's pair is
+  // always there.
+  function rememberedProviders() {
+    var last = Array.isArray(prefs.lastProviders) ? prefs.lastProviders : [];
+    return BEAD_ORDER.filter(function (p) { return p === "claude" || p === "codex" || last.indexOf(p) >= 0; });
   }
-  function renderProgress() {
-    var bar = document.getElementById("bootProgress") || document.querySelector(".usage-wait .pw");
-    var copy = document.getElementById("bootProgressLabel") || document.querySelector(".usage-progress");
-    if (!bar || !copy) return;
-    var p = data && data.progress;
-    if (!p || !n(p.total)) { copy.textContent = ""; return; }
-    var total = n(p.total), done = Math.max(0, Math.min(total, n(p.done)));
-    var cells = 12;
-    if (bar.children.length !== cells) {
-      bar.textContent = "";
-      for (var index = 0; index < cells; index++) {
-        var cell = document.createElement("i");
-        cell.appendChild(document.createElement("b"));
-        bar.appendChild(cell);
+  // Within a run the boards only ever gain one: a revision before the first report may
+  // still lack a provider the run produces, and a board that vanished and came back
+  // would read as a restart. A new run starts again from what the last one produced.
+  function beadProviders() {
+    var seen = bead ? bead.providers : rememberedProviders();
+    return BEAD_ORDER.filter(function (p) { return seen.indexOf(p) >= 0; });
+  }
+  // The DeepSeek filter is offered with its board while usage waits, and once usage is
+  // shown exactly when the snapshot has DeepSeek. A filter that is no longer offered
+  // falls back to all, with the pressed button, focus and URL; it returns true then, and
+  // the caller redraws what the old filter drew.
+  function syncProviderFilter() {
+    var offered = usageRevealed ? providerList() : beadProviders();
+    var picker = document.querySelector('[data-filter="deepseek"]');
+    var hide = offered.indexOf("deepseek") < 0, fellBack = false;
+    if (filter !== "all" && offered.indexOf(filter) < 0) {
+      filter = "all";
+      syncPressed(Array.from(document.querySelectorAll("[data-filter]")), function (b) { return b.dataset.filter === filter; });
+      syncUrl();
+      fellBack = true;
+    }
+    if (picker && picker.hidden !== hide) {
+      if (hide && document.activeElement === picker) document.querySelector('[data-filter="all"]').focus({ preventScroll: true });
+      picker.hidden = hide;
+      syncSegs();
+    } else if (fellBack) syncSegs();
+    return fellBack;
+  }
+  function beadLayout() {
+    var host = $("boards"), wanted = beadProviders(), next = null;
+    BEAD_ORDER.forEach(function (p) {
+      var keep = wanted.indexOf(p) >= 0;
+      if (!keep && bead.boards[p]) { bead.boards[p].el.remove(); delete bead.boards[p]; }
+      if (keep && !bead.boards[p]) bead.boards[p] = beadBoard(p);
+    });
+    // Insert new boards in place; moving an existing one would restart its transitions.
+    for (var i = BEAD_ORDER.length - 1; i >= 0; i--) {
+      var board = bead.boards[BEAD_ORDER[i]];
+      if (!board) continue;
+      if (!board.el.parentNode) host.insertBefore(board.el, next);
+      next = board.el;
+    }
+    $("waitLabel").textContent = heroLabelText(filter === "all" ? wanted : [filter]);
+  }
+  function beadEstimate(elapsed, expected) {
+    if (elapsed <= expected) return 0.9 * elapsed / expected;
+    return 0.9 + 0.08 * (1 - Math.exp(-(elapsed - expected) / expected));
+  }
+  function beadFraction(k, now) {
+    if (bead.doneAt[k] != null) {
+      // A finished step places its remaining beads in one quick sweep, not all at once;
+      // with motion off there is nothing to watch, so it is simply complete.
+      if (!motionEffective()) return 1;
+      return Math.min(1, bead.doneFrac[k] + (now - bead.doneAt[k]) / BEAD_CATCH_UP_MS * (1 - bead.doneFrac[k]));
+    }
+    if (bead.startAt[k] == null) return 0;
+    return beadEstimate(now - bead.startAt[k], BEAD_STEPS[k].ms);
+  }
+  function beadComplete(k, now) {
+    if (bead.doneAt[k] != null) return;
+    if (bead.startAt[k] == null) bead.startAt[k] = now;
+    bead.doneFrac[k] = beadFraction(k, now);
+    bead.doneAt[k] = now;
+    if (k + 1 < BEAD_STEPS.length && bead.startAt[k + 1] == null) bead.startAt[k + 1] = now;
+  }
+  function beadFrame() {
+    bead.frame = 0;
+    if (bead.stopped) return;
+    // A script error is reported in the status line and turns the card red, but the boards
+    // keep going: usage that becomes readable must still be revealed.
+    if (window.__BOOT_ERROR__ && !bead.broken) { bead.broken = true; $("usageWait").classList.add("failed"); }
+    var now = performance.now(), running = -1, progress = 0, k;
+    for (k = 0; k < BEAD_STEPS.length; k++) {
+      progress += beadFraction(k, now) * BEAD_STEPS[k].ms;
+      if (running < 0 && bead.doneAt[k] == null && bead.startAt[k] != null) running = k;
+    }
+    var startup = beadFraction(0, now);
+    Object.keys(bead.boards).forEach(function (p) {
+      var board = bead.boards[p];
+      for (var rows = Math.ceil(startup * board.rows.length); board.pegRows < rows; board.pegRows++) board.rows[board.pegRows].classList.add("on");
+    });
+    for (k = 0; k < BEAD_STEPS.length; k++) {
+      var b = bead.boards[BEAD_STEPS[k].board];
+      if (!b) continue;
+      var target = Math.round(beadFraction(k, now) * b.beads.length);
+      for (; b.placed < target; b.placed++) b.beads[b.placed].classList.add("on");
+      var state = bead.doneAt[k] != null ? "done" : bead.startAt[k] != null ? "run" : "wait";
+      if (state !== b.state) {
+        b.state = b.el.dataset.state = state;
+        b.el.querySelector(".board-state").textContent = state === "done" ? "完成" : state === "run" ? BEAD_STEPS[k].state : "等待";
+      }
+      // Ironed the moment its last bead lands: open rings are work in progress, a fused
+      // mark is a finished report.
+      if (state === "done" && b.placed >= b.beads.length && !b.ironedAt) {
+        b.ironedAt = now;
+        b.el.classList.add("ironed");
       }
     }
-    if (done / total > barShown) barShown = done / total;
-    if (done >= total) {
-      clearInterval(barTimer); barTimer = null;
-      barShown = 1;
-      paintBar(1, total);
-    } else {
-      paintBar(barShown, total);
-      startTrickle(bar, total);
+    var pct = Math.round(progress / BEAD_TOTAL_MS * 100);
+    // Past its expected time a step says so plainly; it never claims what "usual" is.
+    var text = running < 0 ? "生成报表" : BEAD_STEPS[running].text +
+      (now - bead.startAt[running] > BEAD_STEPS[running].ms ? "，请稍候" : "");
+    if (pct !== bead.pct) { bead.pct = pct; $("boards").setAttribute("aria-valuenow", String(pct)); }
+    if (!bead.broken && text !== bead.text) {
+      bead.text = text;
+      $("bootMessage").textContent = text;
+      $("boards").setAttribute("aria-valuetext", text);
     }
-    bar.setAttribute("aria-valuemax", String(total));
-    bar.setAttribute("aria-valuenow", String(done));
-    var label = PROGRESS_STAGE[p.stage] || "";
-    if (p.stage === "period" && p.period) label = PERIOD_LABEL[p.period] || p.period;
-    copy.textContent = done + " / " + total + (label ? " · " + label : "");
+    bead.frame = requestAnimationFrame(beadFrame);
+  }
+  // While usage waits its status line is the page's one voice; the stamp speaks again
+  // once usage is shown, so a failure is not announced twice.
+  function quietStamp(quiet) { $("stamp").setAttribute("aria-live", quiet ? "off" : "polite"); }
+  function beadStart() {
+    bead = beadState();
+    quietStamp(true);
+    beadLayout();
+    bead.frame = requestAnimationFrame(beadFrame);
+  }
+  // A new run whose first snapshot has no usage yet waits again, from fresh boards.
+  function beadReset() {
+    if (bead) { bead.stopped = true; cancelAnimationFrame(bead.frame); clearTimeout(bead.timer); }
+    usageRevealed = usageRevealing = false;
+    $("boards").textContent = "";
+    $("usageWait").classList.remove("failed");
+    beadStart();
+  }
+  function beadSync() {
+    if (!bead || !data) return;
+    var providers = providerList();
+    // Only a revision that carries a report says which providers the run produced; an
+    // earlier one is at most its plan. Until the final revision the remembered list only
+    // gains providers, so a page closed mid-run never leaves the next launch fewer boards.
+    if (Array.isArray(data.periods) && data.periods.length) {
+      var remembered = providers.slice();
+      if (data.complete !== true) (prefs.lastProviders || []).forEach(function (p) { if (remembered.indexOf(p) < 0) remembered.push(p); });
+      if (JSON.stringify(prefs.lastProviders) !== JSON.stringify(remembered)) {
+        prefs.lastProviders = remembered;
+        savePrefs();
+      }
+    }
+    providers.forEach(function (p) { if (bead.providers.indexOf(p) < 0) bead.providers.push(p); });
+    beadLayout();
+    var done = Math.max(0, Math.min(BEAD_STEPS.length, n(data.progress && data.progress.done)));
+    for (var k = 0; k < done; k++) beadComplete(k, performance.now());
+  }
+  function beadFinish() {
+    if (!bead || bead.finishing || bead.stopped || usageRevealed) return;
+    var token = bead, since = performance.now();
+    token.finishing = true;
+    // A readable default period means every step before it has finished.
+    for (var k = 0; k < BEAD_STEPS.length; k++) beadComplete(k, performance.now());
+    (function waitIroned() {
+      if (bead !== token || token.stopped) return;
+      var last = 0, ironed = Object.keys(token.boards).every(function (p) {
+        last = Math.max(last, token.boards[p].ironedAt);
+        return token.boards[p].ironedAt > 0;
+      });
+      // A background tab runs no frames and a broken frame loop never irons: neither is
+      // worth waiting for, so either hands over at once.
+      if (!ironed && !document.hidden && performance.now() - since < BEAD_FINISH_CAP_MS) { requestAnimationFrame(waitIroned); return; }
+      var hold = ironed && motionEffective() ? Math.max(0, last + BEAD_HOLD_MS - performance.now()) : 0;
+      token.timer = setTimeout(function () { if (bead === token) revealUsage(); }, hold);
+    })();
+  }
+  function waitFailed(text) {
+    if (bead) {
+      bead.stopped = true;
+      cancelAnimationFrame(bead.frame);
+      clearTimeout(bead.timer);
+      // The board that was running says where the run stopped.
+      for (var k = 0; k < BEAD_STEPS.length; k++) {
+        var b = bead.boards[BEAD_STEPS[k].board];
+        if (!b || bead.startAt[k] == null || bead.doneAt[k] != null) continue;
+        b.state = b.el.dataset.state = "halt";
+        b.el.querySelector(".board-state").textContent = "中断";
+      }
+    }
+    $("usageWait").classList.add("failed");
+    if (text) {
+      $("bootMessage").textContent = text;
+      $("boards").setAttribute("aria-valuetext", text);
+    }
+  }
+  // The usage slot becomes the hero in place: the wait card morphs into the hero card
+  // and each board flies into its provider card's mark right below it. On a phone the
+  // docked strip leaves as one piece, since those cards are below the fold.
+  function revealUsage() {
+    // Readable usage is shown even if the run fails while the boards are finishing.
+    if (usageRevealed || usageRevealing || !bead) return;
+    var token = bead, named = [];
+    usageRevealing = true;
+    var fly = !matchMedia("(max-width: 800px)").matches;
+    function name(el, value) { if (el) { el.style.viewTransitionName = value; named.push(el); } }
+    function clear() { named.forEach(function (el) { el.style.viewTransitionName = ""; }); named = []; }
+    function update() {
+      clear();
+      // A newer run took over while this hand-over was queued: leave its wait card alone.
+      if (bead !== token || !usageReady()) { usageRevealing = false; return; }
+      try {
+        usageRevealed = true;
+        token.stopped = true;
+        cancelAnimationFrame(token.frame);
+        quietStamp(false);
+        $("app").classList.remove("usage-pending");
+        if (syncProviderFilter()) renderQuota();
+        renderUsage(true);
+        syncSegs();
+        name(document.querySelector(".hero.usage-block"), "usage-slot");
+        if (fly) Object.keys(token.boards).forEach(function (p) {
+          var chip = document.querySelector('#split .prov[data-p="' + p + '"] .chip');
+          var box = chip && chip.getBoundingClientRect();
+          if (box && box.bottom > 0 && box.top < innerHeight) name(chip, "bead-" + p);
+        });
+        playIntro();
+      } catch (error) {
+        // Inside a view transition an exception never reaches the page's error handler;
+        // report it the same way as any other script error.
+        setTimeout(function () { throw error; });
+      }
+    }
+    function landed() {
+      clear();
+      revealTransition = null;
+      if (usageRenderPending) { usageRenderPending = false; syncUsage(); }
+    }
+    if (typeof document.startViewTransition === "function" && motionEffective() && !document.hidden) {
+      name($("usageWait"), "usage-slot");
+      if (fly) Object.keys(token.boards).forEach(function (p) { name(token.boards[p].pegboard, "bead-" + p); });
+      var transition = document.startViewTransition(update);
+      revealTransition = transition;
+      // A skipped transition (the window resized or hidden mid-way) is not an error.
+      transition.ready.catch(function () {});
+      transition.finished.then(landed, landed);
+    } else {
+      update();
+      landed();
+    }
+  }
+  // The entrance runs once per reveal and ends when its own animations do, not on a
+  // timer that could cut one short. Charts redraw on their first resize callback, which
+  // cancels the animations measured so far and starts new ones, so it keeps looking
+  // until nothing finite is still running, within a cap.
+  var introRun = 0;
+  function stopIntro() { introRun++; $("app").classList.remove("intro"); }
+  function playIntro() {
+    var app = $("app"), run = ++introRun, since = performance.now();
+    document.querySelectorAll("#app .usage-block").forEach(function (block, index) {
+      block.style.setProperty("--section-i", index);
+    });
+    app.classList.add("intro");
+    (function settle() {
+      if (run !== introRun) return;
+      var running = typeof app.getAnimations !== "function" ? [] : app.getAnimations({ subtree: true }).filter(function (animation) {
+        var timing = animation.effect && animation.effect.getComputedTiming ? animation.effect.getComputedTiming() : null;
+        return timing && isFinite(timing.endTime) && animation.playState !== "finished";
+      });
+      if (!running.length || performance.now() - since > 1600) { app.classList.remove("intro"); return; }
+      Promise.all(running.map(function (animation) { return animation.finished.catch(function () {}); }))
+        .then(function () { requestAnimationFrame(settle); });
+    })();
+  }
+
+  /* ── first frame: everything already known renders before any snapshot ── */
+  // The run's plan is known from the launch URL: the generator collects the requested
+  // period first, then week, 30 days and all. Buttons stay disabled until reports land.
+  function bootPeriodSeg() {
+    var keys = [period].concat(["week", "30days", "all"].filter(function (k) { return k !== period; }));
+    $("periodSeg").innerHTML = keys.map(function (k) {
+      return '<button type="button" data-period="' + esc(k) + '" aria-pressed="' + (k === period) + '" disabled>' +
+        esc(PERIOD_LABEL[k] || k) + "</button>";
+    }).join("");
+  }
+  // The currency switch showed last time if the snapshot carried a rate table; holding
+  // its place keeps the toolbar from shifting when the first snapshot lands.
+  function bootCurrency() {
+    if (!prefs.fxShown) return;
+    var select = $("currencySel");
+    select.hidden = false;
+    select.disabled = true;
+    select.innerHTML = "<option>" + esc(String(prefs.currency || "USD").toUpperCase().slice(0, 3)) + "</option>";
+  }
+  // Quota cards keep the shape they had last time - meter and stats labels, and the box
+  // the card filled at that width (a layout size, never a quota value) - so the usage slot
+  // under them does not move when the first answer replaces them, whatever that answer
+  // carries (a stale-record line, a sign-in hint, an unavailable one-liner).
+  var QUOTA_SHAPE = {
+    claude: { labels: ["5 小时会话额度", "7 天总额度"], stats: ["窗口成本", "燃烧率", "窗口预计"] },
+    codex: { labels: ["5 小时额度", "周额度"], stats: null }
+  };
+  function quotaShape(key) {
+    var saved = prefs.quotaShape && prefs.quotaShape[key];
+    var texts = function (list, most, longest) {
+      return Array.isArray(list) && list.length && list.length <= most &&
+        list.every(function (t) { return typeof t === "string" && t.length <= longest; });
+    };
+    var shape = { labels: QUOTA_SHAPE[key].labels, stats: QUOTA_SHAPE[key].stats, w: 0, h: 0, open: null };
+    if (!saved || typeof saved !== "object") return shape;
+    if (texts(saved.labels, 6, 40)) shape.labels = saved.labels;
+    if (saved.stats === null || texts(saved.stats, 3, 20)) shape.stats = saved.stats;
+    if (isFinite(saved.w) && isFinite(saved.h) && saved.w > 0 && saved.h > 0 && saved.h < 2000) {
+      shape.w = Number(saved.w); shape.h = Number(saved.h); shape.open = saved.open === true;
+    }
+    return shape;
+  }
+  function skeletonRows(key, withStats) {
+    var shape = quotaShape(key);
+    return shape.labels.map(function (label) {
+      return '<div class="meter-row is-skeleton"><div class="meter-top"><span class="meter-label">' + esc(label) +
+        '</span><span class="meter-pct">—</span></div>' + blockMeter(0) +
+        '<div class="meter-foot"><span>&nbsp;</span><span>&nbsp;</span></div></div>';
+    }).join("") + (withStats && shape.stats ? statsRow(shape.stats.map(function (label) { return [esc(label), "—"]; }), true) : "");
+  }
+  function rememberQuotaShape() {
+    var changed = false;
+    $("quota").querySelectorAll(".quota[data-q]").forEach(function (card) {
+      var key = card.dataset.q;
+      if (!QUOTA_SHAPE[key] || card.classList.contains("is-placeholder") || card.querySelector(".is-skeleton")) return;
+      var labels = Array.prototype.map.call(card.querySelectorAll(".meter-label"), function (el) { return el.textContent; });
+      var stats = Array.prototype.map.call(card.querySelectorAll(".prov-stats > div > span"), function (el) { return el.textContent; });
+      var shape = {
+        labels: labels.length ? labels.slice(0, 6) : QUOTA_SHAPE[key].labels,
+        stats: stats.length ? stats.slice(0, 3) : null,
+        w: card.offsetWidth, h: card.offsetHeight, open: card.dataset.open === "1"
+      };
+      if (JSON.stringify(prefs.quotaShape && prefs.quotaShape[key]) === JSON.stringify(shape)) return;
+      prefs.quotaShape = prefs.quotaShape || {};
+      prefs.quotaShape[key] = shape;
+      changed = true;
+    });
+    if (changed) savePrefs();
+  }
+  // A placeholder or a still-loading card takes the box its card had last time, if the
+  // card is as wide and folded the same way; otherwise it keeps its own natural height.
+  function holdQuotaBoxes() {
+    $("quota").querySelectorAll(".quota[data-q]").forEach(function (card) {
+      if (!card.classList.contains("is-placeholder") && !card.querySelector(".is-skeleton")) return;
+      var shape = quotaShape(card.dataset.q);
+      if (!shape.h || Math.abs(card.offsetWidth - shape.w) > 2 || shape.open !== (card.dataset.open === "1")) return;
+      card.style.blockSize = shape.h + "px";
+      card.style.overflow = "hidden";
+    });
+  }
+  function bootQuota(note) {
+    var keys = ["claude", "codex"].filter(function (key) {
+      if (filter !== "all" && filter !== key) return false;
+      // Same rule as the loading Codex card: it holds a place only if the last answer
+      // had a metered window.
+      return key === "claude" || !!(prefs.lastQuota && prefs.lastQuota.codex === true);
+    });
+    lastQuotaHtml = null;
+    $("quota").innerHTML = keys.map(function (key) {
+      return quotaCard(key, key === "claude" ? "Claude 额度" : "Codex 额度", "var(--" + key + ")",
+        skeletonRows(key, true), note || "读取中", quotaOpenFor(key, true), "is-placeholder");
+    }).join("");
+    $("quota").querySelectorAll(".is-placeholder").forEach(function (card) { card.inert = true; });
+    holdQuotaBoxes();
+  }
+  // Meters are placed block by block once, only on the cards whose real answer just
+  // replaced a placeholder or a loading card; a card already showing stays still.
+  function placeQuota(keys) {
+    keys.forEach(function (key) {
+      var card = $("quota").querySelector('.quota[data-q="' + key + '"]');
+      if (!card || !card.querySelector(".blocks") || card.querySelector(".is-skeleton")) return;
+      card.classList.add("placing");
+      setTimeout(function () { card.classList.remove("placing"); }, 700);
+    });
   }
 
   function pulse(node) {
@@ -2705,6 +3175,8 @@ addEventListener("error", function (event) {
     prefs.quota = prefs.quota || {};
     prefs.quota[card.dataset.q] = open ? "open" : "closed";
     savePrefs();
+    // The next launch's placeholder takes the folded or opened box, once the fold settles.
+    setTimeout(rememberQuotaShape, 300);
   });
 
   function toggleProviderView(card) {
@@ -2756,6 +3228,9 @@ addEventListener("error", function (event) {
     });
     var signature = codes.join("|") + ">" + shown;
     select.hidden = codes.length < 2;
+    select.disabled = false;
+    // Remembered so the next launch can hold the switch's place before its first snapshot.
+    if (Boolean(prefs.fxShown) !== !select.hidden) { prefs.fxShown = !select.hidden; savePrefs(); }
     if (select.dataset.sig === signature) return;
     select.dataset.sig = signature;
     if (codes.length < 2) { select.textContent = ""; return; }
@@ -2842,9 +3317,11 @@ addEventListener("error", function (event) {
   function isDark() { var pin = document.documentElement.dataset.cs; return pin ? pin === "dark" : mq.matches; }
   function syncTheme() {
     var dark = isDark(), button = $("themeBtn");
+    var label = dark ? "切换到浅色主题" : "切换到深色主题";
     button.setAttribute("aria-pressed", String(dark));
-    button.setAttribute("aria-label", "深色主题");
-    button.querySelector(".sr-only").textContent = "深色主题";
+    button.setAttribute("aria-label", label);
+    button.querySelector(".sr-only").textContent = label;
+    button.dataset.tip = label;
     $("themeColor").setAttribute("content", dark ? "#11140f" : "#ecebe6");
   }
   mq.addEventListener("change", function () { syncTheme(); repaintAll(); });
@@ -2868,58 +3345,58 @@ addEventListener("error", function (event) {
   });
   syncTheme();
 
-  /* Motion opt-in: Windows "animation effects" off makes Chromium report a
-     reduce preference, and that default leaves the reader no way back. */
+  /* Motion is an effective two-state switch, not a "force full" override. The OS
+     preference is only the starting point; the button shows the state it will
+     actually produce, and an explicit choice is stored only while it differs from
+     the OS. That makes the button meaningful whether the OS allows motion or not. */
   var motionKey = "ai-usage-ledger-motion";
+  var mqMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  function motionEffective() {
+    var state = document.documentElement.dataset.motion;
+    if (state === "full") return true;
+    if (state === "off") return false;
+    return !mqMotion.matches;
+  }
   function syncMotion() {
-    var full = document.documentElement.dataset.motion === "full", button = $("motionBtn");
+    var full = motionEffective(), button = $("motionBtn");
     button.setAttribute("aria-pressed", String(full));
     button.setAttribute("aria-label", "动效");
-    button.querySelector(".sr-only").textContent = "始终播放动效";
+    button.dataset.tip = full ? "动效已开启，点击关闭" : "动效已关闭，点击开启";
+    button.querySelector(".sr-only").textContent = "动效";
   }
-  var toastNode = null, toastTimer = null;
-  function showToast(text) {
-    if (toastNode) { clearTimeout(toastTimer); toastNode.remove(); toastNode = null; }
-    var node = document.createElement("div");
-    node.className = "toast";
-    node.setAttribute("role", "status");
-    node.textContent = text;
-    document.body.appendChild(node);
-    toastNode = node;
-    // Two frames let the initial (offset, transparent) style land before the slide.
-    requestAnimationFrame(function () { requestAnimationFrame(function () { node.classList.add("show"); }); });
-    toastTimer = setTimeout(function () {
-      node.classList.remove("show");
-      toastTimer = setTimeout(function () {
-        node.remove();
-        if (toastNode === node) toastNode = null;
-      }, 220);
-    }, 1600);
-  }
+  mqMotion.addEventListener("change", syncMotion);
   $("motionBtn").addEventListener("click", function () {
-    if (document.documentElement.dataset.motion === "full") {
+    var next = !motionEffective();
+    if (next === !mqMotion.matches) {
+      // Back to following the OS: drop the override instead of storing a duplicate.
       delete document.documentElement.dataset.motion;
       try { localStorage.removeItem(motionKey); } catch (e) {}
     } else {
-      document.documentElement.dataset.motion = "full";
-      try { localStorage.setItem(motionKey, "full"); } catch (e) {}
+      document.documentElement.dataset.motion = next ? "full" : "off";
+      try { localStorage.setItem(motionKey, next ? "full" : "off"); } catch (e) {}
     }
     syncMotion();
-    var button = $("motionBtn");
-    button.classList.remove("flash");
-    void button.offsetWidth;
-    button.classList.add("flash");
-    setTimeout(function () { button.classList.remove("flash"); }, 600);
-    showToast(document.documentElement.dataset.motion === "full" ? "动效已开启" : "动效已跟随系统");
   });
   syncMotion();
-  $("heroFacts").addEventListener("click", function (event) {
-    var trigger = event.target && event.target.closest ? event.target.closest(".unit-btn") : null;
-    if (!trigger) return;
-    prefs.tokenUnit = TOKEN_UNITS[(TOKEN_UNITS.indexOf(tokenUnit()) + 1) % TOKEN_UNITS.length];
+  initTipTips();
+  function syncUnitSeg() {
+    var seg = $("unitSeg");
+    if (!seg) return;
+    var current = tokenUnit();
+    seg.querySelectorAll("button[data-unit]").forEach(function (button) {
+      button.setAttribute("aria-pressed", String(button.dataset.unit === current));
+    });
+    syncSeg(seg);
+  }
+  $("unitSeg").addEventListener("click", function (event) {
+    var button = event.target && event.target.closest ? event.target.closest("button[data-unit]") : null;
+    if (!button) return;
+    prefs.tokenUnit = button.dataset.unit;
     savePrefs();
+    syncUnitSeg();
     if (data) renderUsage(true);
   });
+  syncUnitSeg();
 
   var q = new URLSearchParams(location.search);
   if (["all", "claude", "codex", "deepseek"].indexOf(q.get("provider")) >= 0) filter = q.get("provider");
@@ -2930,7 +3407,7 @@ addEventListener("error", function (event) {
 
   addEventListener("resize", function () {
     clearTimeout(window.__rz);
-    window.__rz = setTimeout(function () { fitHeroFigure(); fitProviderFigures(); syncSegs(); repaintAll(); }, 150);
+    window.__rz = setTimeout(function () { fitHeroFigure(); fitProviderFigures(); fitTileFigures(); syncSegs(); repaintAll(); }, 150);
   });
 
   /* ─────────────────────────── data intake ── */
@@ -2959,13 +3436,14 @@ addEventListener("error", function (event) {
     renderCurrency();
     $("source").textContent = (data.source && data.source.name ? data.source.name : "本地统计") + (data.source && data.source.version ? " " + data.source.version : "");
     $("location").textContent = data.appDir || "";
+    // A new run that already has usage keeps the page as it is; one that does not yet
+    // waits again in the usage slot, from fresh boards.
+    if (runChanged && !usageReady()) beadReset();
+    beadSync();
+    // Every revision, not only the first: the filter row must follow the boards.
+    var filterFellBack = syncProviderFilter();
     if (firstRender) {
       render();
-      // Paint the page while the loader still covers it; the reveal then only moves a
-      // surface the compositor already has, instead of paying for the first paint.
-      $("app").classList.add("prepaint");
-      clearInterval(bootTimer);
-      introWindow(900);
     } else {
       var currencyChanged = JSON.stringify(previousCurrency) !== JSON.stringify(data.currency);
       var nextReport = data.reports ? data.reports[period] : null;
@@ -2973,16 +3451,15 @@ addEventListener("error", function (event) {
       // ccusage can finish after the first usage revision; its blocks feed the hour chart.
       var blocksChanged = JSON.stringify(previousLimits && previousLimits.claudeBlocks) !==
         JSON.stringify(data.limits && data.limits.claudeBlocks);
+      // Shown usage with no readable report behind it goes back to waiting on the next
+      // revision instead of staying on figures from another run.
       var usageChanged = currencyChanged || previousPeriod !== period || wasPending || blocksChanged ||
-        JSON.stringify(previousReport) !== JSON.stringify(nextReport);
+        filterFellBack || (!wasPending && !usageReady()) || JSON.stringify(previousReport) !== JSON.stringify(nextReport);
       // The window row's placeholder depends on the run's state, not only on its limits.
       var runStateChanged = !previousData || previousData.complete !== data.complete ||
         !previousData.generationError !== !data.generationError;
-      if (currencyChanged || runStateChanged || (wasPending && usageReady()) ||
+      if (currencyChanged || runStateChanged || filterFellBack || (wasPending && usageReady()) ||
           JSON.stringify(previousLimits) !== JSON.stringify(data.limits)) renderQuota();
-      // The loader owns the only progress bar, and every revision carries a new done
-      // count, so it must be refreshed here as well as on the first paint.
-      renderProgress();
       if (usageChanged) syncUsage();
     }
   };
@@ -2997,8 +3474,12 @@ addEventListener("error", function (event) {
       stalled = true;
       renderQuota();
       $("stamp").textContent = $("stamp").textContent.replace(" · 更新中", " · 更新未完成，请重新启动");
+      if (usageReady()) revealUsage();
+      else if (!usageRevealed) waitFailed("用量汇总未完成，请重新启动");
     } else {
-      $("bootMessage").textContent = "数据生成超时，请重新启动";
+      $("stamp").textContent = "数据生成超时";
+      bootQuota("未读取");
+      waitFailed("数据生成超时，请重新启动");
     }
   }
   function probeFailure() {
@@ -3032,6 +3513,24 @@ addEventListener("error", function (event) {
     };
     document.body.appendChild(script);
   }
+
+  // The page is its own first frame: the shell, the planned periods, the remembered
+  // quota shape and the usage boards render before the first snapshot is read.
+  (function boot() {
+    var picker = document.querySelector('[data-filter="deepseek"]');
+    if (picker) picker.hidden = beadProviders().indexOf("deepseek") < 0;
+    bootPeriodSeg();
+    bootCurrency();
+    bootQuota();
+    beadStart();
+    syncSegs();
+    // The pixel fonts load after the first frame; the pill under each pressed button and
+    // the remembered quota boxes are measured again once the real glyph widths exist.
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () {
+      syncSegs();
+      if (!data) holdQuotaBoxes();
+    });
+  })();
   load();
 })();
 </script>

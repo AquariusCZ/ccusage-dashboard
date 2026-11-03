@@ -35,6 +35,10 @@ $FxRatesUri = 'https://api.frankfurter.dev/v1/latest?from=USD&to=EUR,CNY,JPY,GBP
 $ClaudeDesktopPackageFamily = 'Claude_pzs8sxrjxfjjc'
 $CodexHelperScript = Join-Path $AppDir 'codex-rate-limits.mjs'
 $RuntimeRoot = Join-Path $env:TEMP 'ClaudeUsage'
+$DeepSeekLedgerPath = Join-Path (Join-Path $env:LOCALAPPDATA 'AIUsage') 'deepseek-ledger.json'
+if ($env:AI_USAGE_DEEPSEEK_LEDGER) {
+  $DeepSeekLedgerPath = [IO.Path]::GetFullPath($env:AI_USAGE_DEEPSEEK_LEDGER)
+}
 $NodeCompileCacheDirectory = Join-Path $RuntimeRoot 'node-compile-cache'
 $InstallPendingPaths = @(
   (Join-Path $AppDir '.install-pending'),
@@ -896,17 +900,23 @@ public static extern int Release(IntPtr db);
 # generic usage, but it cannot separate a provider from it, and its OpenCode
 # overview does not reconcile against the recorded cost.
 #
-# Upstream inventory, 2026-10-30: `%USERPROFILE%\.local\share\opencode\opencode.db`,
-# tables `message` (id, session_id, time_created, data) and `session`
-# (id, directory). Windows ships `winsqlite3.dll` 3.53 with JSON1, so one grouped
-# query returns at most a few hundred rows. The store is opened read-only, one
-# SELECT is issued, and nothing is written back; a running OpenCode keeps its WAL
-# beside it, so a read-write open is only a fallback for a store whose shared-memory
-# file has been cleaned up while the client is closed.
+# Upstream inventory, 2026-10-31: OpenCode migrated the per-message records to
+# `session_message` (id, session_id, type, time_created, data) and the sessions to
+# `session_v2` (id, parent_id, directory). The v2 tables are authoritative and keep
+# growing; the legacy `message`/`session` pair froze when the migration ran, so it
+# is queried only when `sqlite3_prepare_v2` rejects the v2 shape. The two tables are
+# never unioned: the same assistant message id appears in both, and one legacy-only
+# compaction row ($0.126) is intentionally not added.
+#
+# Windows ships `winsqlite3.dll` 3.53 with JSON1, so one grouped query returns a
+# few hundred rows. The store is opened read-only, one SELECT is issued, and
+# nothing is written back; a running OpenCode keeps its WAL beside it, so a
+# read-write open is only a fallback for a store whose shared-memory file has been
+# cleaned up while the client is closed.
 function Read-OpenCodeDeepSeekUsage {
   $dbPath = Join-Path (Join-Path $env:USERPROFILE '.local\share\opencode') 'opencode.db'
   if (-not (Test-Path -LiteralPath $dbPath)) {
-    return [pscustomobject]@{ ok = $false; reason = 'no_opencode'; rows = @() }
+    return [pscustomobject]@{ ok = $false; reason = 'no_opencode'; rows = @(); shape = '' }
   }
 
   try {
@@ -933,7 +943,7 @@ public static extern int Release(IntPtr db);
 '@
     }
   } catch {
-    return [pscustomobject]@{ ok = $false; reason = 'sqlite_unavailable'; rows = @() }
+    return [pscustomobject]@{ ok = $false; reason = 'sqlite_unavailable'; rows = @(); shape = '' }
   }
 
   $utf8 = New-Object Text.UTF8Encoding($false)
@@ -945,7 +955,7 @@ public static extern int Release(IntPtr db);
       $db = [IntPtr]::Zero
       $flags = 2
       if ([AiUsage.WinSqliteQuery]::Open(($utf8.GetBytes($dbPath) + [byte]0), [ref]$db, $flags, [IntPtr]::Zero) -ne 0) {
-        return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @() }
+        return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @(); shape = '' }
       }
     }
     [void][AiUsage.WinSqliteQuery]::BusyTimeout($db, 3000)
@@ -954,7 +964,55 @@ public static extern int Release(IntPtr db);
     # process already knows. A run near a DST change can shift a midnight-adjacent
     # message by an hour; nothing else in the day depends on it.
     $offsetSeconds = [int64][Math]::Round([TimeZoneInfo]::Local.GetUtcOffset([DateTimeOffset]::Now).TotalSeconds)
-    $sql = @(
+    # Grouping a child session under its root makes the card's session count read
+    # top-level conversations instead of every subagent session OpenCode stores.
+    # v.directory is aggregated rather than grouped so one root session cannot split
+    # into two rows with the same session|day|model key.
+    $v2Sql = @(
+      "select coalesce(nullif(v.parent_id, ''), v.id) as session_id,",
+      '       cast(min(m.time_created) / 1000 as integer) as created_at,',
+      "       json_extract(m.data, '`$.model.id') as model,",
+      "       date(m.time_created / 1000 + $offsetSeconds, 'unixepoch') as day,",
+      '       count(*) as calls,',
+      "       sum(coalesce(json_extract(m.data, '`$.cost'), 0)) as cost,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.input'), 0)) as input_tokens,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.output'), 0)) as output_tokens,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.cache.read'), 0)) as cache_read,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.cache.write'), 0)) as cache_write,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.reasoning'), 0)) as reasoning,",
+      '       max(v.directory) as project',
+      'from session_message m join session_v2 v on v.id = m.session_id',
+      "where m.type = 'assistant' and json_valid(m.data)",
+      "  and json_extract(m.data, '`$.model.providerID') = 'deepseek'",
+      # SQLite resolves a GROUP BY name against input columns before output aliases:
+      # `session_id` would regroup by the child session and `model` by session_v2's
+      # own JSON column. Repeat both expressions so one row means one root session,
+      # day and model id.
+      'group by coalesce(nullif(v.parent_id, ''''), v.id), day, json_extract(m.data, ''$.model.id'')'
+    ) -join ' '
+    # A legacy store may already have moved sessions to a parent/child shape without
+    # the v2 message tables. Grouping by its root keeps the same session|date|model
+    # keys, so a later v2 migration does not leave child and root rows side by side.
+    $legacyRootSql = @(
+      "select coalesce(nullif(s.parent_id, ''), s.id) as session_id,",
+      '       cast(m.time_created / 1000 as integer) as created_at,',
+      "       json_extract(m.data, '`$.modelID') as model,",
+      "       date(m.time_created / 1000 + $offsetSeconds, 'unixepoch') as day,",
+      '       count(*) as calls,',
+      "       sum(coalesce(json_extract(m.data, '`$.cost'), 0)) as cost,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.input'), 0)) as input_tokens,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.output'), 0)) as output_tokens,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.cache.read'), 0)) as cache_read,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.cache.write'), 0)) as cache_write,",
+      "       sum(coalesce(json_extract(m.data, '`$.tokens.reasoning'), 0)) as reasoning,",
+      '       max(s.directory) as project',
+      'from message m left join session s on s.id = m.session_id',
+      'where json_valid(m.data)',
+      "  and json_extract(m.data, '`$.role') = 'assistant'",
+      "  and json_extract(m.data, '`$.providerID') = 'deepseek'",
+      "group by coalesce(nullif(s.parent_id, ''''), s.id), day, json_extract(m.data, ''$.modelID'')"
+    ) -join ' '
+    $legacySql = @(
       'select m.session_id as session_id,',
       '       cast(m.time_created / 1000 as integer) as created_at,',
       "       json_extract(m.data, '`$.modelID') as model,",
@@ -973,8 +1031,27 @@ public static extern int Release(IntPtr db);
       "  and json_extract(m.data, '`$.providerID') = 'deepseek'",
       'group by m.session_id, day, model'
     ) -join ' '
-    if ([AiUsage.WinSqliteQuery]::Prepare($db, ($utf8.GetBytes($sql) + [byte]0), -1, [ref]$statement, [IntPtr]::Zero) -ne 0) {
-      return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @() }
+    $shape = ''
+    $prepared = $false
+    foreach ($candidate in @(
+      [pscustomobject]@{ Shape = 'v2'; Sql = $v2Sql },
+      [pscustomobject]@{ Shape = 'legacyRoot'; Sql = $legacyRootSql },
+      [pscustomobject]@{ Shape = 'legacyFlat'; Sql = $legacySql }
+    )) {
+      if ([AiUsage.WinSqliteQuery]::Prepare($db, ($utf8.GetBytes($candidate.Sql) + [byte]0), -1, [ref]$statement, [IntPtr]::Zero) -eq 0) {
+        $shape = $candidate.Shape
+        $prepared = $true
+        break
+      }
+      # An older OpenCode store lacks the newer table or parent_id column: close the
+      # failed statement and try the next shape.
+      if ($statement -ne [IntPtr]::Zero) {
+        [void][AiUsage.WinSqliteQuery]::Close($statement)
+        $statement = [IntPtr]::Zero
+      }
+    }
+    if (-not $prepared) {
+      return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @(); shape = '' }
     }
 
     $rows = New-Object Collections.Generic.List[object]
@@ -982,7 +1059,7 @@ public static extern int Release(IntPtr db);
       $step = [AiUsage.WinSqliteQuery]::Step($statement)
       if ($step -eq 101) { break }
       if ($step -ne 100) {
-        return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @() }
+        return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @(); shape = '' }
       }
       $sessionId = ''
       $length = [AiUsage.WinSqliteQuery]::ColumnBytes($statement, 0)
@@ -1033,12 +1110,68 @@ public static extern int Release(IntPtr db);
         cacheWriteTokens = [AiUsage.WinSqliteQuery]::ColumnDouble($statement, 9)
       })
     }
-    return [pscustomobject]@{ ok = $true; reason = $null; rows = $rows.ToArray() }
+    return [pscustomobject]@{ ok = $true; reason = $null; rows = $rows.ToArray(); shape = $shape }
   } catch {
-    return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @() }
+    return [pscustomobject]@{ ok = $false; reason = 'opencode_unreadable'; rows = @(); shape = '' }
   } finally {
     if ($statement -ne [IntPtr]::Zero) { [void][AiUsage.WinSqliteQuery]::Close($statement) }
     if ($db -ne [IntPtr]::Zero) { [void][AiUsage.WinSqliteQuery]::Release($db) }
+  }
+}
+
+# A retained debug snapshot is the only surviving record of days OpenCode dropped
+# from its store. Every newest snapshot is scanned (at most 12) and each date keeps
+# its highest recorded total across them: a later snapshot can only see less of a
+# partially deleted day, while an older one still holds the pre-deletion total.
+# Only `reports.all.deepseek.daily` (daily cost and calls) is used; prompt, session
+# and message content in the file is never read into the ledger. The directory name,
+# date range and amount ceiling keep a crafted debug file from freezing the heatmap.
+function Find-DeepSeekSnapshotBaseline {
+  try {
+    if (-not (Test-Path -LiteralPath $RuntimeRoot)) { return @() }
+    $earliestDate = '2000-01-01'
+    $latestDate = [DateTime]::Now.Date.AddDays(1).ToString('yyyy-MM-dd')
+    $directories = @(Get-ChildItem -LiteralPath $RuntimeRoot -Directory -Filter 'debug-*' -ErrorAction Stop |
+      Where-Object { $_.Name -match '\Adebug-\d{8}-\d{6}-\d{3}-\d+\z' } |
+      Sort-Object -Property LastWriteTimeUtc -Descending |
+      Select-Object -First 12)
+    $byDate = [ordered]@{}
+    foreach ($directory in $directories) {
+      try {
+        $path = Join-Path $directory.FullName 'data.js'
+        $file = Get-Item -LiteralPath $path -ErrorAction Stop
+        if ($file.Length -gt (32 * 1024 * 1024)) { continue }
+        $text = [IO.File]::ReadAllText($path)
+        $start = $text.IndexOf('window.__DATA__ = ', [StringComparison]::Ordinal)
+        if ($start -lt 0) { continue }
+        $start += 18
+        $end = $text.IndexOf('; if (window.__render__)', $start, [StringComparison]::Ordinal)
+        if ($end -le $start) { continue }
+        $document = $text.Substring($start, $end - $start) | ConvertFrom-Json
+        if ($null -eq $document -or $document.complete -ne $true) { continue }
+        if (-not ($document.reports.PSObject.Properties.Name -contains 'all')) { continue }
+        $deepseek = $document.reports.all.deepseek
+        if ($null -eq $deepseek -or [string]$deepseek.currency -ne 'USD') { continue }
+
+        foreach ($day in @($deepseek.daily)) {
+          if ($null -eq $day) { continue }
+          $date = [string]$day.date
+          $cost = $day.cost
+          $calls = $day.calls
+          if ($date -notmatch '\A\d{4}-\d{2}-\d{2}\z' -or $date -lt $earliestDate -or $date -gt $latestDate -or
+              -not (Test-JsonFiniteNumberValue $cost) -or [double]$cost -lt 0 -or [double]$cost -gt 1000000000 -or
+              -not (Test-JsonFiniteNumberValue $calls) -or [double]$calls -lt 0 -or [double]$calls -gt 1000000000) { continue }
+          if (-not $byDate.Contains($date) -or [double]$cost -gt [double]$byDate[$date].cost) {
+            $byDate[$date] = [pscustomobject][ordered]@{ date = $date; cost = [double]$cost; calls = [double]$calls }
+          }
+        }
+      } catch {
+        continue
+      }
+    }
+    return @($byDate.Values | Sort-Object -Property date)
+  } catch {
+    return @()
   }
 }
 
@@ -3135,14 +3268,21 @@ function Write-Snapshot([bool]$Complete) {
   $script:Revision += 1
 
   # The page renders the providers a run actually has. DeepSeek is absent for a user
-  # who never ran one, and the two CodeBurn providers stay the required pair.
+  # who never ran one, and the two CodeBurn providers stay the required pair. Until
+  # the first period lands the list is the run's plan: the startup read already knows
+  # whether DeepSeek rows exist, and quota-only revisions without them made the page
+  # drop the DeepSeek board and filter, then build both again on the first report.
   $providers = New-Object Collections.Generic.List[string]
   foreach ($key in @('claude', 'codex')) { $providers.Add($key) }
   foreach ($key in $script:LocalProviderKeys) {
-    $present = @($availablePeriods | Where-Object {
-      $reports[$_].Contains($key) -and $reports[$_][$key]
-    })
-    if ($present.Count) { $providers.Add($key) }
+    if ($availablePeriods.Count) {
+      $present = @($availablePeriods | Where-Object {
+        $reports[$_].Contains($key) -and $reports[$_][$key]
+      })
+      if ($present.Count) { $providers.Add($key) }
+    } elseif ($key -eq 'deepseek' -and $script:DeepSeekAvailable) {
+      $providers.Add($key)
+    }
   }
   $localSource = if ($providers -contains 'deepseek') { 'OpenCode deepseek' } else { $null }
   $sourceRecord = [ordered]@{ name = 'CodeBurn'; version = $CodeBurnVersion }
@@ -3641,15 +3781,100 @@ try {
 
   # Local provider records are read once, before the first CodeBurn call: the query
   # is small, and a store that cannot be read must degrade to "no extra provider"
-  # instead of failing a run whose Claude and Codex reports are fine.
+  # instead of failing a run whose Claude and Codex reports are fine. The durable
+  # ledger keeps the card alive when OpenCode has deleted a session (or the store):
+  # live rows win their key, ledger-only rows survive, and the one-time recovered
+  # daily total is emitted from the ledger instead of being recomputed.
   $script:DeepSeekRows = @()
   $script:DeepSeekAvailable = $false
+  $deepSeekRead = $null
+  try {
+    $deepSeekRead = Read-DeepSeekLedger $DeepSeekLedgerPath
+  } catch {
+    $deepSeekRead = $null
+  }
+  if ($null -eq $deepSeekRead) {
+    $deepSeekRead = [pscustomobject][ordered]@{ ok = $false; status = 'corrupt'; ledger = (New-EmptyDeepSeekLedger) }
+  }
+  $deepSeekLedger = $deepSeekRead.ledger
+  if (-not $deepSeekRead.ok) {
+    Write-Verbose "The DeepSeek ledger was left untouched ($($deepSeekRead.status)): $DeepSeekLedgerPath"
+  }
+  $deepSeekLiveRows = @()
+  $deepSeekLiveOk = $false
+  $deepSeekLiveShape = ''
   try {
     $localUsage = Read-OpenCodeDeepSeekUsage
-    if ($localUsage -and $localUsage.ok -and @($localUsage.rows).Count -gt 0) {
-      $script:DeepSeekRows = @($localUsage.rows)
-      $script:DeepSeekAvailable = $true
+    if ($localUsage -and $localUsage.ok) {
+      $deepSeekLiveOk = $true
+      $deepSeekLiveShape = [string]$localUsage.shape
+      $deepSeekLiveRows = @($localUsage.rows)
     }
+  } catch {
+    $deepSeekLiveRows = @()
+  }
+  try {
+    if ($deepSeekLiveOk) {
+      # The snapshot scan only feeds the one-time recovery. Once recoveredDaily is
+      # persisted, later live growth cannot change it.
+      if (-not $deepSeekLedger.recoveredImported) {
+        $deepSeekBaseline = @(Find-DeepSeekSnapshotBaseline)
+        if ($deepSeekBaseline.Count -gt 0) {
+          $baselineByDate = [ordered]@{}
+          foreach ($day in @($deepSeekLedger.baselineDaily) + $deepSeekBaseline) {
+            if (-not $day) { continue }
+            $date = [string]$day.date
+            if (-not $date) { continue }
+            if (-not $baselineByDate.Contains($date) -or [double]$day.cost -gt [double]$baselineByDate[$date].cost) {
+              $baselineByDate[$date] = $day
+            }
+          }
+          $deepSeekLedger.baselineDaily = @($baselineByDate.Values | Sort-Object -Property date)
+        }
+      }
+      # A different live shape means ledger keys are not comparable: drop only the
+      # dates the live read already covers, never the ledger-only history.
+      if ($deepSeekLiveShape) {
+        $deepSeekLedger.rows = @(Sync-DeepSeekLedgerShape `
+          -Rows @($deepSeekLedger.rows) `
+          -LiveRows $deepSeekLiveRows `
+          -SourceShape ([string]$deepSeekLedger.sourceShape) `
+          -LiveShape $deepSeekLiveShape)
+        $deepSeekLedger.sourceShape = $deepSeekLiveShape
+      }
+      $deepSeekRows = @(Merge-DeepSeekUsageRows -LiveRows $deepSeekLiveRows -LedgerRows @($deepSeekLedger.rows))
+      # A transient lock must not erase metadata, so anonymize only after a good read
+      # (including a genuinely empty one).
+      $deepSeekLiveSessionIds = @($deepSeekLiveRows |
+        ForEach-Object { [string]$_.sessionId } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique)
+      $deepSeekRows = @(Protect-DeletedDeepSeekRows -Rows $deepSeekRows -LiveSessionIds $deepSeekLiveSessionIds)
+      if (-not $deepSeekLedger.recoveredImported -and @($deepSeekLedger.baselineDaily).Count -gt 0) {
+        $deepSeekLedger.recoveredDaily = @(New-DeepSeekRecoveredDaily `
+          -Rows $deepSeekRows `
+          -BaselineDaily @($deepSeekLedger.baselineDaily) `
+          -LiveReadable $true)
+        $deepSeekLedger.recoveredImported = $true
+      }
+      $deepSeekRecoveredRows = @(New-DeepSeekRecoveredRows -RecoveredDaily @($deepSeekLedger.recoveredDaily))
+      $deepSeekDisplayRows = @($deepSeekRows + $deepSeekRecoveredRows)
+      # Recovered rows live in recoveredDaily, never inside rows.
+      $deepSeekLedger.rows = @($deepSeekRows)
+      $deepSeekLedger.updatedAt = [DateTime]::UtcNow.ToString('o')
+      if ($deepSeekRead.ok) {
+        if (-not (Save-DeepSeekLedger $DeepSeekLedgerPath $deepSeekLedger)) {
+          Write-Verbose "The DeepSeek ledger could not be written to $DeepSeekLedgerPath"
+        }
+      }
+    } else {
+      # An unreadable or missing store proves nothing about session existence: show
+      # the ledger as-is and never stamp shape, recovery or anonymization.
+      $deepSeekRecoveredRows = @(New-DeepSeekRecoveredRows -RecoveredDaily @($deepSeekLedger.recoveredDaily))
+      $deepSeekDisplayRows = @($deepSeekLedger.rows + $deepSeekRecoveredRows)
+    }
+    $script:DeepSeekRows = @($deepSeekDisplayRows)
+    $script:DeepSeekAvailable = $deepSeekDisplayRows.Count -gt 0
   } catch {
     $script:DeepSeekRows = @()
     $script:DeepSeekAvailable = $false

@@ -221,9 +221,10 @@ async function measureRealStartup(generatorPath) {
   assert.equal(path.resolve(fileURLToPath(reportUrl)), reportPath);
   assert.equal(reportUrl.searchParams.get("period"), "30days");
   await client.send("Page.navigate", { url: reportUrl.href });
+  // The page is its own first frame; the first snapshot is the first real data it shows.
   const visibleState = await waitFor(
     () => evaluate(`(function () {
-      if (!document.querySelector('#app')?.classList.contains('show') || !window.__DATA__) return null;
+      if (!window.__DATA__) return null;
       return {
         period: document.querySelector('[data-period][aria-pressed="true"]')?.dataset.period,
         complete: window.__DATA__.complete,
@@ -232,7 +233,7 @@ async function measureRealStartup(generatorPath) {
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
       };
     })()`),
-    "the real dashboard to become visible",
+    "the real dashboard's first snapshot",
     30000
   );
   const visibleMilliseconds = Date.now() - startedAt;
@@ -241,24 +242,33 @@ async function measureRealStartup(generatorPath) {
   assert.equal(visibleState.complete, false);
   assert.equal(visibleState.bootError, null);
   assert.equal(visibleState.overflow, 0);
-  // The page opens on quota alone; the default period's usage follows.
+  // The page opens on quota alone; the default period's usage follows once the boards
+  // have handed over to the hero, which must stay a short beat after the readable revision.
+  let readableAt = null;
   const usageState = await waitFor(
     () => evaluate(`(function () {
       if (!window.__DATA__ || !(window.__DATA__.periods || []).length) return null;
-      if (document.querySelector('#app').classList.contains('usage-pending')) return null;
-      return { periods: window.__DATA__.periods };
-    })()`),
+      return {
+        periods: window.__DATA__.periods,
+        revealed: !document.querySelector('#app').classList.contains('usage-pending')
+      };
+    })()`).then((state) => {
+      if (state && readableAt === null) readableAt = Date.now();
+      return state && state.revealed ? state : null;
+    }),
     "the first usage revision",
     30000
   );
   const usageMilliseconds = Date.now() - startedAt;
-  assert.deepEqual(usageState.periods, ["30days"]);
+  const handOverMilliseconds = Date.now() - readableAt;
+  assert.ok(handOverMilliseconds < 1500, `Usage was revealed ${handOverMilliseconds} ms after its readable revision`);
+  assert.equal(usageState.periods[0], "30days");
   assert.deepEqual(runtimeErrors, [], `Browser runtime errors: ${runtimeErrors.join(" | ")}`);
   assert.ok(
     usageMilliseconds < budgetMilliseconds,
     `Real process-to-usage took ${usageMilliseconds} ms, above the ${budgetMilliseconds} ms budget. ${generatorOutput.join("")}`
   );
-  console.log(`BrowserSmoke.mjs: REAL STARTUP PASS (process-to-app.show ${visibleMilliseconds} ms, process-to-usage ${usageMilliseconds} ms)`);
+  console.log(`BrowserSmoke.mjs: REAL STARTUP PASS (process-to-first-snapshot ${visibleMilliseconds} ms, process-to-usage ${usageMilliseconds} ms)`);
 }
 
 async function main() {
@@ -355,52 +365,65 @@ async function main() {
   await client.send("Page.navigate", { url: reportUrl.href });
 
   await new Promise((resolve) => setTimeout(resolve, 800));
+  // The page is its own first frame: shell, planned periods and the usage boards render
+  // before any snapshot, and there is no full-screen loader to hide them.
   const waitingState = await evaluate(`({
-    appShown: document.querySelector('#app').classList.contains('show'),
-    loaderVisible: getComputedStyle(document.querySelector('#loader')).display !== 'none',
+    shellVisible: getComputedStyle(document.querySelector('#app')).opacity === '1' &&
+      getComputedStyle(document.querySelector('.topbar')).display !== 'none',
+    pending: document.querySelector('#app').classList.contains('usage-pending'),
+    waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
+    boards: Array.from(document.querySelectorAll('#boards .board')).map((b) => b.dataset.p).join(','),
+    planned: Array.from(document.querySelectorAll('#periodSeg [data-period]')).map((b) => b.dataset.period + (b.disabled ? '' : '!')).join(','),
+    status: document.querySelector('#bootMessage').textContent,
+    loader: Boolean(document.querySelector('#loader')),
     protocol: location.protocol,
     bootError: window.__BOOT_ERROR__ || null
   })`);
-  assert.equal(waitingState.appShown, false);
-  assert.equal(waitingState.loaderVisible, true);
+  assert.equal(waitingState.shellVisible, true, "The page must be visible before its first snapshot");
+  assert.equal(waitingState.pending, true);
+  assert.equal(waitingState.waitVisible, true);
+  assert.equal(waitingState.boards, "claude,codex", "A first launch shows the two collector boards every run has");
+  assert.equal(waitingState.planned, "all,week,30days", "The launch period leads the planned, still disabled periods");
+  assert.equal(waitingState.status, "读取额度与本地记录");
+  assert.equal(waitingState.loader, false);
   assert.equal(waitingState.protocol, "file:");
   assert.equal(waitingState.bootError, null);
 
   writeSnapshot(quotaOnlySnapshot);
   await waitFor(
-    () => evaluate("window.__DATA__ && window.__DATA__.revision === 98 && document.querySelector('#app').classList.contains('usage-pending') && !document.querySelector('#app').classList.contains('show')"),
+    () => evaluate("window.__DATA__ && window.__DATA__.revision === 98 && document.querySelector('#app').classList.contains('usage-pending') && document.querySelectorAll('#boards .board').length === 3"),
     "the quota-only first revision before the reveal"
   );
   const quotaOnlyState = await evaluate(`({
-    appShown: document.querySelector('#app').classList.contains('show'),
     pending: document.querySelector('#app').classList.contains('usage-pending'),
     waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
     heroHidden: getComputedStyle(document.querySelector('.hero')).display === 'none',
     detailsHidden: getComputedStyle(document.querySelector('#details')).display === 'none',
     quotaCards: document.querySelectorAll('#quota .quota').length,
+    placeholders: document.querySelectorAll('#quota .is-placeholder').length,
     codexPlan: document.querySelector('#quota').textContent.includes('Pro'),
-    loaderHidden: getComputedStyle(document.querySelector('#loader')).display === 'none' ||
-      document.querySelector('#loader').classList.contains('done'),
+    boards: Array.from(document.querySelectorAll('#boards .board')).map((b) => b.dataset.p).join(','),
+    remembered: JSON.parse(localStorage.getItem('ai-usage-ledger-prefs') || '{}').lastProviders,
     bootError: window.__BOOT_ERROR__ || null,
     overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
   })`);
-  assert.equal(quotaOnlyState.appShown, false, "The page must stay hidden behind the loader until the reveal");
   assert.equal(quotaOnlyState.pending, true);
   assert.equal(quotaOnlyState.waitVisible, true);
   assert.equal(quotaOnlyState.heroHidden, true);
   assert.equal(quotaOnlyState.detailsHidden, true);
   assert.equal(quotaOnlyState.quotaCards, 1, "Only the Codex card belongs to the codex filter.");
+  assert.equal(quotaOnlyState.placeholders, 0, "The first answer replaces every placeholder");
   assert.equal(quotaOnlyState.codexPlan, true);
-  // The loader now carries the collector progress and stays until the first usage
-  // revision, so a quota-only page is still behind it by design.
-  assert.equal(quotaOnlyState.loaderHidden, false, "The loader must stay up until the first usage revision");
+  assert.equal(quotaOnlyState.boards, "claude,codex,deepseek", "Boards follow the provider cards' order");
+  assert.equal(quotaOnlyState.remembered, undefined, "A revision before the first report must not rewrite the remembered providers");
   assert.equal(quotaOnlyState.bootError, null);
   assert.equal(quotaOnlyState.overflow, 0);
 
   writeSnapshot(partialSnapshot);
 
+  // Usage is revealed once the boards have finished and handed over to the hero.
   await waitFor(
-    () => evaluate("window.__DATA__ && window.__DATA__.runId === 'previous-browser-smoke' && window.__DATA__.revision === 99 && document.querySelector('#app').classList.contains('show')"),
+    () => evaluate("window.__DATA__ && window.__DATA__.runId === 'previous-browser-smoke' && window.__DATA__.revision === 99 && !document.querySelector('#app').classList.contains('usage-pending')"),
     "the first progressive revision"
   );
   const partialState = await evaluate(`(function () {
@@ -412,21 +435,24 @@ async function main() {
       quotaLoading: document.querySelector('#quota').textContent.includes('\u6b63\u5728\u83b7\u53d6\u989d\u5ea6'),
       usagePending: document.querySelector('#app').classList.contains('usage-pending'),
       heroShown: getComputedStyle(document.querySelector('.hero')).display !== 'none',
-      loaderHidden: getComputedStyle(document.querySelector('#loader')).display === 'none' ||
-        document.querySelector('#loader').classList.contains('done'),
+      waitHidden: getComputedStyle(document.querySelector('.usage-wait')).display === 'none',
+      unironed: document.querySelectorAll('#boards .board:not(.ironed)').length,
+      remembered: JSON.parse(localStorage.getItem('ai-usage-ledger-prefs') || '{}').lastProviders,
       bootError: window.__BOOT_ERROR__ || null,
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
     };
   })()`);
+  assert.deepEqual(partialState.remembered, ["claude", "codex", "deepseek"], "The providers a report carries are remembered for the next first frame");
   assert.equal(partialState.usagePending, false);
   assert.equal(partialState.heroShown, true);
+  assert.equal(partialState.waitHidden, true, "The usage wait card must be gone once usage is revealed");
+  assert.equal(partialState.unironed, 0, "Usage was revealed before every board was finished and ironed");
   assert.equal(partialState.complete, false);
   assert.equal(partialState.period, defaultPeriod);
   assert.equal(partialState.provider, "codex");
   assert.equal(partialState.updating, true);
   assert.equal(partialState.quotaLoading, true);
   assert.equal(partialState.bootError, null);
-  assert.equal(partialState.loaderHidden, true, "The loader must be gone once usage is ready");
   assert.equal(partialState.overflow, 0);
 
   const duplicateProbe = await evaluate(`(function () {
@@ -517,7 +543,7 @@ async function main() {
     periodFocused: document.activeElement?.dataset.period,
     provider: document.querySelector('[data-filter][aria-pressed="true"]')?.dataset.filter,
     updating: document.querySelector('#stamp').textContent.includes('\u66f4\u65b0\u4e2d'),
-    loaderHidden: getComputedStyle(document.querySelector('#loader')).display === 'none',
+    usageShown: !document.querySelector('#app').classList.contains('usage-pending'),
     tableShown: !document.querySelector('#trendTable').classList.contains('hide'),
     themePinned: Boolean(document.documentElement.dataset.cs),
     bootError: window.__BOOT_ERROR__ || null,
@@ -528,7 +554,7 @@ async function main() {
   assert.equal(interactiveState.periodFocused, defaultPeriod);
   assert.equal(interactiveState.provider, "codex");
   assert.equal(interactiveState.updating, true);
-  assert.equal(interactiveState.loaderHidden, true);
+  assert.equal(interactiveState.usageShown, true);
   assert.equal(interactiveState.tableShown, true);
   assert.equal(interactiveState.themePinned, true);
   assert.equal(interactiveState.bootError, null);
@@ -787,6 +813,272 @@ async function main() {
   assert.equal(freePlanState.claude, true, "The Claude card stays");
   assert.deepEqual(freePlanState.seen, { codex: false }, "The Free answer is remembered for the next launch");
 
+  const navigateFresh = async (name, params = {}) => {
+    const url = pathToFileURL(path.join(work, "report.html"));
+    url.searchParams.set("scenario", name);
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+    await client.send("Page.navigate", { url: url.href });
+  };
+  const revealed = (runId) => `window.__DATA__?.runId === '${runId}' && !document.querySelector('#app').classList.contains('usage-pending')`;
+  // A phone docks the wait card to the viewport bottom, which would hide any slot movement.
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+
+  // The quota row keeps the box it had last launch, so the usage slot does not move when
+  // the first answer replaces the placeholder - including a desktop-app record that adds
+  // its stale line and sign-in hint.
+  const stableQuota = structuredClone(quotaOnlySnapshot);
+  stableQuota.runId = "stable-browser-smoke";
+  stableQuota.revision = 1;
+  stableQuota.limits.claudeQuota = {
+    ok: true, reason: null, source: "claude_desktop", stale: true, staleReason: "no_credentials",
+    cachedAt: new Date(Date.now() - 20 * 60000).toISOString(),
+    fiveHour: { utilization: 22, resetsAt: null }, sevenDay: { utilization: 7, resetsAt: null }, limits: []
+  };
+  writeSnapshot(stableQuota);
+  await navigateFresh("stable-first", { provider: "claude" });
+  await waitFor(
+    () => evaluate("window.__DATA__?.runId === 'stable-browser-smoke' && !document.querySelector('#quota .is-placeholder')"),
+    "the launch that records the quota box"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  fs.unlinkSync(dataPath);
+  await navigateFresh("stable-second", { provider: "claude" });
+  await waitFor(
+    () => evaluate("Boolean(document.querySelector('#quota .is-placeholder')) && document.fonts.status === 'loaded'"),
+    "the next launch's remembered placeholder"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const slotBefore = await evaluate("Math.round(document.querySelector('.usage-wait').getBoundingClientRect().top)");
+  writeSnapshot(stableQuota);
+  await waitFor(
+    () => evaluate("window.__DATA__?.runId === 'stable-browser-smoke' && !document.querySelector('#quota .is-placeholder')"),
+    "the next launch's first quota answer"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const slotAfter = await evaluate("Math.round(document.querySelector('.usage-wait').getBoundingClientRect().top)");
+  assert.equal(slotAfter, slotBefore, "The usage slot moved when the remembered quota answer replaced its placeholder");
+
+  // A store written by an older build or another local page must not break the page.
+  await evaluate("localStorage.setItem('ai-usage-ledger-prefs', JSON.stringify({ quotaShape: 7, quota: 'x', view: [], lastQuota: 'y', lastProviders: 'z' }))");
+  const tamperedSnapshot = structuredClone(partialSnapshot);
+  tamperedSnapshot.runId = "tampered-browser-smoke";
+  writeSnapshot(tamperedSnapshot);
+  await navigateFresh("tampered-prefs");
+  await waitFor(() => evaluate(revealed("tampered-browser-smoke")), "a reveal over a tampered preference store");
+  assert.equal(await evaluate("window.__BOOT_ERROR__ || null"), null, "A tampered preference store broke the page");
+
+  // A script error reports itself, but readable usage is still revealed.
+  fs.unlinkSync(dataPath);
+  await navigateFresh("script-error");
+  await waitFor(() => evaluate("Boolean(document.querySelector('#boards .board'))"), "the boards before a script error");
+  await evaluate("setTimeout(function () { throw new Error('browser-smoke transient'); }, 0)");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const scriptErrorSnapshot = structuredClone(partialSnapshot);
+  scriptErrorSnapshot.runId = "script-error-browser-smoke";
+  writeSnapshot(scriptErrorSnapshot);
+  await waitFor(() => evaluate(revealed("script-error-browser-smoke")), "a reveal after a script error");
+  assert.ok(String(await evaluate("window.__BOOT_ERROR__ && window.__BOOT_ERROR__.message")).includes("browser-smoke transient"));
+
+  // A new run that has no usage yet sends the page back to waiting, from fresh boards.
+  const runA = structuredClone(partialSnapshot);
+  runA.runId = "run-a-browser-smoke";
+  writeSnapshot(runA);
+  await navigateFresh("run-change");
+  await waitFor(() => evaluate(revealed("run-a-browser-smoke")), "the first run's reveal");
+  const runB = structuredClone(quotaOnlySnapshot);
+  runB.runId = "run-b-browser-smoke";
+  runB.revision = 1;
+  runB.progress = { done: 1, total: 3, stage: "period", period: defaultPeriod };
+  // Its early list lacks DeepSeek; the fresh boards still start from what the last run
+  // produced instead of dropping a board for an early list.
+  runB.providers = ["claude", "codex"];
+  writeSnapshot(runB);
+  await waitFor(
+    () => evaluate("window.__DATA__?.runId === 'run-b-browser-smoke' && document.querySelector('#app').classList.contains('usage-pending')"),
+    "the next run's wait"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const runChangeState = await evaluate(`({
+    waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
+    ironed: document.querySelectorAll('#boards .board.ironed').length,
+    boards: Array.from(document.querySelectorAll('#boards .board')).map((b) => b.dataset.p).join(','),
+    claude: document.querySelector('#boards .board[data-p="claude"]')?.dataset.state
+  })`);
+  assert.equal(runChangeState.waitVisible, true);
+  assert.equal(runChangeState.boards, "claude,codex,deepseek", "A new run's boards did not start from the remembered providers");
+  assert.equal(runChangeState.ironed, 1, "Only the startup board of the next run is finished");
+  assert.equal(runChangeState.claude, "run");
+
+  // A run's quota-only revisions used to list only CodeBurn's pair even when the run had
+  // DeepSeek rows; its first report then added DeepSeek. While usage waits the boards only
+  // gain one, so the DeepSeek board is built at most once and never withdrawn; its filter
+  // follows the boards until the reveal and the reports after it. Only a revision with a
+  // report touches the remembered providers, and only the final one may drop one.
+  const pair = ["claude", "codex"], withDeepSeek = ["claude", "codex", "deepseek"];
+  const providerRun = (runId, early, late) => {
+    const shape = (snapshot, providers) => {
+      snapshot.runId = runId;
+      snapshot.providers = providers;
+      if (!providers.includes("deepseek")) {
+        for (const slot of Object.values(snapshot.reports)) delete slot.deepseek;
+      }
+      return snapshot;
+    };
+    const step = (base, revision, done, providers) => shape(Object.assign(structuredClone(base), {
+      revision, complete: false, progress: { done, total: 3, stage: "period", period: defaultPeriod }
+    }), providers);
+    return [
+      step(quotaOnlySnapshot, 1, 1, early),
+      step(quotaOnlySnapshot, 2, 2, early),
+      step(partialSnapshot, 3, 3, late),
+      shape(Object.assign(structuredClone(finalSnapshot), { revision: 4 }), late)
+    ];
+  };
+  const playProviderRun = async (name, seed, snapshots, afterRevision = async () => {}) => {
+    const seedScript = seed
+      ? `localStorage.setItem('ai-usage-ledger-prefs', ${JSON.stringify(JSON.stringify(seed))});`
+      : "localStorage.removeItem('ai-usage-ledger-prefs');";
+    const watcher = await client.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(function () {
+        try { ${seedScript} } catch (e) {}
+        var watch = window.__providerWatch = { added: 0, removed: 0, boards: [], picker: [], label: [], remembered: [] };
+        var setItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (key, value) {
+          if (key === 'ai-usage-ledger-prefs') {
+            try { watch.remembered.push(JSON.parse(value).lastProviders || null); } catch (e) {}
+          }
+          return setItem.apply(this, arguments);
+        };
+        function deepSeekBoard(node) { return node.nodeType === 1 && node.matches('.board[data-p="deepseek"]'); }
+        function note(list, value) {
+          var last = list[list.length - 1];
+          if (!last || last.value !== value) list.push({ value: value, revision: window.__DATA__ ? window.__DATA__.revision : 0 });
+        }
+        new MutationObserver(function (records) {
+          records.forEach(function (record) {
+            record.addedNodes.forEach(function (node) { if (deepSeekBoard(node)) watch.added += 1; });
+            record.removedNodes.forEach(function (node) { if (deepSeekBoard(node)) watch.removed += 1; });
+          });
+          // States are read once the page has drawn its first frame (the boards exist).
+          if (!document.querySelector('#boards .board')) return;
+          note(watch.boards, Array.prototype.map.call(document.querySelectorAll('#boards .board'), function (b) { return b.dataset.p; }).join(','));
+          note(watch.picker, document.querySelector('[data-filter="deepseek"]').hidden);
+          note(watch.label, document.getElementById('waitLabel').textContent);
+        }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden'] });
+      })();`
+    });
+    try {
+      if (fs.existsSync(dataPath)) fs.unlinkSync(dataPath);
+      await navigateFresh(name);
+      await waitFor(() => evaluate("document.querySelectorAll('#boards .board').length > 0"), `the ${name} first frame`);
+      for (const snapshot of snapshots) {
+        writeSnapshot(snapshot);
+        await waitFor(
+          () => evaluate(`window.__DATA__?.runId === '${snapshot.runId}' && window.__DATA__.revision === ${snapshot.revision}`),
+          `the ${name} revision ${snapshot.revision}`
+        );
+        await afterRevision(snapshot);
+        // A real quota-only revision stays on screen for about a second.
+        if (!snapshot.periods.length) await new Promise((resolve) => setTimeout(resolve, 400));
+        else await waitFor(() => evaluate(revealed(snapshot.runId)), `the ${name} reveal`);
+      }
+      return await evaluate(`({
+        watch: window.__providerWatch,
+        picker: !document.querySelector('[data-filter="deepseek"]').hidden,
+        card: Boolean(document.querySelector('#split .prov[data-p="deepseek"]')),
+        board: Boolean(document.querySelector('#boards .board[data-p="deepseek"]')),
+        pressed: document.querySelector('[data-filter][aria-pressed="true"]')?.dataset.filter,
+        focused: document.activeElement?.dataset?.filter || null,
+        urlProvider: new URL(location.href).searchParams.get('provider'),
+        quotaCards: document.querySelectorAll('#quota .quota').length,
+        bootError: window.__BOOT_ERROR__ || null
+      })`);
+    } finally {
+      await client.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: watcher.identifier });
+    }
+  };
+  // Every write of the shared preference store carries an allowed list, and the last one
+  // is what the next launch starts from.
+  const remembers = (state, allowed, last) => {
+    const writes = state.watch.remembered.map((value) => JSON.stringify(value));
+    return writes.length > 0 && writes[writes.length - 1] === JSON.stringify(last) &&
+      writes.every((value) => allowed.some((list) => value === JSON.stringify(list)));
+  };
+
+  // A machine without DeepSeek keeps the two-provider page it has always had.
+  const pairOnly = await playProviderRun("provider-pair", { lastProviders: pair }, providerRun("provider-pair-browser-smoke", pair, pair));
+  assert.equal(pairOnly.bootError, null);
+  assert.deepEqual(pairOnly.watch.boards, [{ value: "claude,codex", revision: 0 }]);
+  assert.equal(pairOnly.watch.added, 0);
+  assert.deepEqual(pairOnly.watch.picker, [{ value: true, revision: 0 }]);
+  assert.equal(pairOnly.watch.label.length, 1, JSON.stringify(pairOnly.watch.label));
+  assert.equal(pairOnly.picker, false);
+  assert.equal(pairOnly.card, false);
+  assert.ok(remembers(pairOnly, [pair], pair), JSON.stringify(pairOnly.watch.remembered));
+
+  // A first launch learns DeepSeek from the first report: one new board, one new filter.
+  const firstLaunch = await playProviderRun("provider-first", null, providerRun("provider-first-browser-smoke", pair, withDeepSeek));
+  assert.equal(firstLaunch.bootError, null);
+  assert.deepEqual(firstLaunch.watch.boards,
+    [{ value: "claude,codex", revision: 0 }, { value: "claude,codex,deepseek", revision: 3 }], JSON.stringify(firstLaunch.watch));
+  assert.equal(firstLaunch.watch.added, 1, "The DeepSeek board was built more than once");
+  assert.equal(firstLaunch.watch.removed, 0, "The DeepSeek board was withdrawn mid-run");
+  assert.deepEqual(firstLaunch.watch.picker,
+    [{ value: true, revision: 0 }, { value: false, revision: 3 }], "The DeepSeek filter did not appear exactly once with its report");
+  assert.deepEqual(firstLaunch.watch.label.map((entry) => entry.revision), [0, 3], JSON.stringify(firstLaunch.watch.label));
+  assert.equal(firstLaunch.picker, true, "The DeepSeek filter is missing once its report is shown");
+  assert.equal(firstLaunch.card, true);
+  assert.ok(remembers(firstLaunch, [null, withDeepSeek], withDeepSeek), JSON.stringify(firstLaunch.watch.remembered));
+
+  // A returning reader keeps the DeepSeek board and filter from the first frame on.
+  const returning = await playProviderRun("provider-returning", { lastProviders: withDeepSeek }, providerRun("provider-returning-browser-smoke", pair, withDeepSeek));
+  assert.equal(returning.bootError, null);
+  assert.deepEqual(returning.watch.boards, [{ value: "claude,codex,deepseek", revision: 0 }], `The boards changed while usage waited: ${JSON.stringify(returning.watch.boards)}`);
+  assert.equal(returning.watch.added, 1, "The DeepSeek board was built more than once");
+  assert.equal(returning.watch.removed, 0, "The DeepSeek board was withdrawn mid-run");
+  assert.equal(returning.board, true);
+  assert.deepEqual(returning.watch.picker, [{ value: false, revision: 0 }], `The DeepSeek filter was hidden mid-run: ${JSON.stringify(returning.watch.picker)}`);
+  assert.equal(returning.watch.label.length, 1, `The wait label changed while usage waited: ${JSON.stringify(returning.watch.label)}`);
+  assert.equal(returning.picker, true);
+  assert.equal(returning.card, true);
+  assert.ok(remembers(returning, [withDeepSeek], withDeepSeek), `A revision before the first report rewrote the remembered providers: ${JSON.stringify(returning.watch.remembered)}`);
+
+  // A remembered DeepSeek this run no longer has (its rows were deleted) keeps its board
+  // until the reveal and leaves with the wait card. A DeepSeek filter chosen while waiting
+  // falls back to all at the reveal: pressed button, focus, URL and quota row follow, and
+  // the final revision remembers the exact list.
+  const withdrawn = await playProviderRun("provider-withdrawn", { lastProviders: withDeepSeek },
+    providerRun("provider-withdrawn-browser-smoke", pair, pair), async (snapshot) => {
+      if (snapshot.revision !== 1) return;
+      await evaluate("(function () { var b = document.querySelector('[data-filter=\"deepseek\"]'); b.focus(); b.click(); })()");
+    });
+  assert.equal(withdrawn.bootError, null);
+  assert.deepEqual(withdrawn.watch.boards, [{ value: "claude,codex,deepseek", revision: 0 }], JSON.stringify(withdrawn.watch.boards));
+  assert.equal(withdrawn.watch.removed, 0, "A remembered board was withdrawn while usage waited");
+  assert.deepEqual(withdrawn.watch.picker, [{ value: false, revision: 0 }, { value: true, revision: 3 }], JSON.stringify(withdrawn.watch.picker));
+  assert.equal(withdrawn.card, false);
+  assert.equal(withdrawn.pressed, "all", "The withdrawn DeepSeek filter did not fall back to all");
+  assert.equal(withdrawn.focused, "all", "Focus was lost with the hidden DeepSeek filter");
+  assert.equal(withdrawn.urlProvider, null, "The URL kept the withdrawn DeepSeek filter");
+  assert.ok(withdrawn.quotaCards >= 1, "The quota row was not redrawn for the fallback filter");
+  assert.ok(remembers(withdrawn, [withDeepSeek, pair], pair), JSON.stringify(withdrawn.watch.remembered));
+
+  // With reduced motion the hand-over is a plain swap: no view transition, no wait.
+  await client.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-color-scheme", value: "light" }, { name: "prefers-reduced-motion", value: "reduce" }]
+  });
+  const countTransitions = await client.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: "window.__vtCalls = 0; if (document.startViewTransition) { var vt = document.startViewTransition.bind(document); document.startViewTransition = function (cb) { window.__vtCalls += 1; return vt(cb); }; }"
+  });
+  const reducedSnapshot = structuredClone(partialSnapshot);
+  reducedSnapshot.runId = "reduced-browser-smoke";
+  writeSnapshot(reducedSnapshot);
+  await navigateFresh("reduced-motion");
+  await waitFor(() => evaluate(revealed("reduced-browser-smoke")), "a reduced-motion reveal");
+  assert.equal(await evaluate("window.__vtCalls"), 0, "Reduced motion still ran a view transition");
+  await client.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: countTransitions.identifier });
+  await client.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+
   const staleIncompleteSnapshot = structuredClone(finalSnapshot);
   staleIncompleteSnapshot.runId = "stale-incomplete-browser-smoke";
   staleIncompleteSnapshot.revision = 1;
@@ -825,16 +1117,16 @@ async function main() {
   const staleFailureRequests = coordinationRequests();
   await new Promise((resolve) => setTimeout(resolve, 1300));
   const staleFailureState = await evaluate(`({
-    appShown: document.querySelector('#app').classList.contains('show'),
-    loaderHidden: getComputedStyle(document.querySelector('#loader')).display === 'none',
+    usageShown: !document.querySelector('#app').classList.contains('usage-pending'),
+    waitHidden: getComputedStyle(document.querySelector('.usage-wait')).display === 'none',
     stamp: document.querySelector('#stamp').textContent,
     failure: window.__GENERATION_FAILURE__ || null,
     bootError: window.__BOOT_ERROR__ || null,
     windowRow: document.querySelector('#quota .quota:first-child').textContent.includes('窗口成本')
   })`);
   assert.equal(staleFailureState.windowRow, false, "A terminal failure left the window row placeholder.");
-  assert.equal(staleFailureState.appShown, true);
-  assert.equal(staleFailureState.loaderHidden, true);
+  assert.equal(staleFailureState.usageShown, true, "Readable usage stays shown after a later terminal failure");
+  assert.equal(staleFailureState.waitHidden, true);
   assert.ok(staleFailureState.stamp.includes("\u6570\u636e\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u91cd\u65b0\u542f\u52a8"));
   assert.equal(staleFailureState.failure?.stage, "final_publish");
   assert.equal(staleFailureState.failure?.runId, "stale-incomplete-browser-smoke");
@@ -864,12 +1156,14 @@ async function main() {
   await new Promise((resolve) => setTimeout(resolve, 1300));
   const quotaFailureState = await evaluate(`({
     stamp: document.querySelector('#stamp').textContent,
-    wait: document.querySelector('.usage-wait p').textContent,
+    wait: document.querySelector('#bootMessage').textContent,
+    waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
     quotaCards: document.querySelectorAll('#quota .quota').length,
     bootError: window.__BOOT_ERROR__ || null
   })`);
   assert.ok(quotaFailureState.stamp.includes("数据生成失败"));
   assert.ok(quotaFailureState.wait.includes("读取失败"));
+  assert.equal(quotaFailureState.waitVisible, true);
   assert.ok(quotaFailureState.quotaCards >= 1);
   assert.equal(quotaFailureState.bootError, null);
   assert.equal(coordinationRequests(), quotaFailureRequests, "Polling continued after a startup failure over a quota-only page.");
@@ -881,16 +1175,33 @@ async function main() {
   await client.send("Page.navigate", { url: failureUrl.href });
   await waitFor(
     () => evaluate("document.querySelector('#bootMessage')?.textContent.includes('数据生成失败') === false"),
-    "the startup loader before its failure signal"
+    "the startup page before its failure signal"
   );
+  // The first frame is interactive: a filter change before any snapshot only re-draws
+  // what is already known, and must not be treated as a broken page.
+  const preSnapshotFilter = await evaluate(`(function () {
+    document.querySelector('[data-filter="codex"]').click();
+    var codexLabel = document.querySelector('#waitLabel').textContent;
+    document.querySelector('[data-filter="all"]').click();
+    return {
+      codexLabel: codexLabel,
+      allLabel: document.querySelector('#waitLabel').textContent,
+      placeholders: document.querySelectorAll('#quota .is-placeholder').length,
+      bootError: window.__BOOT_ERROR__ || null
+    };
+  })()`);
+  assert.equal(preSnapshotFilter.bootError, null, "A filter click before the first snapshot broke the page");
+  assert.ok(preSnapshotFilter.codexLabel.startsWith("Codex"));
+  assert.ok(preSnapshotFilter.allLabel.includes("合计"));
+  assert.ok(preSnapshotFilter.placeholders >= 1, "The remembered Claude quota card holds its place");
   writeFailurePayload({ reason: "initial_generation_failed", stage: "default_usage" });
   const malformedFailureRequests = coordinationRequests();
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const malformedFailureState = await evaluate(`({
     message: document.querySelector('#bootMessage').textContent,
-    appShown: document.querySelector('#app').classList.contains('show')
+    failed: document.querySelector('.usage-wait').classList.contains('failed')
   })`);
-  assert.equal(malformedFailureState.appShown, false);
+  assert.equal(malformedFailureState.failed, false);
   assert.notEqual(malformedFailureState.message, "数据生成失败，请重新启动");
   assert.ok(coordinationRequests() > malformedFailureRequests, "A malformed failure sidecar stopped polling.");
   writeFailure("default_usage", "startup-browser-smoke");
@@ -901,14 +1212,18 @@ async function main() {
   const startupFailureRequests = coordinationRequests();
   await new Promise((resolve) => setTimeout(resolve, 1300));
   const startupFailureState = await evaluate(`({
-    appShown: document.querySelector('#app').classList.contains('show'),
-    loaderVisible: getComputedStyle(document.querySelector('#loader')).display !== 'none',
+    waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
+    failed: document.querySelector('.usage-wait').classList.contains('failed'),
+    stamp: document.querySelector('#stamp').textContent,
+    quotaNote: document.querySelector('#quota .is-placeholder .quota-note')?.textContent || '',
     message: document.querySelector('#bootMessage').textContent,
     failure: window.__GENERATION_FAILURE__ || null,
     bootError: window.__BOOT_ERROR__ || null
   })`);
-  assert.equal(startupFailureState.appShown, false);
-  assert.equal(startupFailureState.loaderVisible, true);
+  assert.equal(startupFailureState.waitVisible, true);
+  assert.equal(startupFailureState.failed, true);
+  assert.equal(startupFailureState.stamp, "数据生成失败");
+  assert.equal(startupFailureState.quotaNote, "未读取", "Placeholders must stop saying they are reading");
   assert.equal(startupFailureState.message, "数据生成失败，请重新启动");
   assert.equal(startupFailureState.failure?.stage, "default_usage");
   assert.equal(startupFailureState.failure?.runId, "startup-browser-smoke");

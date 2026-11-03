@@ -500,9 +500,10 @@ Assert-String $data.source.version 'source.version' 128 $false
 if (Test-HasField $data.source 'local') { Assert-String $data.source.local 'source.local' 128 }
 Assert-String $data.appDir 'appDir' 32767 $false
 
-# The page renders the providers a run actually produced. CodeBurn's pair is the
-# floor; a local provider such as OpenCode's DeepSeek record is additive, and a run
-# without one must keep publishing the same two-provider page.
+# The page renders the providers a run shows: its plan until the first period lands,
+# then the providers its published periods carry. CodeBurn's pair is the floor; a
+# local provider such as OpenCode's DeepSeek record is additive, and a run without one
+# must keep publishing the same two-provider page.
 $localProviderKeys = @('deepseek')
 $allowedProviderKeys = @('claude', 'codex') + $localProviderKeys
 if (-not ($data.providers -is [Collections.IList]) -or $data.providers -is [string]) {
@@ -561,7 +562,7 @@ foreach ($periodKey in $periods) {
   }
 }
 
-# The first-paint progress bar is driven by real collector steps, never a guess.
+# The usage boards complete only on real collector steps, never on a guess.
 Assert-Fields $data.progress 'progress' @('done', 'total', 'stage', 'period') @('done', 'total', 'stage', 'period')
 foreach ($field in @('done', 'total')) { Assert-Int64 $data.progress.$field "progress.$field" }
 if ([int64]$data.progress.total -lt 1 -or [int64]$data.progress.done -gt [int64]$data.progress.total) {

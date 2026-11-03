@@ -191,7 +191,7 @@ $payload = [ordered]@{
   providers = @('claude', 'codex', 'deepseek')
   periods = @('30days', 'week', 'all')
   plannedPeriods = @('30days', 'week', 'all')
-  progress = [ordered]@{ done = 6; total = 6; stage = 'final'; period = '' }
+  progress = [ordered]@{ done = 3; total = 3; stage = 'final'; period = '' }
   reports = $reports
   limits = [ordered]@{
     claudeQuota = [ordered]@{

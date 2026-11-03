@@ -15,7 +15,7 @@ Desktop shortcut
           a launch waiting behind a failed owner requests a bounded early close for that runId
        2. after owning Global, recheck the marker before taking Local or reading any collector
        3. copy template.html and bundled pixel fonts to %TEMP%\ClaudeUsage
-       4. after uncontended preflight, open the loader before starting collectors
+       4. after uncontended preflight, open the page before starting collectors
        5. start ccusage blocks for Claude window metadata, priced from the current public
           catalogue (may overlap)
        6. start the quota reads: the Claude OAuth request as an async HttpClient task when
@@ -589,7 +589,7 @@ and input size were not fixed, and the measurement stops at atomic `data.js` pub
 browser can add up to its 500 ms polling interval plus render time. A cold CodeBurn public-price
 cache, and a cold exchange-rate cache for non-USD display, can also add their network timeout.
 Provider quota reads start at launch and run concurrently with the local reports, so their
-network timeout can no longer hold the page behind the loader or delay a usage revision. A second normal launch while the mutex is
+network timeout can never hold back the quota row or delay a usage revision. A second normal launch while the mutex is
 held opens the already-running report instead of waiting through its cleanup grace period.
 That reuse first advances a read-lease timestamp. The owner waits a fresh grace period from
 the latest lease and switches the run state to `closing` before deletion; a launch racing
@@ -599,7 +599,7 @@ keeps raw scratch locked, final browser files still burn after the read grace, t
 becomes `cleanup_failed`, and the next launch removes that residue before opening a page.
 
 A 2026-08-30 real-process/real-Edge smoke run measured 9.484 seconds from spawning the source
-generator to `#app.show` with the first 30-day revision. After the final security and parser
+generator to the first 30-day revision being visible. After the final security and parser
 hardening, repeat runs measured 8.436 seconds from `src/` and 8.455 seconds from the installed
 runtime mirror. The automated budget is 25 seconds. The test starts a fresh headless Edge
 concurrently, consumes the exact URL the generator hands
@@ -632,7 +632,15 @@ removed its owner, state, and data files and left zero CodeBurn or ccusage proce
 - `periods`: the period keys currently available, with the requested/default period first;
   the normal sequence grows from `[]` (quota-only revisions) to `30days`, then `30days`,
   `week`, `all`. A quota-only revision has empty `reports` and a provisional USD `currency`;
-  the page shows the quota cards and holds the usage sections behind one status card
+  the page shows the quota cards while the usage slot assembles one bead board per collector
+  step
+- `providers`: the providers the page renders. Until the first period is published it is the
+  run's plan (DeepSeek is listed when the startup read found its rows); from then on it is what
+  the published reports carry. The two CodeBurn providers are always present
+- `plannedPeriods`: the run's whole period plan in collection order, from the first revision,
+  so the switcher keeps its shape while reports land
+- `progress`: `{ done, total, stage, period }`; `done` out of `total` (3) counts startup, then
+  the default period's Claude report, then its Codex report, and drives the usage boards
 - `reports[periodKey].claude` / `reports[periodKey].codex`: trimmed CodeBurn reports
   whose `models` cost sum equals `overview.cost`; each also carries aggregate-only
   `costReconciliation` metadata described above
@@ -718,7 +726,7 @@ explicit neutral remainder rather than a hidden gap.
   Windows sharing violations use a bounded exponential retry while preserving the old target.
 - A failure before the first usage publish atomically writes a terminal `failure.js` containing
   only a reason, stage, run ID, and timestamp. The
-  loader stops polling and reports the failure immediately; normal burn-after-read still removes
+  page stops polling and reports the failure immediately; normal burn-after-read still removes
   the signal and page. A period candidate enters the committed in-memory report set only when its
   atomic snapshot write succeeds. A later failure therefore restores the last published period
   set, publishes `complete:true`, classifies the stage, changes untouched quota states to
@@ -949,8 +957,11 @@ dismisses it.
 
 Daily curves use a small local cubic path helper with horizontal endpoint
 tangents. Each segment stays between its two sample values, avoiding the peak
-overshoot that a generic spline can introduce. Entry, meter, heatmap, and control
-animations use transforms and opacity; path drawing animates `stroke-dashoffset`.
+overshoot that a generic spline can introduce. Section, meter, bead, and control
+animations use transforms and opacity; path drawing animates `stroke-dashoffset`, and
+ironing a finished bead board transitions the SVG `r` of its few hundred circles once. The
+usage reveal is a same-document View Transition of the usage slot and, on a wide screen,
+the bead boards; the root is not captured, so the rest of the page stays live during it.
 `prefers-reduced-motion` reduces both durations and delays to effectively
 instantaneous state changes.
 
@@ -1051,7 +1062,8 @@ than a fixed `foreignObject`, which silently clipped wider totals.
   Afterwards it stops every Edge helper that carries the run's unique profile path, because helpers
   outlive the browser process and kept the temporary profile open, and then removes the profile.
 - Run `node tests/BrowserSmoke.mjs --real-generator <generator-path>` for the optional
-  process-to-Edge `#app.show` budget. It consumes the generator's captured launch URL and verifies
+  process-to-usage budget, and requires usage to be revealed within 1.5 seconds of its readable
+  revision. It consumes the generator's captured launch URL and verifies
   `active` owner/lease state, but deliberately does not claim Windows ShellExecute coverage.
 - Generate a real snapshot with `-NoLaunch -KeepFile`. A shell inside the Claude desktop app
   sees its redirected `%APPDATA%\Claude`; to check what the shortcut sees, run the generator

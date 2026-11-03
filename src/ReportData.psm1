@@ -344,6 +344,445 @@ function Merge-CodeBurnDurableModels {
   return $Report
 }
 
+# A local provider row is keyed by session, day and model. Live OpenCode rows win
+# that key; ledger-only rows survive sessions OpenCode has deleted. Recovered rows
+# live outside this set in recoveredDaily, so this merge never has to drop them.
+function Merge-DeepSeekUsageRows {
+  [CmdletBinding()]
+  param(
+    [object[]]$LiveRows = @(),
+    [object[]]$LedgerRows = @()
+  )
+
+  $merged = [ordered]@{}
+  foreach ($row in @($LiveRows)) {
+    if (-not $row) { continue }
+    $key = '{0}|{1}|{2}' -f (Get-RecordValue $row 'sessionId'), (Get-RecordValue $row 'date'), (Get-RecordValue $row 'model')
+    $merged[$key] = $row
+  }
+  foreach ($row in @($LedgerRows)) {
+    if (-not $row) { continue }
+    $key = '{0}|{1}|{2}' -f (Get-RecordValue $row 'sessionId'), (Get-RecordValue $row 'date'), (Get-RecordValue $row 'model')
+    if ($merged.Contains($key)) { continue }
+    $merged[$key] = $row
+  }
+  return @($merged.Values)
+}
+
+function Test-DeepSeekLedgerDate([string]$Value) {
+  return $Value -match '\A\d{4}-\d{2}-\d{2}\z'
+}
+
+function Get-DeepSeekLocalMidnightUnixSeconds([string]$Date) {
+  $midnight = [datetime]::MinValue
+  if (-not [datetime]::TryParseExact($Date, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$midnight)) {
+    return $null
+  }
+  $offset = [TimeZoneInfo]::Local.GetUtcOffset($midnight)
+  return [double]([DateTimeOffset]::new($midnight, $offset).ToUnixTimeSeconds())
+}
+
+# A retained snapshot carries daily cost and calls for days OpenCode dropped, and
+# a partially deleted day leaves live rows that no longer add up to its snapshot
+# total. This is computed ONCE: the positive gap per date is persisted in the
+# ledger as recoveredDaily and emitted from there on later runs, so new live usage
+# on the same day can never shrink the deleted spend.
+function New-DeepSeekRecoveredDaily {
+  [CmdletBinding()]
+  param(
+    [object[]]$Rows = @(),
+    [object[]]$BaselineDaily = @(),
+    [bool]$LiveReadable = $true
+  )
+
+  if (-not $LiveReadable) { return @() }
+  $covered = @{}
+  foreach ($row in @($Rows)) {
+    if (-not $row) { continue }
+    $date = [string](Get-RecordValue $row 'date')
+    if (-not (Test-DeepSeekLedgerDate $date)) { continue }
+    $cost = Get-RecordNumber $row 'cost'
+    $calls = Get-RecordNumber $row 'calls'
+    if (-not (Test-FiniteNumberValue $cost) -or -not (Test-FiniteNumberValue $calls)) { continue }
+    if (-not $covered.ContainsKey($date)) {
+      $covered[$date] = [pscustomobject]@{ cost = 0.0; calls = 0.0 }
+    }
+    $covered[$date].cost += $cost
+    $covered[$date].calls += $calls
+  }
+
+  $baselineByDate = [ordered]@{}
+  foreach ($day in @($BaselineDaily)) {
+    if (-not $day) { continue }
+    $date = [string](Get-RecordValue $day 'date')
+    if (-not (Test-DeepSeekLedgerDate $date)) { continue }
+    $cost = Get-RecordNumber $day 'cost'
+    $calls = Get-RecordNumber $day 'calls'
+    if (-not (Test-FiniteNumberValue $cost) -or -not (Test-FiniteNumberValue $calls)) { continue }
+    if (-not $baselineByDate.Contains($date)) {
+      $baselineByDate[$date] = [pscustomobject]@{ cost = 0.0; calls = 0.0 }
+    }
+    $baselineByDate[$date].cost += $cost
+    $baselineByDate[$date].calls += $calls
+  }
+
+  $result = New-Object Collections.Generic.List[object]
+  $tolerance = 0.000000001
+  foreach ($date in $baselineByDate.Keys) {
+    $coveredCost = 0.0
+    $coveredCalls = 0.0
+    if ($covered.ContainsKey($date)) {
+      $coveredCost = $covered[$date].cost
+      $coveredCalls = $covered[$date].calls
+    }
+    $costGap = $baselineByDate[$date].cost - $coveredCost
+    $callGap = $baselineByDate[$date].calls - $coveredCalls
+    if ($costGap -lt $tolerance) { $costGap = 0.0 }
+    if ($callGap -lt $tolerance) { $callGap = 0.0 }
+    if ($costGap -le 0 -and $callGap -le 0) { continue }
+    $result.Add([pscustomobject][ordered]@{ date = $date; cost = $costGap; calls = $callGap })
+  }
+  return $result.ToArray()
+}
+
+function New-DeepSeekRecoveredRows {
+  [CmdletBinding()]
+  param(
+    [object[]]$RecoveredDaily = @()
+  )
+
+  $result = New-Object Collections.Generic.List[object]
+  foreach ($day in @($RecoveredDaily)) {
+    if (-not $day) { continue }
+    $date = [string](Get-RecordValue $day 'date')
+    if (-not (Test-DeepSeekLedgerDate $date)) { continue }
+    $cost = Get-RecordNumber $day 'cost'
+    $calls = Get-RecordNumber $day 'calls'
+    if (-not (Test-FiniteNumberValue $cost) -or $cost -lt 0 -or
+        -not (Test-FiniteNumberValue $calls) -or $calls -lt 0) { continue }
+    $createdAt = Get-DeepSeekLocalMidnightUnixSeconds $date
+    if ($null -eq $createdAt) { continue }
+    $result.Add([pscustomobject][ordered]@{
+      sessionId        = ''
+      createdAt        = $createdAt
+      date             = $date
+      model            = 'deepseek-history'
+      project          = ''
+      projectPath      = ''
+      calls            = $calls
+      cost             = $cost
+      inputTokens      = 0.0
+      outputTokens     = 0.0
+      cacheReadTokens  = 0.0
+      cacheWriteTokens = 0.0
+      tokensPartial    = $true
+      kind             = 'recovered'
+    })
+  }
+  return $result.ToArray()
+}
+
+# Rows whose session no longer exists are collapsed into one anonymous row per
+# date and model, so the ledger cannot retain deleted session ids or project paths.
+# Callers must only run this after a successful live read.
+function Protect-DeletedDeepSeekRows {
+  [CmdletBinding()]
+  param(
+    [object[]]$Rows = @(),
+    [object[]]$LiveSessionIds = @()
+  )
+
+  $live = @{}
+  foreach ($id in @($LiveSessionIds)) {
+    $text = [string]$id
+    if (-not [string]::IsNullOrWhiteSpace($text)) { $live[$text] = $true }
+  }
+
+  $kept = New-Object Collections.Generic.List[object]
+  $deleted = [ordered]@{}
+  foreach ($row in @($Rows)) {
+    if (-not $row) { continue }
+    $sessionId = [string](Get-RecordValue $row 'sessionId')
+    if ($sessionId -and $live.ContainsKey($sessionId)) {
+      $kept.Add($row)
+      continue
+    }
+    $date = [string](Get-RecordValue $row 'date')
+    if (-not (Test-DeepSeekLedgerDate $date)) { continue }
+    $model = [string](Get-RecordValue $row 'model')
+    $key = '{0}|{1}' -f $date, $model
+    if (-not $deleted.Contains($key)) {
+      $createdAt = Get-DeepSeekLocalMidnightUnixSeconds $date
+      if ($null -eq $createdAt) { continue }
+      $deleted[$key] = [pscustomobject][ordered]@{
+        sessionId        = ''
+        createdAt        = $createdAt
+        date             = $date
+        model            = $model
+        project          = ''
+        projectPath      = ''
+        calls            = 0.0
+        cost             = 0.0
+        inputTokens      = 0.0
+        outputTokens     = 0.0
+        cacheReadTokens  = 0.0
+        cacheWriteTokens = 0.0
+        tokensPartial    = $false
+        kind             = 'deleted'
+      }
+    }
+    $target = $deleted[$key]
+    $target.calls += (Get-RecordNumber $row 'calls')
+    $target.cost += (Get-RecordNumber $row 'cost')
+    $target.inputTokens += (Get-RecordNumber $row 'inputTokens')
+    $target.outputTokens += (Get-RecordNumber $row 'outputTokens')
+    $target.cacheReadTokens += (Get-RecordNumber $row 'cacheReadTokens')
+    $target.cacheWriteTokens += (Get-RecordNumber $row 'cacheWriteTokens')
+    $target.tokensPartial = $target.tokensPartial -or [bool](Get-RecordValue $row 'tokensPartial')
+  }
+  foreach ($row in $deleted.Values) { $kept.Add($row) }
+  return $kept.ToArray()
+}
+
+# Child-session legacy rows and root-session v2 rows describe the same calls with
+# different keys. A shape change therefore drops raw ledger rows (non-empty session
+# id) on dates the live read already covers; anonymous deleted aggregates and
+# uncovered dates keep their history.
+function Sync-DeepSeekLedgerShape {
+  [CmdletBinding()]
+  param(
+    [object[]]$Rows = @(),
+    [object[]]$LiveRows = @(),
+    [string]$SourceShape = '',
+    [string]$LiveShape = ''
+  )
+
+  if ([string]::IsNullOrWhiteSpace($LiveShape) -or
+      [string]::IsNullOrWhiteSpace($SourceShape) -or
+      $LiveShape -eq $SourceShape) {
+    return @($Rows)
+  }
+  $liveDates = @{}
+  foreach ($row in @($LiveRows)) {
+    if (-not $row) { continue }
+    $date = [string](Get-RecordValue $row 'date')
+    if ($date) { $liveDates[$date] = $true }
+  }
+  $result = New-Object Collections.Generic.List[object]
+  foreach ($row in @($Rows)) {
+    if (-not $row) { continue }
+    $sessionId = [string](Get-RecordValue $row 'sessionId')
+    $date = [string](Get-RecordValue $row 'date')
+    if ($sessionId -and $liveDates.ContainsKey($date)) { continue }
+    $result.Add($row)
+  }
+  return $result.ToArray()
+}
+
+function New-EmptyDeepSeekLedger {
+  return [pscustomobject][ordered]@{
+    version           = 2
+    updatedAt         = ''
+    sourceShape       = ''
+    recoveredImported = $false
+    recoveredDaily    = @()
+    rows              = @()
+    baselineDaily     = @()
+  }
+}
+
+function ConvertTo-DeepSeekLedgerRow($Row) {
+  if ($null -eq $Row) { return $null }
+  $date = [string](Get-RecordValue $Row 'date')
+  if (-not (Test-DeepSeekLedgerDate $date)) { return $null }
+  foreach ($name in @('createdAt', 'calls', 'cost', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens')) {
+    if (-not (Test-FiniteNumberValue (Get-RecordValue $Row $name))) { return $null }
+  }
+  $createdAt = [double](Get-RecordValue $Row 'createdAt')
+  $calls = [double](Get-RecordValue $Row 'calls')
+  $inputTokens = [double](Get-RecordValue $Row 'inputTokens')
+  $outputTokens = [double](Get-RecordValue $Row 'outputTokens')
+  $cacheReadTokens = [double](Get-RecordValue $Row 'cacheReadTokens')
+  $cacheWriteTokens = [double](Get-RecordValue $Row 'cacheWriteTokens')
+  # A negative cost is a valid provider correction; calls and tokens cannot be negative.
+  # The ceiling keeps one hand-edited 1e308 row from overflowing local report sums.
+  $cost = [double](Get-RecordValue $Row 'cost')
+  if ($createdAt -lt 0 -or $calls -lt 0 -or
+      $inputTokens -lt 0 -or $outputTokens -lt 0 -or
+      $cacheReadTokens -lt 0 -or $cacheWriteTokens -lt 0) { return $null }
+  if ([Math]::Abs($cost) -gt 1000000000000000 -or
+      $calls -gt 1000000000000000 -or $inputTokens -gt 1000000000000000 -or
+      $outputTokens -gt 1000000000000000 -or $cacheReadTokens -gt 1000000000000000 -or
+      $cacheWriteTokens -gt 1000000000000000) { return $null }
+  return [pscustomobject][ordered]@{
+    sessionId        = [string](Get-RecordValue $Row 'sessionId')
+    createdAt        = $createdAt
+    date             = $date
+    model            = [string](Get-RecordValue $Row 'model')
+    project          = [string](Get-RecordValue $Row 'project')
+    projectPath      = [string](Get-RecordValue $Row 'projectPath')
+    calls            = $calls
+    cost             = [double](Get-RecordValue $Row 'cost')
+    inputTokens      = $inputTokens
+    outputTokens     = $outputTokens
+    cacheReadTokens  = $cacheReadTokens
+    cacheWriteTokens = $cacheWriteTokens
+    tokensPartial    = [bool](Get-RecordValue $Row 'tokensPartial')
+    kind             = [string](Get-RecordValue $Row 'kind')
+  }
+}
+
+function Read-DeepSeekLedger([string]$Path) {
+  $empty = New-EmptyDeepSeekLedger
+  try {
+    if (-not (Test-Path -LiteralPath $Path)) {
+      return [pscustomobject][ordered]@{ ok = $true; status = 'missing'; ledger = $empty }
+    }
+    $file = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($file.Length -gt 33554432) {
+      return [pscustomobject][ordered]@{ ok = $false; status = 'oversize'; ledger = $empty }
+    }
+    $document = [IO.File]::ReadAllText($Path) | ConvertFrom-Json
+    if ($null -eq $document) {
+      return [pscustomobject][ordered]@{ ok = $false; status = 'corrupt'; ledger = $empty }
+    }
+    $names = @($document.PSObject.Properties.Name)
+    if (-not ($names -contains 'version')) {
+      return [pscustomobject][ordered]@{ ok = $false; status = 'version'; ledger = $empty }
+    }
+    $version = 0
+    if (-not [int]::TryParse([string](Get-RecordValue $document 'version'), [ref]$version)) {
+      return [pscustomobject][ordered]@{ ok = $false; status = 'version'; ledger = $empty }
+    }
+    if ($version -ne 1 -and $version -ne 2) {
+      return [pscustomobject][ordered]@{ ok = $false; status = 'version'; ledger = $empty }
+    }
+
+    $status = 'ok'
+    $ledger = New-EmptyDeepSeekLedger
+    $ledger.updatedAt = [string](Get-RecordValue $document 'updatedAt')
+    if ($names -contains 'sourceShape') {
+      $sourceShape = [string](Get-RecordValue $document 'sourceShape')
+      if ($sourceShape -eq 'v2' -or $sourceShape -eq 'legacyRoot' -or $sourceShape -eq 'legacyFlat') {
+        $ledger.sourceShape = $sourceShape
+      }
+    }
+
+    $rows = New-Object Collections.Generic.List[object]
+    $recovered = [ordered]@{}
+    if ($names -contains 'rows') {
+      foreach ($row in @($document.rows)) {
+        $safeRow = ConvertTo-DeepSeekLedgerRow $row
+        if ($null -eq $safeRow) { $status = 'partial'; continue }
+        if ($safeRow.kind -eq 'recovered') {
+          # v1 stored recovered rows inline; move them to the persisted daily array.
+          if (-not $recovered.Contains($safeRow.date)) {
+            $recovered[$safeRow.date] = [pscustomobject]@{ cost = 0.0; calls = 0.0 }
+          }
+          $recovered[$safeRow.date].cost += $safeRow.cost
+          $recovered[$safeRow.date].calls += $safeRow.calls
+          continue
+        }
+        $rows.Add($safeRow)
+      }
+    }
+    if ($names -contains 'recoveredDaily') {
+      foreach ($day in @($document.recoveredDaily)) {
+        if ($null -eq $day) { $status = 'partial'; continue }
+        $date = [string](Get-RecordValue $day 'date')
+        $cost = Get-RecordValue $day 'cost'
+        $calls = Get-RecordValue $day 'calls'
+        if (-not (Test-DeepSeekLedgerDate $date) -or
+            -not (Test-FiniteNumberValue $cost) -or [double]$cost -lt 0 -or
+            -not (Test-FiniteNumberValue $calls) -or [double]$calls -lt 0) {
+          $status = 'partial'
+          continue
+        }
+        if (-not $recovered.Contains($date)) {
+          $recovered[$date] = [pscustomobject]@{ cost = 0.0; calls = 0.0 }
+        }
+        $recovered[$date].cost += [double]$cost
+        $recovered[$date].calls += [double]$calls
+      }
+    }
+    $recoveredRows = New-Object Collections.Generic.List[object]
+    foreach ($date in $recovered.Keys) {
+      $recoveredRows.Add([pscustomobject][ordered]@{
+        date = $date; cost = $recovered[$date].cost; calls = $recovered[$date].calls
+      })
+    }
+    $ledger.recoveredDaily = $recoveredRows.ToArray()
+    $ledger.rows = $rows.ToArray()
+    if ($version -eq 1) {
+      # The v1 writer only knew the flat legacy query; marking that shape lets the
+      # first v2 read drop child/root overlap on dates live data already covers.
+      $ledger.sourceShape = 'legacyFlat'
+      $ledger.recoveredImported = $ledger.recoveredDaily.Count -gt 0
+    } else {
+      $ledger.recoveredImported = ([bool](Get-RecordValue $document 'recoveredImported')) -or ($ledger.recoveredDaily.Count -gt 0)
+    }
+
+    $baseline = New-Object Collections.Generic.List[object]
+    if ($names -contains 'baselineDaily') {
+      foreach ($day in @($document.baselineDaily)) {
+        if ($null -eq $day) { $status = 'partial'; continue }
+        $date = [string](Get-RecordValue $day 'date')
+        $cost = Get-RecordValue $day 'cost'
+        $calls = Get-RecordValue $day 'calls'
+        if (-not (Test-DeepSeekLedgerDate $date) -or
+            -not (Test-FiniteNumberValue $cost) -or [double]$cost -lt 0 -or
+            -not (Test-FiniteNumberValue $calls) -or [double]$calls -lt 0) {
+          $status = 'partial'
+          continue
+        }
+        $baseline.Add([pscustomobject][ordered]@{ date = $date; cost = [double]$cost; calls = [double]$calls })
+      }
+    }
+    $ledger.baselineDaily = $baseline.ToArray()
+    return [pscustomobject][ordered]@{ ok = $true; status = $status; ledger = $ledger }
+  } catch {
+    return [pscustomobject][ordered]@{ ok = $false; status = 'corrupt'; ledger = $empty }
+  }
+}
+
+function Save-DeepSeekLedger([string]$Path, $Ledger) {
+  $temp = $null
+  try {
+    $directory = Split-Path -Parent $Path
+    if ($directory -and -not (Test-Path -LiteralPath $directory)) {
+      New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $json = ConvertTo-Json -InputObject $Ledger -Depth 8 -Compress
+    $temp = $Path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+    [IO.File]::WriteAllText($temp, $json, (New-Object Text.UTF8Encoding($false)))
+    # A backup would retain raw session ids/project paths this save is anonymizing.
+    # NullString keeps Replace from creating one; a stale backup is deleted first.
+    $backup = $Path + '.bak'
+    if (Test-Path -LiteralPath $backup) {
+      try { [IO.File]::Delete($backup) } catch { return $false }
+    }
+    if (Test-Path -LiteralPath $Path) {
+      try {
+        [IO.File]::Replace($temp, $Path, [NullString]::Value, $true)
+        $temp = $null
+        return $true
+      } catch {
+        # Replace is atomic: a failure leaves the original bytes untouched.
+        if (Test-Path -LiteralPath $Path) { return $false }
+      }
+    }
+    [IO.File]::Move($temp, $Path)
+    $temp = $null
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($temp -and (Test-Path -LiteralPath $temp)) {
+      try { [IO.File]::Delete($temp) } catch {}
+    }
+  }
+}
+
 # Builds a report-shaped record from usage a local client already recorded, so a
 # provider CodeBurn does not read (OpenCode's own DeepSeek turns) renders through
 # the same cards, series and tables as Claude and Codex.
@@ -425,6 +864,7 @@ function New-LocalUsageReport {
       }
     }
     $modelRow = $models[$modelKey]
+    $modelRow.tokensPartial = $modelRow.tokensPartial -or [bool](Get-RecordValue $row 'tokensPartial')
     $modelRow.calls += [int64]$rowCalls
     $modelRow.cost = Assert-FiniteArithmeticResult ($modelRow.cost + $rowCost) 'summing a local usage model'
     $modelRow.inputTokens += $rowInput
@@ -486,6 +926,10 @@ function New-LocalUsageReport {
   $dailyRows = @($daily.Values | Sort-Object -Property date)
   $tokenTotal = $inputTokens + $cacheReadTokens
   $cacheHitPercent = if ($tokenTotal -gt 0) { $cacheReadTokens / $tokenTotal * 100 } else { 0.0 }
+  $modelTokensPartial = $false
+  foreach ($modelRow in $modelRows) {
+    if ($modelRow.tokensPartial) { $modelTokensPartial = $true; break }
+  }
 
   return [pscustomobject][ordered]@{
     currency   = $Currency
@@ -514,7 +958,7 @@ function New-LocalUsageReport {
       modelSource        = 'local_record'
       modelSourceCost    = $cost
       unattributedCost   = 0.0
-      modelTokensPartial = $false
+      modelTokensPartial = $modelTokensPartial
     }
   }
 }
@@ -1182,6 +1626,8 @@ function Select-CodexSessionRateLimit {
   return $null
 }
 
-Export-ModuleMember -Function Merge-CodeBurnDurableModels, New-LocalUsageReport, Resolve-DisplayCurrency, Get-CodexUsageRequest, ConvertTo-CodexQuota,
+Export-ModuleMember -Function Merge-CodeBurnDurableModels, Merge-DeepSeekUsageRows, New-DeepSeekRecoveredDaily, New-DeepSeekRecoveredRows,
+  Protect-DeletedDeepSeekRows, Sync-DeepSeekLedgerShape, New-EmptyDeepSeekLedger, Read-DeepSeekLedger, Save-DeepSeekLedger,
+  New-LocalUsageReport, Resolve-DisplayCurrency, Get-CodexUsageRequest, ConvertTo-CodexQuota,
   ConvertTo-ClaudeQuotaPayload, ConvertTo-ClaudeCodeCachedQuota, ConvertTo-ClaudeDesktopQuota, Select-NewestQuotaCandidate,
   Get-CodexAuthModeFromDocument, ConvertTo-CodexOfficialQuota, Select-CodexSessionRateLimit

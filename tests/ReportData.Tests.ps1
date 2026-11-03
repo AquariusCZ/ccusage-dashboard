@@ -507,4 +507,239 @@ try {
   Assert-True ($_.Exception.Message -like '*positive finite number*') 'a non-positive local usage rate must be rejected'
 }
 
+# A deleted OpenCode session must not shrink history. Live rows win their
+# session|day|model key, ledger-only rows survive, and a whole-day recovered row is
+# superseded (not added to) once live data covers its date.
+$mergeLive = [pscustomobject]@{
+  sessionId = 'live-s'; createdAt = 1000; date = '2026-10-10'; model = 'deepseek-flash'
+  project = 'alpha'; projectPath = 'C:/work/alpha'; calls = 3; cost = 0.3
+  inputTokens = 10; outputTokens = 2; cacheReadTokens = 0; cacheWriteTokens = 0
+}
+$mergeSameKey = [pscustomobject]@{
+  sessionId = 'live-s'; createdAt = 900; date = '2026-10-10'; model = 'deepseek-flash'
+  project = 'alpha'; projectPath = 'C:/work/alpha'; calls = 99; cost = 9.9
+  inputTokens = 0; outputTokens = 0; cacheReadTokens = 0; cacheWriteTokens = 0
+}
+$mergeDeleted = [pscustomobject]@{
+  sessionId = 'deleted-s'; createdAt = 800; date = '2026-10-11'; model = 'deepseek-pro'
+  project = ''; projectPath = ''; calls = 4; cost = 0.4
+  inputTokens = 5; outputTokens = 1; cacheReadTokens = 0; cacheWriteTokens = 0
+}
+$mergedRows = @(Merge-DeepSeekUsageRows -LiveRows @($mergeLive) -LedgerRows @($mergeSameKey, $mergeDeleted))
+Assert-True ($mergedRows.Count -eq 2) 'a live key must replace its ledger row while a ledger-only row survives'
+$mergedLive = @($mergedRows | Where-Object { $_.sessionId -eq 'live-s' })[0]
+Assert-Close ([double]$mergedLive.cost) 0.3 'a live row must overwrite the same ledger key'
+Assert-True (@($mergedRows | Where-Object { $_.sessionId -eq 'deleted-s' }).Count -eq 1) 'a ledger-only row must survive a deleted session'
+
+# Recovered spend is computed once and then frozen: new live usage on the same day
+# must never shrink it.
+function LocalDayRow([string]$Session, [string]$Date, [double]$Cost, [double]$Calls = 1) {
+  return [pscustomobject]@{
+    sessionId = $Session; createdAt = 1000; date = $Date; model = 'deepseek-flash'
+    project = ''; projectPath = ''; calls = $Calls; cost = $Cost
+    inputTokens = 0; outputTokens = 0; cacheReadTokens = 0; cacheWriteTokens = 0
+  }
+}
+$recoveryBaseline = @([pscustomobject]@{ date = '2026-10-05'; cost = 10.0; calls = 20.0 })
+$recoveryDaily = @(New-DeepSeekRecoveredDaily -Rows @((LocalDayRow 'live-s' '2026-10-05' 4.0 2)) -BaselineDaily $recoveryBaseline)
+Assert-True ($recoveryDaily.Count -eq 1) 'a partially covered day must produce one recovered entry'
+Assert-Close ([double]$recoveryDaily[0].cost) 6.0 'baseline 10 with live 4 recovers 6'
+Assert-True ($recoveryDaily[0].calls -eq 18) 'baseline calls minus live calls must be recovered'
+$recoveredRows = @(New-DeepSeekRecoveredRows -RecoveredDaily $recoveryDaily)
+Assert-True ($recoveredRows.Count -eq 1) 'a recovered daily entry must emit one row'
+$recoveredRow = $recoveredRows[0]
+Assert-True ($recoveredRow.sessionId -eq '' -and $recoveredRow.project -eq '' -and $recoveredRow.projectPath -eq '') 'a recovered row must have no session or project'
+Assert-True ($recoveredRow.model -eq 'deepseek-history' -and $recoveredRow.kind -eq 'recovered') 'a recovered row must be identifiable history'
+Assert-True ($recoveredRow.tokensPartial -eq $true) 'a recovered row has no token detail'
+Assert-Close ([double]$recoveredRow.cost) 6.0 'a recovered row must keep the frozen gap'
+$expectedMidnight = [double]([DateTimeOffset]::new(
+  [datetime]::ParseExact('2026-10-05', 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture),
+  [TimeZoneInfo]::Local.GetUtcOffset([datetime]::ParseExact('2026-10-05', 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture))
+).ToUnixTimeSeconds())
+Assert-Close ([double]$recoveredRow.createdAt) $expectedMidnight 'a recovered row must start at local midnight'
+$live7Rows = @(LocalDayRow 'live-s' '2026-10-05' 7.0 4)
+$report7 = New-LocalUsageReport -Rows (@($live7Rows) + $recoveredRows)
+Assert-Close ([double]$report7.overview.cost) 13.0 'live 7 plus frozen recovered 6 must total 13'
+$live10Rows = @(LocalDayRow 'live-s' '2026-10-05' 10.0 6)
+$report10 = New-LocalUsageReport -Rows (@($live10Rows) + $recoveredRows)
+Assert-Close ([double]$report10.overview.cost) 16.0 'live 10 plus frozen recovered 6 must total 16, not 10'
+$refeedRows = @(New-DeepSeekRecoveredRows -RecoveredDaily $recoveryDaily)
+Assert-Close ([double]$refeedRows[0].cost) 6.0 're-emitting recoveredDaily must keep the original 6'
+$coveredDay = @(New-DeepSeekRecoveredDaily -Rows @((LocalDayRow 'live-s' '2026-10-06' 12.0 25)) -BaselineDaily @([pscustomobject]@{ date = '2026-10-06'; cost = 10.0; calls = 20.0 }))
+Assert-True ($coveredDay.Count -eq 0) 'a day already above its baseline must recover nothing'
+$unreadableLive = @(New-DeepSeekRecoveredDaily -Rows @() -BaselineDaily $recoveryBaseline -LiveReadable $false)
+Assert-True ($unreadableLive.Count -eq 0) 'an unreadable live read must not freeze a recovery delta'
+$emptyLive = @(New-DeepSeekRecoveredDaily -Rows @() -BaselineDaily @([pscustomobject]@{ date = '2026-10-06'; cost = 10.0; calls = 20.0 }) -LiveReadable $true)
+Assert-True ($emptyLive.Count -eq 1 -and [double]$emptyLive[0].cost -eq 10.0) 'a successful read with zero rows may recover the full baseline'
+
+# A shape change keeps ledger-only dates and anonymous deleted aggregates; only raw
+# rows on dates the live read covers are dropped.
+$shapeRows = @(
+  [pscustomobject]@{ sessionId = 'child'; date = '2026-10-07'; model = 'deepseek-flash'; cost = 1.0 },
+  [pscustomobject]@{ sessionId = ''; date = '2026-10-07'; model = 'deepseek-history'; cost = 3.0; project = ''; projectPath = ''; kind = 'deleted' },
+  [pscustomobject]@{ sessionId = 'old'; date = '2026-10-08'; model = 'deepseek-flash'; cost = 2.0 }
+)
+$shapeLive = @([pscustomobject]@{ sessionId = 'root'; date = '2026-10-07'; model = 'deepseek-flash'; cost = 1.0 })
+$shapeKept = @(Sync-DeepSeekLedgerShape -Rows $shapeRows -LiveRows $shapeLive -SourceShape 'legacyFlat' -LiveShape 'v2')
+Assert-True ($shapeKept.Count -eq 2) 'a shape change must drop only raw covered rows'
+Assert-True (@($shapeKept | Where-Object { $_.sessionId -eq 'child' }).Count -eq 0) 'a raw child row on a covered date must be dropped'
+Assert-True (@($shapeKept | Where-Object { $_.sessionId -eq '' -and $_.date -eq '2026-10-07' }).Count -eq 1) 'an anonymous deleted row on a covered date must survive'
+Assert-True (@($shapeKept | Where-Object { $_.sessionId -eq 'old' }).Count -eq 1) 'an uncovered ledger row must survive'
+Assert-True (@(Sync-DeepSeekLedgerShape -Rows $shapeRows -LiveRows $shapeLive -SourceShape 'v2' -LiveShape 'v2').Count -eq 3) 'an unchanged shape must keep every ledger row'
+Assert-True (@(Sync-DeepSeekLedgerShape -Rows $shapeRows -LiveRows $shapeLive -SourceShape '' -LiveShape 'v2').Count -eq 3) 'an unknown source shape must not drop rows'
+
+# Deleted sessions are aggregated by date and model without ids or project paths.
+$privacyRows = @(
+  [pscustomobject]@{ sessionId = 'live-s'; date = '2026-10-09'; model = 'deepseek-flash'; project = 'alpha'; projectPath = 'C:/alpha'; calls = 1; cost = 1.0; inputTokens = 10; outputTokens = 1; cacheReadTokens = 0; cacheWriteTokens = 0 },
+  [pscustomobject]@{ sessionId = 'gone-a'; date = '2026-10-09'; model = 'deepseek-flash'; project = 'alpha'; projectPath = 'C:/alpha'; calls = 2; cost = 2.0; inputTokens = 20; outputTokens = 2; cacheReadTokens = 0; cacheWriteTokens = 0 },
+  [pscustomobject]@{ sessionId = 'gone-b'; date = '2026-10-09'; model = 'deepseek-flash'; project = 'beta'; projectPath = 'C:/beta'; calls = 3; cost = 3.0; inputTokens = 30; outputTokens = 3; cacheReadTokens = 0; cacheWriteTokens = 0; tokensPartial = $true }
+)
+$protectedRows = @(Protect-DeletedDeepSeekRows -Rows $privacyRows -LiveSessionIds @('live-s'))
+Assert-True ($protectedRows.Count -eq 2) 'live rows stay separate and deleted rows collapse into one'
+$protectedLive = @($protectedRows | Where-Object { $_.sessionId -eq 'live-s' })
+Assert-True ($protectedLive.Count -eq 1 -and $protectedLive[0].projectPath -eq 'C:/alpha') 'a live row must keep its project path'
+$protectedGone = @($protectedRows | Where-Object { $_.sessionId -eq '' })[0]
+Assert-True ($protectedGone.kind -eq 'deleted' -and $protectedGone.project -eq '' -and $protectedGone.projectPath -eq '') 'a deleted-session row must be anonymous'
+Assert-Close ([double]$protectedGone.cost) 5.0 'deleted rows must sum their cost'
+Assert-True ($protectedGone.calls -eq 5 -and $protectedGone.inputTokens -eq 50) 'deleted rows must sum calls and tokens'
+Assert-True ($protectedGone.tokensPartial -eq $true) 'deleted rows must OR tokensPartial'
+$allGone = @(Protect-DeletedDeepSeekRows -Rows $privacyRows -LiveSessionIds @())
+Assert-True ($allGone.Count -eq 1) 'an empty live set must aggregate every row into one deleted row'
+Assert-True ($allGone[0].sessionId -eq '' -and $allGone[0].projectPath -eq '' -and $allGone[0].kind -eq 'deleted') 'an empty store must leave no session id or path'
+Assert-Close ([double]$allGone[0].cost) 6.0 'an empty live set must sum every row cost'
+
+# Ledger IO distinguishes missing from unreadable, migrates v1 and keeps valid rows.
+$ledgerDir = Join-Path ([IO.Path]::GetTempPath()) ('reportdata-ledger-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $ledgerDir | Out-Null
+function Write-LedgerFile([string]$Path, $Value) {
+  [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding($false)))
+}
+function New-LedgerTestRow([string]$Session, [string]$Date, [double]$Cost, [string]$Kind = '') {
+  return [ordered]@{
+    sessionId = $Session; createdAt = 1000; date = $Date; model = 'deepseek-flash'
+    project = 'alpha'; projectPath = 'C:/alpha'; calls = 2; cost = $Cost
+    inputTokens = 10; outputTokens = 1; cacheReadTokens = 0; cacheWriteTokens = 0
+    tokensPartial = $false; kind = $Kind
+  }
+}
+try {
+  $missingRead = Read-DeepSeekLedger (Join-Path $ledgerDir 'missing.json')
+  Assert-True ($missingRead.ok -eq $true -and $missingRead.status -eq 'missing') 'a missing ledger is readable and empty'
+  Assert-True ($missingRead.ledger.version -eq 2) 'a missing ledger starts at version 2'
+
+  $corruptPath = Join-Path $ledgerDir 'corrupt.json'
+  [IO.File]::WriteAllText($corruptPath, '{not json')
+  $corruptRead = Read-DeepSeekLedger $corruptPath
+  Assert-True ($corruptRead.ok -eq $false -and $corruptRead.status -eq 'corrupt') 'corrupt JSON must not be treated as missing'
+  Assert-True (@($corruptRead.ledger.rows).Count -eq 0) 'a corrupt ledger must display no rows'
+
+  $versionPath = Join-Path $ledgerDir 'version.json'
+  Write-LedgerFile $versionPath ([ordered]@{ version = 99; rows = @() })
+  $versionRead = Read-DeepSeekLedger $versionPath
+  Assert-True ($versionRead.ok -eq $false -and $versionRead.status -eq 'version') 'an unsupported version must not be overwritten'
+
+  $oversizePath = Join-Path $ledgerDir 'oversize.json'
+  $stream = [IO.File]::Open($oversizePath, 'Create', 'Write')
+  $stream.SetLength(33554433)
+  $stream.Close()
+  $oversizeRead = Read-DeepSeekLedger $oversizePath
+  Assert-True ($oversizeRead.ok -eq $false -and $oversizeRead.status -eq 'oversize') 'an oversize ledger must not be read'
+
+  $v1Path = Join-Path $ledgerDir 'v1.json'
+  Write-LedgerFile $v1Path ([ordered]@{
+    version = 1
+    updatedAt = '2026-01-01T00:00:00Z'
+    snapshotImported = $true
+    rows = @(
+      (New-LedgerTestRow 'live-s' '2026-10-10' 2.0),
+      (New-LedgerTestRow '' '2026-10-10' 6.0 'recovered')
+    )
+    baselineDaily = @([ordered]@{ date = '2026-10-10'; cost = 10.0; calls = 20.0 })
+  })
+  $v1Read = Read-DeepSeekLedger $v1Path
+  Assert-True ($v1Read.ok -eq $true -and $v1Read.status -eq 'ok') 'a v1 ledger must migrate cleanly'
+  Assert-True ($v1Read.ledger.version -eq 2) 'a v1 ledger must migrate to version 2'
+  Assert-True ($v1Read.ledger.sourceShape -eq 'legacyFlat') 'a v1 ledger must record the legacy shape it was written with'
+  Assert-True (@($v1Read.ledger.rows).Count -eq 1) 'v1 recovered rows must leave rows'
+  Assert-True ($v1Read.ledger.recoveredDaily.Count -eq 1 -and [double]$v1Read.ledger.recoveredDaily[0].cost -eq 6.0) 'v1 recovered rows must move into recoveredDaily'
+  Assert-True ($v1Read.ledger.recoveredImported -eq $true) 'migrated recovered data must be marked imported'
+  Assert-True ($v1Read.ledger.baselineDaily.Count -eq 1) 'v1 baselineDaily must survive migration'
+
+  $v2Path = Join-Path $ledgerDir 'v2.json'
+  Write-LedgerFile $v2Path ([ordered]@{
+    version = 2
+    updatedAt = '2026-01-01T00:00:00Z'
+    sourceShape = 'v2'
+    recoveredImported = $false
+    recoveredDaily = @()
+    rows = @(
+      (New-LedgerTestRow 'refund-s' '2026-10-11' -1.5),
+      [ordered]@{ sessionId = 'bad'; createdAt = 1; date = 'nope'; model = 'x'; project = ''; projectPath = ''; calls = 1; cost = 1; inputTokens = 0; outputTokens = 0; cacheReadTokens = 0; cacheWriteTokens = 0 }
+    )
+    baselineDaily = @()
+  })
+  $v2Read = Read-DeepSeekLedger $v2Path
+  Assert-True ($v2Read.ok -eq $true -and $v2Read.status -eq 'partial') 'an invalid row must make the read partial, not fatal'
+  Assert-True (@($v2Read.ledger.rows).Count -eq 1) 'an invalid row must be skipped while valid rows survive'
+  Assert-Close ([double]$v2Read.ledger.rows[0].cost) -1.5 'a negative provider correction must be accepted'
+
+  $hugePath = Join-Path $ledgerDir 'huge.json'
+  $hugeRow = New-LedgerTestRow 'huge-s' '2026-10-12' 0.0
+  $hugeRow.cost = 1e308
+  Write-LedgerFile $hugePath ([ordered]@{ version = 2; updatedAt = ''; sourceShape = 'v2'; recoveredImported = $false; recoveredDaily = @(); rows = @($hugeRow); baselineDaily = @() })
+  $hugeRead = Read-DeepSeekLedger $hugePath
+  Assert-True ($hugeRead.ok -eq $true -and $hugeRead.status -eq 'partial') 'an oversized amount must not fail the whole ledger'
+  Assert-True (@($hugeRead.ledger.rows).Count -eq 0) 'a hand-edited 1e308 row must be skipped'
+
+  $savePath = Join-Path $ledgerDir 'save.json'
+  $saved = New-EmptyDeepSeekLedger
+  $saved.updatedAt = '2026-01-01T00:00:00Z'
+  Assert-True (Save-DeepSeekLedger $savePath $saved) 'the first ledger save must land'
+  $saved.updatedAt = '2026-01-02T00:00:00Z'
+  Assert-True (Save-DeepSeekLedger $savePath $saved) 'a second ledger save must replace the file'
+  Assert-True (-not (Test-Path -LiteralPath ($savePath + '.bak'))) 'a successful save must not retain a backup with old identifiers'
+  $beforeBytes = [IO.File]::ReadAllBytes($savePath)
+  $lock = [IO.File]::Open($savePath, 'Open', 'ReadWrite', 'None')
+  try {
+    $saved.updatedAt = '2026-01-03T00:00:00Z'
+    $failedSave = Save-DeepSeekLedger $savePath $saved
+  } finally {
+    $lock.Close()
+  }
+  Assert-True ($failedSave -eq $false) 'a locked target must fail the save'
+  $afterBytes = [IO.File]::ReadAllBytes($savePath)
+  Assert-True ([Convert]::ToBase64String($beforeBytes) -eq [Convert]::ToBase64String($afterBytes)) 'a failed save must leave the original bytes unchanged'
+  Assert-True (-not (Test-Path -LiteralPath ($savePath + '.bak'))) 'a failed save must not leave a backup'
+} finally {
+  if (Test-Path -LiteralPath $ledgerDir) { [IO.Directory]::Delete($ledgerDir, $true) }
+}
+
+$partialReport = New-LocalUsageReport -Rows @(
+  [pscustomobject]@{
+    sessionId = 's1'; createdAt = 1000; date = '2026-10-01'; model = 'deepseek-history'
+    project = ''; projectPath = ''; calls = 1; cost = 1.0
+    inputTokens = 0; outputTokens = 0; cacheReadTokens = 0; cacheWriteTokens = 0
+    tokensPartial = $true
+  },
+  [pscustomobject]@{
+    sessionId = 's2'; createdAt = 1001; date = '2026-10-01'; model = 'deepseek-history'
+    project = ''; projectPath = ''; calls = 1; cost = 1.0
+    inputTokens = 0; outputTokens = 0; cacheReadTokens = 0; cacheWriteTokens = 0
+    tokensPartial = $false
+  }
+)
+Assert-True ($partialReport.models[0].tokensPartial -eq $true) 'a partial row must mark the aggregate model row partial'
+Assert-True ($partialReport.costReconciliation.modelTokensPartial -eq $true) 'a partial model row must mark reconciliation tokens partial'
+
+$completeReport = New-LocalUsageReport -Rows @(
+  [pscustomobject]@{
+    sessionId = 's1'; createdAt = 1000; date = '2026-10-01'; model = 'deepseek-flash'
+    project = ''; projectPath = ''; calls = 1; cost = 1.0
+    inputTokens = 10; outputTokens = 2; cacheReadTokens = 0; cacheWriteTokens = 0
+    tokensPartial = $false
+  }
+)
+Assert-True ($completeReport.models[0].tokensPartial -eq $false) 'a complete row must keep its model tokens complete'
+Assert-True ($completeReport.costReconciliation.modelTokensPartial -eq $false) 'complete model rows must keep reconciliation tokens complete'
+
 Write-Output 'ReportData.Tests.ps1: PASS'

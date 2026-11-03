@@ -10,7 +10,8 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 - Local HTML, bundled pixel webfonts, CSS, and vanilla JavaScript dashboard
 - CodeBurn for normalized Claude/Codex usage and API reference-price estimates
 - OpenCode's own SQLite store (`opencode.db`, read-only) for the DeepSeek API account's
-  per-call cost and tokens, shown as a third provider when that store exists
+  per-call cost and tokens, backed by a durable USD ledger, shown as a third provider when
+  that store or its ledger exists
 - ccusage for the active window's burn rate, projection, and hour-of-day profile
 - Claude's OAuth usage endpoint for the real plan quota, with Claude Code's cached response and
   the Claude desktop app's plan-usage samples as labelled local fallbacks
@@ -127,16 +128,43 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   and every later one is not. It also drops `avgCostPerSession` from project rows, so that
   field is optional in the snapshot contract, and it offers no `status` need on a report that
   already reconciles - the durable pass must therefore stay conditional, never presumed.
-- The DeepSeek card is fed only by OpenCode's own store
-  (`%USERPROFILE%\.local\share\opencode\opencode.db`), opened read-only through the
-  Windows-supplied `winsqlite3.dll`: one grouped SELECT over `message` joined to
-  `session.directory`, no write, no network call, and never a read of OpenCode's
-  credential or `auth.json`. Each assistant turn already carries its own `cost` and
-  `tokens`, so that provider is labelled as API billing instead of a CodeBurn reference
+- The DeepSeek card is fed only by OpenCode's own per-call records. Current stores keep
+  assistant messages in `session_message` joined to `session_v2`; the root-session
+  expression groups child/subagent sessions under their parent, so the card counts
+  top-level conversations. The legacy `message`/`session` pair is queried only when
+  `sqlite3_prepare_v2` rejects the v2 shape (an older store); the two tables are never
+  unioned because the same assistant message id appears in both, and the one legacy-only
+  compaction row ($0.126) is intentionally not added. The store is opened read-only through
+  the Windows-supplied `winsqlite3.dll`, no write, no network call, and never a read of
+  OpenCode's credential or `auth.json`. Each assistant turn already carries its own `cost`
+  and `tokens`, so that provider is labelled as API billing instead of a CodeBurn reference
   price. SQLite's `localtime` modifier returns NULL under `winsqlite3` when `TZ` is unset,
-  so the local calendar day comes from the offset this process already knows. A missing,
-  unreadable, or DeepSeek-free store must leave the page exactly as it was with two
-  providers: the snapshot's `providers[]` is what the UI renders, never a hard-coded pair.
+  so the local calendar day comes from the offset this process already knows.
+- Deleted OpenCode sessions must not shrink DeepSeek history, so every run merges live rows
+  into a durable USD ledger at `%LOCALAPPDATA%\AIUsage\deepseek-ledger.json` (versioned JSON;
+  no key, prompt or response text; delete the file to clear the history). Live rows win the
+  session|day|model key and ledger-only rows survive. Version 2 stores the one-time positive
+  gap between retained snapshot daily totals and the rows at import in `recoveredDaily`; it
+  is frozen there (later live usage cannot shrink it) and emitted as `deepseek-history` rows
+  with cost and calls but no token detail. After a successful live read, rows whose session
+  no longer exists are collapsed by date and model into anonymous `deleted` rows, so no
+  deleted session id or project path is kept. The ledger records the live source shape (v2,
+  legacyRoot or legacyFlat); when a later read reports a different shape, rows on dates the
+  live data covers are dropped so child and root keys cannot double count. A failed or
+  missing live read leaves the ledger untouched: no shape stamp, no recovery import and no
+  anonymization. A corrupt,
+  oversized or unsupported-version ledger is left untouched; only a missing or readable
+  ledger is rewritten. DeepSeek's
+  `GET /user/balance` is account-wide: a shared company account's balance cannot be split
+  per API key, so OpenCode's provider records are the only attributable spend. A missing,
+  unreadable, or DeepSeek-free store and ledger must leave the page exactly as it was with
+  two providers: the snapshot's `providers[]` is what the UI renders, never a hard-coded pair.
+  Until the first period is published, `providers[]` is the run's plan (DeepSeek is listed
+  when the startup read found its rows); from then on it is what the published reports
+  carry. A quota-only revision that dropped DeepSeek made the page remove its board and
+  filter, then build both again on the first report. Known limitation: with a non-USD
+  CodeBurn display currency DeepSeek's report is attached only once a status pass supplies
+  the rate, so its filter can still appear after the reveal (its board no longer flickers).
 - Resolve quota state once per state change, not once per publish. A snapshot reuses the
   limits it resolved until `QuotaStateVersion` moves; the relay answer bumps that counter
   and the collection-stopped flag is part of the cache key, because either one would
@@ -205,11 +233,13 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   the quota state counter rather than re-serializing every slice. Publish `plannedPeriods`
   (the full `$PeriodKeys` plan) from the first revision: before any report exists the
   switcher must show the run's plan greyed out rather than collapsing to a single button,
-  and once data arrives it offers only the periods it can actually show. After the first usage
+  and once data arrives it offers only the periods it can actually show. The page derives the
+  same plan from its launch `?period=` before the first revision (the requested period, then
+  `week`, `30days`, `all`), so keep that order in step with `$PeriodKeys`. After the first usage
   publish, later failures must terminate with a retained
   `generationError` snapshot rather than blanking an already usable dashboard. A failure
   before the first usage snapshot must atomically publish a terminal, credential-free
-  `failure.js` sidecar so the loader stops immediately instead of polling until its timeout.
+  `failure.js` sidecar so the page stops immediately instead of polling until its timeout.
   With existing data, accept that sidecar only for the same `runId`; without data, accept only
   `initial_generation_failed`. Final
   `complete:true` publication belongs to the same failure state machine: a transient final
@@ -286,15 +316,42 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   removal succeeds, so a retry still has icon-ownership evidence. Any partial failure leaves a
   `stage=failed` marker and never prints success. A retry removes residue proven by the previous
   uninstall marker before replacing that marker, so a second force termination cannot orphan it.
-- Publish `progress` with every revision: `done`/`total` count real steps (one quota read,
-  one per period, one window-curve read, one final publish) and `stage` names the step that
-  is running. The first-paint bar is determinate from that, never a timed animation.
+- Publish `progress` with every revision: `done` out of `total` (3) counts real steps - the
+  first snapshot ends startup (quota reads started, the local DeepSeek ledger read), then the
+  default period's Claude report, then its Codex report - and `stage` names the step that is
+  running. The page is its own first frame: there is no full-screen loader. The quota row
+  shows first, and the usage area waits in the hero's slot with one perler-bead board per step
+  (DeepSeek for startup, then Claude, then Codex; boards sit in the provider cards' order). A
+  board completes only when `done` passes its step, and a readable default period completes
+  all of them. Startup also punches every board's pegs row by row, so it shows progress on a
+  setup without DeepSeek. Inside a running step beads land at a constant rate from the fixed,
+  deliberately long `BEAD_STEPS` times (code constants, not browser history): 90% at the
+  expected end, then slowing without ever stopping, so a normal run never stalls and a quick
+  step jumps ahead. A finished step sweeps its remaining beads in 240 ms and is ironed (open
+  rings close into the solid mark). The status line names the real step and adds "请稍候" once
+  a step passes its expected time - it never claims what is usual, and never shows a step count
+  or an estimated time. On a failure the board that was running says "中断". While usage waits,
+  the status line is the page's one live region (`#stamp` is muted until the reveal). A script
+  error reports itself but never blocks a reveal. Keep `BEAD_STEPS` in step with the
+  generator's `ProgressTotal` and its `claude`, `codex` loop; `Static.Tests.ps1` checks both.
 - Remember the reader's folds and views in `localStorage` under `ai-usage-ledger-prefs`: a
   provider card keeps its cost/token view, and a quota card is only rendered when its plan
   has a metered window (a Free plan has none, so the card is absent rather than empty).
   While the first quota read is pending, the previous run's answer decides, so the row does
-  not appear and disappear on every launch. A fold or view change is a transition, never a
-  re-render jump, and `prefers-reduced-motion` collapses all of it.
+  not appear and disappear on every launch. The same store keeps what the first frame needs
+  before any snapshot: `lastProviders` (which boards and filter buttons to show; written only by
+  a revision that carries a report, only ever gaining a provider until the final revision,
+  which writes the exact list), `quotaShape`
+  (each quota card's meter and stats labels plus the box it filled at that width and fold -
+  layout sizes, never values) and `fxShown` (whether the currency switch holds its place). A
+  placeholder or a loading quota card takes that remembered box, so the first answer does not
+  move the usage slot even when it carries a stale-record line or a sign-in hint. Every
+  `file://` page shares this store: sanitize it on load (nested maps that are not plain objects
+  are dropped) and never put anything sensitive in it. Within a run the bead boards only ever
+  gain a provider; the DeepSeek filter follows the boards until usage is shown and the
+  snapshot after that, and a filter that is no longer offered falls back to all (pressed
+  state, focus and URL included). A fold or view change is a transition, never a re-render
+  jump, and `prefers-reduced-motion` collapses all of it.
 - Treat `limits[]` as authoritative for "am I blocked", not just `five_hour` / `seven_day`.
 
 ## Type and visual rules
@@ -310,28 +367,50 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   than eyeballing it.
 - Provider marks are perler-bead mosaics: one `<circle r=".42">` per filled cell, no
   `shape-rendering`, `fill="currentColor"`. DeepSeek's whale is the official LobeHub path
-  downsampled to a 16-cell grid, Claude is the blocky mascot at 16 cells, and Codex plus
-  "all" stay at 12. A 44px chip with a 40px glyph keeps the bead pitch at 2.5px, the
+  downsampled to a 16-cell grid, Claude is the blocky mascot and Codex the official mark at 16
+  cells, and "all" stays at 12. The usage boards read each mark's grid from its symbol, and a
+  board is never drawn below the same 2.5px bead pitch (48px on the phone strip). A 44px chip with a 40px glyph keeps the bead pitch at 2.5px, the
   smallest size where beads still read as beads; at 26px in the filter row they degrade to
   a dotted silhouette, which is the accepted trade for brand fidelity.
 - Motion uses one token set taken from IBM Carbon's productive motion: standard
-  `cubic-bezier(.2,0,.38,.9)`, entrance `cubic-bezier(0,0,.38,.9)`, and 110/150/240 ms
-  for fades, small movement and expansion. Micro-interactions stay in Carbon's 90-120 ms
-  band with ease-out on user input. State changes are transitions, not keyframes, so a
-  second update retargets instead of restarting.
-- Entrance motion belongs to the intro window only (`#app.intro`): `card-in`, `block-pop`,
-  `grow-x`, `tile-in`, `area-in`, `draw-line`, `marker-in` and `cell-in` run once when the
-  page first appears and never again on a later revision. Updates change values through
-  transitions instead, `renderQuota` skips an identical rebuild, and the hero figure only
-  pulses when the reader changes the period or the filter. Measured before the change: 215
-  entrance animations restarted on every progressive revision.
+  `cubic-bezier(.2,0,.38,.9)`, entrance `cubic-bezier(0,0,.38,.9)`, and 70/110/150/240/400 ms
+  for a bead landing, fades, small movement, expansion and the one-time data draw.
+  Micro-interactions stay in Carbon's 90-120 ms band with ease-out on user input. State
+  changes are transitions, not keyframes, so a second update retargets instead of restarting.
+  No ad-hoc durations or easings; no overshoot, glare sweeps, confetti or soft shimmer. The
+  only timing constants outside the scale are sequencing: `--stagger` (20 ms between items),
+  `--stagger-fine` (12 ms between a meter's blocks) and `--caret-blink` (the system caret
+  rate); a discrete appearance is `steps(1)`, not a duration.
+- The usage reveal is a same-document View Transition of exactly two kinds of element: the wait
+  card becomes the hero card in place (`usage-slot`, clipped, old content out in 70 ms before
+  the hero fades in) and, on a wide screen, each bead board flies into its provider card's
+  chip when that chip is in view. The root is not captured, so the quota above stays live and
+  clickable. On a phone the wait card is a strip docked to the bottom edge and leaves as one
+  piece. Without View Transitions, with reduced motion, or in a background tab it is a plain
+  swap with no hold. Readable usage is revealed even if the run fails while the boards are
+  finishing. Every queued hand-over is bound to its run: a newer run or a report that is no
+  longer readable cancels it. A revision that lands during the morph is drawn when it lands.
+- Entrance motion belongs to the reveal only (`#app.intro`): usage sections fade in 20 ms
+  apart (`section-in`), bars grow from their baseline (`grow-x`), the trend line draws once
+  (`draw-line`), markers follow it, and ranked rows cascade (`row-in`). Quota meters are
+  placed block by block once, on the cards whose real answer just replaced a placeholder or a
+  loading card (`.quota.placing`, `place`); a card already showing never replays. The intro
+  class is removed only when no finite animation is still running - charts redraw on their
+  first resize, so it looks again after each batch - with a 1.6 s cap, and a revision after the
+  reveal ends the entrance before redrawing instead of restarting it. Updates change values
+  through transitions instead, `renderQuota` skips an identical rebuild (compared with the last
+  generated string; the DOM re-serializes `<use/>`), and the hero figure pulses only when the
+  reader changes the period or the filter.
 
 ## Publishing
 
 - Screenshots in `docs/` must be rendered from synthetic demo data, never from a real
   session store. Use `tests/New-DemoSnapshot.ps1`; real project paths and account quota
   state are personal data. Keep `dashboard.png` at 1280x1000 and `mobile.png` at 520x1200,
-  and re-render both whenever a card visible in them changes.
+  and re-render both whenever a card visible in them changes (`AI_USAGE_DOCS_DIR=docs` with
+  `node tests/BrowserSmoke.mjs`). `loading.gif` is the README's opening: a 1280x900 light
+  desktop run of the demo with remembered preferences, screencast frames over real time and
+  scaled to 720px; re-record it whenever the loading sequence changes.
 - The demo anchors every timestamp to generation time, so quota meters always show a live
   countdown; pass `-AsOf` to pin a run. Fixed past dates render every window as "about to
   reset" and the meters stop showing anything.

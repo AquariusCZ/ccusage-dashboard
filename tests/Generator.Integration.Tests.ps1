@@ -44,6 +44,9 @@ $oldCodexMode = $env:AI_USAGE_CODEX_MODE
 $oldCodexLog = $env:AI_USAGE_CODEX_LOG
 $oldCodexTimeout = $env:AI_USAGE_CODEX_TIMEOUT_MS
 $oldStubReconciled = $env:AI_USAGE_STUB_RECONCILED
+# An inherited ledger override would let every scenario read the host's DeepSeek record.
+$oldDeepSeekLedger = $env:AI_USAGE_DEEPSEEK_LEDGER
+$env:AI_USAGE_DEEPSEEK_LEDGER = ''
 $oldLocation = (Get-Location).Path
 $oldCurrentDirectory = [Environment]::CurrentDirectory
 $codexLog = Join-Path $sandbox 'codex.log'
@@ -3359,6 +3362,12 @@ namespace AiUsage {
 
     $success = Invoke-Scenario 'success' '' 0 $true
     Assert-ProgressiveContract $success 'Successful generator scenario'
+    # Without DeepSeek rows every revision, quota-only ones included, keeps the pair.
+    foreach ($snapshot in @($success.SnapshotSequence | ForEach-Object { $_ })) {
+      if ((@($snapshot.providers) -join ',') -cne 'claude,codex') {
+        throw "A run without DeepSeek rows listed $(@($snapshot.providers) -join ',') in revision $($snapshot.revision)."
+      }
+    }
     if ($success.First.complete -ne $false) { throw 'First progressive snapshot was already complete.' }
     if (@($success.First.periods).Count -ne 0 -or $success.FirstCodeBurnCount -gt 1 -or
         $success.First.limits.claudeQuota.reason -ne 'no_credentials' -or
@@ -3444,6 +3453,43 @@ namespace AiUsage {
         $uppercasePeriod.CodeBurnCalls[0] -cne 'report|all|claude') {
       throw 'A case-insensitive PowerShell period was not normalized before CodeBurn or publication.'
     }
+
+    # The startup read already knows DeepSeek rows exist, so the run names DeepSeek from
+    # its first quota-only revision instead of adding it with the first report: the page
+    # otherwise dropped the DeepSeek board and filter, then built both again.
+    $prepareDeepSeekLedger = {
+      param($ProfilePath, $AppDataPath, $LocalAppDataPath)
+      $ledgerDirectory = Join-Path $LocalAppDataPath 'AIUsage'
+      New-Item -ItemType Directory -Force -Path $ledgerDirectory | Out-Null
+      $now = [DateTimeOffset]::Now
+      $ledger = [ordered]@{
+        version = 2; updatedAt = $now.ToString('o'); sourceShape = 'v2'; recoveredImported = $true
+        recoveredDaily = @(); baselineDaily = @()
+        rows = @([ordered]@{
+          sessionId = 'ses_fixture'; createdAt = $now.AddHours(-1).ToUnixTimeSeconds(); date = $now.ToString('yyyy-MM-dd')
+          model = 'deepseek-fixture'; project = 'fixture'; projectPath = ''; calls = 2; cost = 0.25
+          inputTokens = 1000; outputTokens = 200; cacheReadTokens = 0; cacheWriteTokens = 0
+          tokensPartial = $false; kind = ''
+        })
+      }
+      [IO.File]::WriteAllText((Join-Path $ledgerDirectory 'deepseek-ledger.json'),
+        ($ledger | ConvertTo-Json -Depth 6 -Compress), (New-Object Text.UTF8Encoding($false)))
+    }
+    $deepSeekPlan = Invoke-Scenario 'deepseek-plan' '' 0 $false 'before' '' $false '' '' $prepareDeepSeekLedger
+    Assert-ProgressiveContract $deepSeekPlan 'DeepSeek generator scenario'
+    if (@($deepSeekPlan.First.periods).Count -ne 0) { throw 'The DeepSeek scenario did not publish a quota-only revision first.' }
+    foreach ($snapshot in @($deepSeekPlan.SnapshotSequence | ForEach-Object { $_ })) {
+      if ((@($snapshot.providers) -join ',') -cne 'claude,codex,deepseek') {
+        throw "A run with DeepSeek rows listed $(@($snapshot.providers) -join ',') in revision $($snapshot.revision)."
+      }
+    }
+    foreach ($periodKey in @($deepSeekPlan.Final.periods)) {
+      if (-not $deepSeekPlan.Final.reports.$periodKey.deepseek) {
+        throw "The DeepSeek scenario published $periodKey without its DeepSeek report."
+      }
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $deepSeekPlan.DataPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'The DeepSeek generated snapshot failed contract verification.' }
 
     $prepareApiKeyLogin = {
       param($ProfilePath, $AppDataPath)
@@ -3845,6 +3891,7 @@ namespace AiUsage {
   $env:AI_USAGE_CODEX_LOG = $oldCodexLog
   $env:AI_USAGE_CODEX_TIMEOUT_MS = $oldCodexTimeout
   $env:AI_USAGE_STUB_RECONCILED = $oldStubReconciled
+  $env:AI_USAGE_DEEPSEEK_LEDGER = $oldDeepSeekLedger
   $env:AI_USAGE_STUB_FAILURE = $oldFailure
   $env:AI_USAGE_STUB_FAILURE_MODE = $oldFailureMode
   $env:AI_USAGE_CCUSAGE_EXIT = $oldCCUsageExit
