@@ -11,6 +11,10 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-browser-smoke-"));
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "ai-usage-edge-"));
 const dataPath = path.join(work, "data.js");
 const failurePath = path.join(work, "failure.js");
+// A temp profile would otherwise sign in to the Edge account of the Windows user and sync its
+// extensions; one of those opened a welcome tab about 28 s in, which sent the page under test to
+// the background, throttled its polling to once a second and stopped its animation frames.
+const EDGE_ISOLATION = ["--disable-sync", "--disable-extensions"];
 let browser = null;
 let client = null;
 let generator = null;
@@ -185,7 +189,7 @@ async function measureRealStartup(generatorPath) {
 
   const edge = findEdge();
   browser = spawn(edge, [
-    "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+    "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", ...EDGE_ISOLATION,
     `--user-data-dir=${profile}`, "--remote-debugging-port=0", "about:blank"
   ], { stdio: "ignore" });
   const activePortPath = path.join(profile, "DevToolsActivePort");
@@ -230,7 +234,7 @@ async function measureRealStartup(generatorPath) {
         complete: window.__DATA__.complete,
         periods: window.__DATA__.periods,
         bootError: window.__BOOT_ERROR__ || null,
-        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+        overflow: document.documentElement.scrollWidth - document.documentElement.offsetWidth
       };
     })()`),
     "the real dashboard's first snapshot",
@@ -332,7 +336,7 @@ async function main() {
 
   const edge = findEdge();
   browser = spawn(edge, [
-    "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+    "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", ...EDGE_ISOLATION,
     `--user-data-dir=${profile}`, "--remote-debugging-port=0", "about:blank"
   ], { stdio: "ignore" });
 
@@ -359,14 +363,39 @@ async function main() {
   await client.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-color-scheme", value: "light" }]
   });
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: `
+    // Rows and cards that are closing stay in the DOM until they are gone; they are aria-hidden
+    // and inert, so what the page shows is everything else.
+    window.__shownText = function (selector) {
+      var node = document.querySelector(selector);
+      if (!node) return "";
+      node = node.cloneNode(true);
+      node.querySelectorAll("[data-leaving]").forEach(function (gone) { gone.remove(); });
+      return node.textContent;
+    };
+    // The state of the page at the moment it first becomes visible.
+    new MutationObserver(function (records, observer) {
+      if (!document.documentElement || document.documentElement.hasAttribute("data-boot")) return;
+      observer.disconnect();
+      var seg = document.getElementById("periodSeg");
+      var pressed = seg && seg.querySelector('button[aria-pressed="true"]');
+      window.__firstFrame = {
+        ark: document.fonts.check('12px "Ark Pixel 12px"'),
+        fusion: document.fonts.check('12px "Fusion Pixel 12px"'),
+        pill: !!pressed && seg.dataset.indicator === "1" && seg.style.getPropertyValue("--seg-w") === pressed.offsetWidth + "px"
+      };
+    }).observe(document, { subtree: true, attributes: true, attributeFilter: ["data-boot"] });
+  ` });
   const reportUrl = pathToFileURL(path.join(work, "report.html"));
   reportUrl.searchParams.set("period", "all");
   reportUrl.searchParams.set("provider", "codex");
   await client.send("Page.navigate", { url: reportUrl.href });
 
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  await waitFor(() => evaluate("getComputedStyle(document.querySelector('#app')).opacity === '1'"), "the page's first frame", 3000);
   // The page is its own first frame: shell, planned periods and the usage boards render
-  // before any snapshot, and there is no full-screen loader to hide them.
+  // before any snapshot, and there is no full-screen loader to hide them. It shows complete:
+  // text never lands after its box, and the pill is already under the pressed button.
+  assert.deepEqual(await evaluate("window.__firstFrame"), { ark: true, fusion: true, pill: true }, "The first visible frame was not complete");
   const waitingState = await evaluate(`({
     shellVisible: getComputedStyle(document.querySelector('#app')).opacity === '1' &&
       getComputedStyle(document.querySelector('.topbar')).display !== 'none',
@@ -399,13 +428,13 @@ async function main() {
     waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
     heroHidden: getComputedStyle(document.querySelector('.hero')).display === 'none',
     detailsHidden: getComputedStyle(document.querySelector('#details')).display === 'none',
-    quotaCards: document.querySelectorAll('#quota .quota').length,
+    quotaCards: document.querySelectorAll('#quota .quota:not([data-leaving])').length,
     placeholders: document.querySelectorAll('#quota .is-placeholder').length,
-    codexPlan: document.querySelector('#quota').textContent.includes('Pro'),
+    codexPlan: window.__shownText('#quota').includes('Pro'),
     boards: Array.from(document.querySelectorAll('#boards .board')).map((b) => b.dataset.p).join(','),
     remembered: JSON.parse(localStorage.getItem('ai-usage-ledger-prefs') || '{}').lastProviders,
     bootError: window.__BOOT_ERROR__ || null,
-    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+    overflow: document.documentElement.scrollWidth - document.documentElement.offsetWidth
   })`);
   assert.equal(quotaOnlyState.pending, true);
   assert.equal(quotaOnlyState.waitVisible, true);
@@ -432,14 +461,14 @@ async function main() {
       period: document.querySelector('[data-period][aria-pressed="true"]')?.dataset.period,
       provider: document.querySelector('[data-filter][aria-pressed="true"]')?.dataset.filter,
       updating: document.querySelector('#stamp').textContent.includes('\u66f4\u65b0\u4e2d'),
-      quotaLoading: document.querySelector('#quota').textContent.includes('\u6b63\u5728\u83b7\u53d6\u989d\u5ea6'),
+      quotaLoading: window.__shownText('#quota').includes('\u6b63\u5728\u83b7\u53d6\u989d\u5ea6'),
       usagePending: document.querySelector('#app').classList.contains('usage-pending'),
       heroShown: getComputedStyle(document.querySelector('.hero')).display !== 'none',
       waitHidden: getComputedStyle(document.querySelector('.usage-wait')).display === 'none',
       unironed: document.querySelectorAll('#boards .board:not(.ironed)').length,
       remembered: JSON.parse(localStorage.getItem('ai-usage-ledger-prefs') || '{}').lastProviders,
       bootError: window.__BOOT_ERROR__ || null,
-      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+      overflow: document.documentElement.scrollWidth - document.documentElement.offsetWidth
     };
   })()`);
   assert.deepEqual(partialState.remembered, ["claude", "codex", "deepseek"], "The providers a report carries are remembered for the next first frame");
@@ -547,7 +576,7 @@ async function main() {
     tableShown: !document.querySelector('#trendTable').classList.contains('hide'),
     themePinned: Boolean(document.documentElement.dataset.cs),
     bootError: window.__BOOT_ERROR__ || null,
-    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+    overflow: document.documentElement.scrollWidth - document.documentElement.offsetWidth
   })`);
   assert.equal(interactiveState.periods, 3);
   assert.equal(interactiveState.period, "all");
@@ -594,11 +623,11 @@ async function main() {
     themePinned: Boolean(document.documentElement.dataset.cs),
     detailOpen: document.querySelector('#details details:nth-of-type(2)').open,
     completed: document.querySelector('#stamp').textContent.includes('\u66f4\u65b0\u5b8c\u6210'),
-    quotaLoaded: !document.querySelector('#quota').textContent.includes('\u6b63\u5728\u83b7\u53d6\u989d\u5ea6'),
-    codexWindows: document.querySelector('#quota').textContent.includes('5 \u5c0f\u65f6\u989d\u5ea6') &&
-      document.querySelector('#quota').textContent.includes('\u5468\u989d\u5ea6'),
+    quotaLoaded: !window.__shownText('#quota').includes('\u6b63\u5728\u83b7\u53d6\u989d\u5ea6'),
+    codexWindows: window.__shownText('#quota').includes('5 \u5c0f\u65f6\u989d\u5ea6') &&
+      window.__shownText('#quota').includes('\u5468\u989d\u5ea6'),
     bootError: window.__BOOT_ERROR__ || null,
-    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+    overflow: document.documentElement.scrollWidth - document.documentElement.offsetWidth
   })`);
   assert.equal(finalState.codexWindows, true, "The official Codex card did not label its plan windows.");
   assert.equal(finalState.period, "week");
@@ -613,6 +642,53 @@ async function main() {
   assert.equal(finalState.quotaLoaded, true);
   assert.equal(finalState.bootError, null);
   assert.equal(finalState.overflow, 0);
+
+  // What is under the quota row follows the row's own height: a filter change never throws it
+  // past where it started and where it ends, and a card that goes and comes back straight
+  // away leaves nothing behind. Measured from the top of the page: further down, the browser's
+  // scroll anchoring cancels the movement and this could not see a bounce at all.
+  const filterMotion = await evaluate(`(async function () {
+    var original = document.querySelector('[data-filter][aria-pressed="true"]').dataset.filter;
+    var hero = document.querySelector('.hero');
+    var click = function (name) { document.querySelector('[data-filter="' + name + '"]').click(); };
+    var pause = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
+    var scrolled = scrollY;
+    scrollTo(0, 0);
+    await pause(50);
+    var watch = function (name) {
+      return new Promise(function (resolve) {
+        var start = hero.getBoundingClientRect().top, seen = [], began = performance.now();
+        click(name);
+        (function frame() {
+          seen.push(hero.getBoundingClientRect().top);
+          if (performance.now() - began < 450) requestAnimationFrame(frame);
+          else resolve({ to: name, start: start, end: seen[seen.length - 1], min: Math.min.apply(null, seen), max: Math.max.apply(null, seen) });
+        })();
+      });
+    };
+    var hops = [];
+    for (var name of ['all', 'claude', 'codex', 'claude', 'deepseek', 'all']) hops.push(await watch(name));
+    click('claude');
+    await pause(40);
+    click('all');
+    await pause(450);
+    var cards = Array.from(document.querySelectorAll('#quota > .quota'));
+    var state = {
+      keys: cards.map(function (c) { return c.dataset.q; }).join(','),
+      leaving: document.querySelectorAll('#quota [data-leaving]').length,
+      visible: cards.every(function (c) { return getComputedStyle(c).opacity === '1' && getComputedStyle(c).position === 'static' && !c.inert; })
+    };
+    click(original);
+    await pause(450);
+    scrollTo(0, scrolled);
+    return { hops: hops, state: state };
+  })()`);
+  filterMotion.hops.forEach((hop) => {
+    const low = Math.min(hop.start, hop.end) - 1;
+    const high = Math.max(hop.start, hop.end) + 1;
+    assert.ok(hop.min >= low && hop.max <= high, `The content under the quota row bounced: ${JSON.stringify(hop)}`);
+  });
+  assert.deepEqual(filterMotion.state, { keys: "claude,codex", leaving: 0, visible: true }, "A card that came straight back left residue");
 
   const dataRequests = () => networkRequests.filter((url) => {
     try { return new URL(url).pathname.replace(/\\/g, "/").endsWith("/data.js"); }
@@ -634,7 +710,7 @@ async function main() {
     width: 390, height: 844, deviceScaleFactor: 1, mobile: true
   });
   await new Promise((resolve) => setTimeout(resolve, 400));
-  assert.equal(await evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth"), 0);
+  assert.equal(await evaluate("document.documentElement.scrollWidth - document.documentElement.offsetWidth"), 0);
   const mobileShot = pngSize((await client.send("Page.captureScreenshot", { format: "png" })).data);
   assert.deepEqual([mobileShot.width, mobileShot.height], [390, 844]);
   assert.deepEqual(runtimeErrors, [], `Browser runtime errors: ${runtimeErrors.join(" | ")}`);
@@ -702,20 +778,20 @@ async function main() {
   );
   const recordedState = await evaluate(`(function () {
     document.querySelector('[data-filter="all"]').click();
-    var pricedCard = document.querySelector('#quota .quota:first-child').textContent;
+    var pricedCard = window.__shownText('#quota .quota:not([data-leaving])');
     window.__DATA__ = ${JSON.stringify(recordedSnapshot)};
     window.__render__();
-    var text = document.querySelector('#quota').textContent;
-    var claudeCard = document.querySelector('#quota .quota:first-child').textContent;
+    var text = window.__shownText('#quota');
+    var claudeCard = window.__shownText('#quota .quota:not([data-leaving])');
     return {
       desktopSource: text.includes('Claude \u684c\u9762\u7248'),
       loginHint: text.includes('claude auth login'),
       unpricedWindow: claudeCard.includes('\u672a\u5b9a\u4ef7') && !claudeCard.includes('$0.00'),
       pricedWindow: pricedCard.includes('$12.50') && !pricedCard.includes('\u672a\u5b9a\u4ef7'),
-      claudeMeters: document.querySelectorAll('#quota .quota:first-child .meter-row:not(.is-reset)').length,
+      claudeMeters: document.querySelectorAll('#quota .quota[data-q="claude"] .q-slot:not([data-leaving]) .meter-row:not(.is-reset)').length,
       codexReset: text.includes('\u5df2\u91cd\u7f6e'),
       codexStale: text.includes('\u672c\u5730\u8bb0\u5f55'),
-      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
+      overflow: document.documentElement.scrollWidth - document.documentElement.offsetWidth
     };
   })()`);
   assert.equal(recordedState.desktopSource, true, JSON.stringify(recordedState));
@@ -726,6 +802,31 @@ async function main() {
   assert.equal(recordedState.codexReset, true);
   assert.equal(recordedState.codexStale, true);
   assert.equal(recordedState.overflow, 0);
+
+  // A count still running must not write its figure into a row that has since rolled over,
+  // and a rolled-over window has no remainder for the card's head to claim.
+  const countBase = structuredClone(recordedSnapshot);
+  const countAt = (revision, utilization, resetsAt) => {
+    const snapshot = structuredClone(countBase);
+    snapshot.revision = revision;
+    snapshot.limits.claudeQuota.fiveHour = { utilization, resetsAt };
+    return snapshot;
+  };
+  const countFuture = new Date(Date.now() + 2 * 3600000).toISOString();
+  const countPast = new Date(Date.now() - 60000).toISOString();
+  const countState = await evaluate(`(async function () {
+    var show = function (snapshot) { window.__DATA__ = snapshot; window.__render__(); };
+    var pause = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
+    show(${JSON.stringify(countAt(2, 20, countFuture))});
+    await pause(500);
+    show(${JSON.stringify(countAt(3, 95, countFuture))});
+    await pause(40);
+    show(${JSON.stringify(countAt(4, 95, countPast))});
+    await pause(900);
+    var card = document.querySelector('#quota .quota[data-q="claude"]');
+    return { reset: card.querySelector('.meter-reset').textContent, note: card.querySelector('.quota-note').textContent };
+  })()`);
+  assert.deepEqual(countState, { reset: "\u5df2\u91cd\u7f6e", note: "" }, JSON.stringify(countState));
 
   // ccusage can finish after the first usage revision: its window row holds its place
   // meanwhile, and the hour chart follows when the blocks land. A profile with unpriced
@@ -756,7 +857,7 @@ async function main() {
   const hoursState = await evaluate(`(function () {
     var hidden = function () { return document.querySelector('#hoursWrap').classList.contains('hide'); };
     var windowCost = function () {
-      var cells = Array.prototype.slice.call(document.querySelectorAll('#quota .quota:first-child .prov-stats div'));
+      var cells = Array.prototype.slice.call(document.querySelectorAll('#quota .quota[data-q="claude"] .q-slot:not([data-leaving]) .prov-stats div'));
       var cell = cells.filter(function (c) { return c.textContent.indexOf('窗口成本') === 0; })[0];
       return cell ? cell.querySelector('b').textContent : null;
     };
@@ -776,7 +877,7 @@ async function main() {
     window.__DATA__ = ${JSON.stringify(partlyPricedBlocks)};
     window.__render__();
     state.partlyPriced = { hidden: hidden(), cost: windowCost() };
-    state.overflow = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+    state.overflow = document.documentElement.scrollWidth - document.documentElement.offsetWidth;
     return state;
   })()`);
   assert.deepEqual(hoursState, {
@@ -804,14 +905,38 @@ async function main() {
     };
     window.__DATA__ = free;
     window.__render__();
-    var card = function (key) { return document.querySelector('#quota .quota[data-q="' + key + '"]'); };
+    var card = function (key) { return document.querySelector('#quota .quota[data-q="' + key + '"]:not([data-leaving])'); };
     var seen = null;
     try { seen = JSON.parse(localStorage.getItem('ai-usage-ledger-prefs') || '{}').lastQuota; } catch (e) {}
-    return { codex: Boolean(card('codex')), claude: Boolean(card('claude')), seen: seen };
+    var state = { codex: Boolean(card('codex')), claude: Boolean(card('claude')), seen: seen };
+    // A local record shown only until the live answer lands: an old session's windows must not
+    // bring the card back for a moment, and the record is labelled without a row of its own.
+    var refreshing = JSON.parse(JSON.stringify(free));
+    refreshing.revision = 91;
+    refreshing.complete = false;
+    refreshing.limits.claudeQuota = {
+      ok: true, reason: null, source: 'cache', stale: true, staleReason: 'loading', cachedAt: new Date(Date.now() - 600000).toISOString(),
+      fiveHour: { utilization: 22, resetsAt: new Date(Date.now() + 3600000).toISOString() },
+      sevenDay: { utilization: 7, resetsAt: new Date(Date.now() + 86400000).toISOString() }, limits: []
+    };
+    refreshing.limits.codex = {
+      ok: true, reason: null, source: 'session', stale: true, staleReason: 'loading', planType: null,
+      observedAt: new Date(Date.now() - 9 * 86400000).toISOString(),
+      primary: { used_percent: 86, window_minutes: 10080, resets_at: new Date(Date.now() - 2 * 86400000).toISOString() }, secondary: null
+    };
+    window.__DATA__ = refreshing;
+    window.__render__();
+    state.refreshingCodex = Boolean(card('codex'));
+    state.refreshingRow = Boolean(card('claude').querySelector('.q-slot:not([data-leaving]) .stale'));
+    state.refreshingNote = card('claude').querySelector('.quota-note').textContent.indexOf('\u5237\u65b0\u4e2d') === 0;
+    return state;
   })()`);
   assert.equal(freePlanState.codex, false, "A Free plan must not render a Codex quota card");
   assert.equal(freePlanState.claude, true, "The Claude card stays");
   assert.deepEqual(freePlanState.seen, { codex: false }, "The Free answer is remembered for the next launch");
+  assert.equal(freePlanState.refreshingCodex, false, "A local record on its way to being replaced brought the Codex card back");
+  assert.equal(freePlanState.refreshingRow, false, "A refreshing record took a row of its own");
+  assert.equal(freePlanState.refreshingNote, true, "A refreshing record was not labelled");
 
   const navigateFresh = async (name, params = {}) => {
     const url = pathToFileURL(path.join(work, "report.html"));
@@ -849,6 +974,12 @@ async function main() {
   );
   await new Promise((resolve) => setTimeout(resolve, 200));
   const slotBefore = await evaluate("Math.round(document.querySelector('.usage-wait').getBoundingClientRect().top)");
+  const trackSlot = () => evaluate(`(function () {
+    var track = window.__slotTrack = [];
+    (function frame() { track.push(document.querySelector('.usage-wait').getBoundingClientRect().top); requestAnimationFrame(frame); })();
+  })()`);
+  const slotTravel = () => evaluate("Math.max.apply(null, window.__slotTrack) - Math.min.apply(null, window.__slotTrack)");
+  await trackSlot();
   writeSnapshot(stableQuota);
   await waitFor(
     () => evaluate("window.__DATA__?.runId === 'stable-browser-smoke' && !document.querySelector('#quota .is-placeholder')"),
@@ -857,6 +988,34 @@ async function main() {
   await new Promise((resolve) => setTimeout(resolve, 300));
   const slotAfter = await evaluate("Math.round(document.querySelector('.usage-wait').getBoundingClientRect().top)");
   assert.equal(slotAfter, slotBefore, "The usage slot moved when the remembered quota answer replaced its placeholder");
+  assert.ok(await slotTravel() <= 1, "The usage slot moved on its way through the remembered quota answer");
+
+  // A record shown only until the answer lands holds the same box, even when that answer then
+  // keeps the record: a read that keeps failing must not shrink and regrow the card each launch.
+  fs.unlinkSync(dataPath);
+  await navigateFresh("stable-refreshing", { provider: "claude" });
+  await waitFor(
+    () => evaluate("Boolean(document.querySelector('#quota .is-placeholder')) && document.fonts.status === 'loaded'"),
+    "the remembered placeholder before a refreshing record"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await trackSlot();
+  const refreshingQuota = structuredClone(stableQuota);
+  refreshingQuota.runId = "stable-refreshing-browser-smoke";
+  refreshingQuota.limits.claudeQuota = { ...stableQuota.limits.claudeQuota, staleReason: "loading" };
+  writeSnapshot(refreshingQuota);
+  await waitFor(
+    () => evaluate("window.__DATA__?.runId === 'stable-refreshing-browser-smoke' && document.querySelector('#quota .quota[data-q=\"claude\"]').classList.contains('is-refreshing')"),
+    "the refreshing record"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const keptQuota = structuredClone(stableQuota);
+  keptQuota.runId = "stable-refreshing-browser-smoke";
+  keptQuota.revision = 2;
+  writeSnapshot(keptQuota);
+  await waitFor(() => evaluate("window.__DATA__?.revision === 2 && !document.querySelector('#quota .is-refreshing')"), "the record that stays");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.ok(await slotTravel() <= 1, "A refreshing record that stays moved the usage slot");
 
   // A store written by an older build or another local page must not break the page.
   await evaluate("localStorage.setItem('ai-usage-ledger-prefs', JSON.stringify({ quotaShape: 7, quota: 'x', view: [], lastQuota: 'y', lastProviders: 'z' }))");
@@ -878,6 +1037,19 @@ async function main() {
   writeSnapshot(scriptErrorSnapshot);
   await waitFor(() => evaluate(revealed("script-error-browser-smoke")), "a reveal after a script error");
   assert.ok(String(await evaluate("window.__BOOT_ERROR__ && window.__BOOT_ERROR__.message")).includes("browser-smoke transient"));
+
+  // A failure inside the first frame's own measuring must not leave the page hidden for good:
+  // the page script is past defining window.__show__ when this starts to throw.
+  const breakMeasure = await client.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: "(function () { var real = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetLeft'); Object.defineProperty(HTMLElement.prototype, 'offsetLeft', { configurable: true, get: function () { if (window.__show__) throw new Error('browser-smoke gate'); return real.get.call(this); } }); })();"
+  });
+  await navigateFresh("gate-fault");
+  await waitFor(
+    () => evaluate("!document.documentElement.hasAttribute('data-boot') && getComputedStyle(document.querySelector('#app')).opacity === '1'"),
+    "the page despite a failure in its first frame", 3000
+  );
+  assert.ok(String(await evaluate("window.__BOOT_ERROR__ && window.__BOOT_ERROR__.message")).includes("browser-smoke gate"));
+  await client.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: breakMeasure.identifier });
 
   // A new run that has no usage yet sends the page back to waiting, from fresh boards.
   const runA = structuredClone(partialSnapshot);
@@ -985,12 +1157,13 @@ async function main() {
       return await evaluate(`({
         watch: window.__providerWatch,
         picker: !document.querySelector('[data-filter="deepseek"]').hidden,
+        pickerDisplay: getComputedStyle(document.querySelector('[data-filter="deepseek"]')).display,
         card: Boolean(document.querySelector('#split .prov[data-p="deepseek"]')),
         board: Boolean(document.querySelector('#boards .board[data-p="deepseek"]')),
         pressed: document.querySelector('[data-filter][aria-pressed="true"]')?.dataset.filter,
         focused: document.activeElement?.dataset?.filter || null,
         urlProvider: new URL(location.href).searchParams.get('provider'),
-        quotaCards: document.querySelectorAll('#quota .quota').length,
+        quotaCards: document.querySelectorAll('#quota .quota:not([data-leaving])').length,
         bootError: window.__BOOT_ERROR__ || null
       })`);
     } finally {
@@ -1013,6 +1186,7 @@ async function main() {
   assert.deepEqual(pairOnly.watch.picker, [{ value: true, revision: 0 }]);
   assert.equal(pairOnly.watch.label.length, 1, JSON.stringify(pairOnly.watch.label));
   assert.equal(pairOnly.picker, false);
+  assert.equal(pairOnly.pickerDisplay, "none", "A hidden filter button was still displayed");
   assert.equal(pairOnly.card, false);
   assert.ok(remembers(pairOnly, [pair], pair), JSON.stringify(pairOnly.watch.remembered));
 
@@ -1076,6 +1250,23 @@ async function main() {
   await navigateFresh("reduced-motion");
   await waitFor(() => evaluate(revealed("reduced-browser-smoke")), "a reduced-motion reveal");
   assert.equal(await evaluate("window.__vtCalls"), 0, "Reduced motion still ran a view transition");
+  const reducedAnswer = await evaluate(`(function () {
+    var next = JSON.parse(JSON.stringify(window.__DATA__));
+    next.revision += 1;
+    next.limits.claudeQuota = {
+      ok: true, reason: null, source: 'oauth', limits: [],
+      fiveHour: { utilization: 91, resetsAt: new Date(Date.now() + 3600000).toISOString() },
+      sevenDay: { utilization: 7, resetsAt: new Date(Date.now() + 86400000).toISOString() }
+    };
+    window.__DATA__ = next;
+    window.__render__();
+    return {
+      scripted: document.getAnimations().filter(function (a) { return a.constructor === Animation; }).length,
+      figure: document.querySelector('#quota .quota[data-q="claude"] .meter-pct').textContent,
+      leaving: document.querySelectorAll('#quota [data-leaving]').length
+    };
+  })()`);
+  assert.deepEqual(reducedAnswer, { scripted: 0, figure: "91%", leaving: 0 }, "Reduced motion still animated a quota answer");
   await client.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: countTransitions.identifier });
   await client.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
 
@@ -1095,12 +1286,15 @@ async function main() {
     "an existing incomplete snapshot before its terminal failure signal"
   );
   assert.equal(
-    await evaluate("document.querySelector('#quota .quota:first-child').textContent.includes('计算中')"),
+    await evaluate("window.__shownText('#quota .quota:not([data-leaving])').includes('计算中')"),
     true,
     "An incomplete run without blocks did not hold the window row."
   );
   writeFailure("default_usage", "different-browser-smoke", "partial_generation_failed");
-  await new Promise((resolve) => setTimeout(resolve, 750));
+  await waitFor(
+    () => evaluate("window.__GENERATION_FAILURE__?.runId === 'different-browser-smoke'"),
+    "the page reading a failure signal from another run"
+  );
   const mismatchedFailureState = await evaluate(`({
     stamp: document.querySelector('#stamp').textContent,
     failure: window.__GENERATION_FAILURE__ || null
@@ -1122,7 +1316,7 @@ async function main() {
     stamp: document.querySelector('#stamp').textContent,
     failure: window.__GENERATION_FAILURE__ || null,
     bootError: window.__BOOT_ERROR__ || null,
-    windowRow: document.querySelector('#quota .quota:first-child').textContent.includes('窗口成本')
+    windowRow: window.__shownText('#quota .quota:not([data-leaving])').includes('窗口成本')
   })`);
   assert.equal(staleFailureState.windowRow, false, "A terminal failure left the window row placeholder.");
   assert.equal(staleFailureState.usageShown, true, "Readable usage stays shown after a later terminal failure");
@@ -1158,7 +1352,7 @@ async function main() {
     stamp: document.querySelector('#stamp').textContent,
     wait: document.querySelector('#bootMessage').textContent,
     waitVisible: getComputedStyle(document.querySelector('.usage-wait')).display !== 'none',
-    quotaCards: document.querySelectorAll('#quota .quota').length,
+    quotaCards: document.querySelectorAll('#quota .quota:not([data-leaving])').length,
     bootError: window.__BOOT_ERROR__ || null
   })`);
   assert.ok(quotaFailureState.stamp.includes("数据生成失败"));

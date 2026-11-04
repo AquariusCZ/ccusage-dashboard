@@ -957,13 +957,21 @@ dismisses it.
 
 Daily curves use a small local cubic path helper with horizontal endpoint
 tangents. Each segment stays between its two sample values, avoiding the peak
-overshoot that a generic spline can introduce. Section, meter, bead, and control
+overshoot that a generic spline can introduce. Section, bead, and control
 animations use transforms and opacity; path drawing animates `stroke-dashoffset`, and
-ironing a finished bead board transitions the SVG `r` of its few hundred circles once. The
-usage reveal is a same-document View Transition of the usage slot and, on a wide screen,
+ironing a finished bead board transitions the SVG `r` of its few hundred circles once. Quota
+answers patch the row in place rather than rebuilding it: a meter's blocks transition
+`background-color` one after another, its figure counts on the same curve, and the row, its
+cards and its rows animate `block-size` through the Web Animations API from wherever they are,
+so an answer that lands mid-way retargets instead of restarting. What is under the row depends
+only on the row's own height, so the row eases and clips while its cards come, go and resize.
+The first painted frame waits for the pixel fonts and the first data read and then fades in
+once, so unless the fonts take longer than that wait's 1.2 s cap no frame shows boxes without
+their text. The usage reveal is a same-document View Transition of the usage slot and, on a wide screen,
 the bead boards; the root is not captured, so the rest of the page stays live during it.
 `prefers-reduced-motion` reduces both durations and delays to effectively
-instantaneous state changes.
+instantaneous state changes; script-driven motion is skipped outright through
+`motionEffective()`, because the stylesheet's override does not reach it.
 
 Palettes are validated, not eyeballed - categorical slots clear adjacent CVD
 ΔE ≥ 13.7 with chroma ≥ 0.11 inside each mode's lightness band. The heatmap uses

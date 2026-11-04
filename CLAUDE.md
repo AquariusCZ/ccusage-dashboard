@@ -233,7 +233,8 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   the quota state counter rather than re-serializing every slice. Publish `plannedPeriods`
   (the full `$PeriodKeys` plan) from the first revision: before any report exists the
   switcher must show the run's plan greyed out rather than collapsing to a single button,
-  and once data arrives it offers only the periods it can actually show. The page derives the
+  and once data arrives it offers only the periods it can actually show. The switcher is
+  patched in place, so a period simply brightens when its report lands. The page derives the
   same plan from its launch `?period=` before the first revision (the requested period, then
   `week`, `30days`, `all`), so keep that order in step with `$PeriodKeys`. After the first usage
   publish, later failures must terminate with a retained
@@ -319,7 +320,13 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 - Publish `progress` with every revision: `done` out of `total` (3) counts real steps - the
   first snapshot ends startup (quota reads started, the local DeepSeek ledger read), then the
   default period's Claude report, then its Codex report - and `stage` names the step that is
-  running. The page is its own first frame: there is no full-screen loader. The quota row
+  running. The page is its own first frame: there is no full-screen loader. That frame waits,
+  at most 1.2 s, for the pixel fonts (both requested from the head, side by side; Fusion
+  would otherwise wait for Ark) and the first data read - until then the canvas shows
+  alone and nothing transitions - and then fades in once (110 ms). Inside that cap text never
+  lands after its box and the period pill never slides to a re-measured width (fonts slower
+  than the cap land on a page already showing, and it measures again); usage that is already
+  readable is simply there instead of a wait card that leaves at once. The quota row
   shows first, and the usage area waits in the hero's slot with one perler-bead board per step
   (DeepSeek for startup, then Claude, then Codex; boards sit in the provider cards' order). A
   board completes only when `done` passes its step, and a readable default period completes
@@ -344,8 +351,14 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   which writes the exact list), `quotaShape`
   (each quota card's meter and stats labels plus the box it filled at that width and fold -
   layout sizes, never values) and `fxShown` (whether the currency switch holds its place). A
-  placeholder or a loading quota card takes that remembered box, so the first answer does not
-  move the usage slot even when it carries a stale-record line or a sign-in hint. Every
+  placeholder or a loading quota card takes that remembered box and eases to its real height
+  when the answer lands. A record shown while the live answer is on its way (`staleReason`
+  `loading`) is labelled in the card's head (`刷新中`, its source and time) rather than in a
+  row of its own, and like a loading card it holds the remembered box and is not remembered
+  itself, so the card keeps the size it had last time; only a record that stays (no login, a
+  failed read) gets its stale line. Such a refreshing record is not yet an answer for
+  the Codex card either: the previous run's answer decides whether that card shows, because an
+  old session's windows made a Free plan's card appear for a moment on every launch. Every
   `file://` page shares this store: sanitize it on load (nested maps that are not plain objects
   are dropped) and never put anything sensitive in it. Within a run the bead boards only ever
   gain a provider; the DeepSeek filter follows the boards until usage is shown and the
@@ -360,6 +373,10 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   first, Fusion Pixel Font `zh_hans` as the broader-coverage fallback. Keep the hand-drawn
   5x7 bitmap figures for large totals and tile values.
 - One radius scale, one accent per provider, one theme for the whole page.
+- The root reserves the scrollbar's lane (`scrollbar-gutter: stable`): the page crosses the
+  window's height while it loads, and a scrollbar that came and went shifted everything
+  sideways. Measure horizontal overflow as `scrollWidth - offsetWidth`: `clientWidth` includes
+  that empty lane on a short page and would hide a real overflow of up to 15 px.
 - No scanline or stripe overlays. They were removed for legibility; do not reintroduce.
 - Daily series use smooth, non-overshooting cubic curves. Motion must degrade through
   `prefers-reduced-motion` and must not be required to read any value.
@@ -379,8 +396,9 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   changes are transitions, not keyframes, so a second update retargets instead of restarting.
   No ad-hoc durations or easings; no overshoot, glare sweeps, confetti or soft shimmer. The
   only timing constants outside the scale are sequencing: `--stagger` (20 ms between items),
-  `--stagger-fine` (12 ms between a meter's blocks) and `--caret-blink` (the system caret
-  rate); a discrete appearance is `steps(1)`, not a duration.
+  `--stagger-fine` (12 ms between a meter's blocks, with the meter's count lasting as long as
+  that sweep) and `--caret-blink` (the system caret rate); a discrete appearance is `steps(1)`,
+  not a duration. The first frame's 1.2 s cap is a safety limit, not motion.
 - The usage reveal is a same-document View Transition of exactly two kinds of element: the wait
   card becomes the hero card in place (`usage-slot`, clipped, old content out in 70 ms before
   the hero fades in) and, on a wide screen, each bead board flies into its provider card's
@@ -390,15 +408,24 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   swap with no hold. Readable usage is revealed even if the run fails while the boards are
   finishing. Every queued hand-over is bound to its run: a newer run or a report that is no
   longer readable cancels it. A revision that lands during the morph is drawn when it lands.
-- Entrance motion belongs to the reveal only (`#app.intro`): usage sections fade in 20 ms
+- Entrance motion belongs to the reveal only (`#app.intro`), and only with motion on - under
+  reduced motion its 0.01 ms fade would still paint one empty frame: usage sections fade in 20 ms
   apart (`section-in`), bars grow from their baseline (`grow-x`), the trend line draws once
-  (`draw-line`), markers follow it, and ranked rows cascade (`row-in`). Quota meters are
-  placed block by block once, on the cards whose real answer just replaced a placeholder or a
-  loading card (`.quota.placing`, `place`); a card already showing never replays. The intro
+  (`draw-line`), markers follow it, and ranked rows cascade (`row-in`). The quota row is
+  patched in place, never rebuilt (`applyQuota`): each row sits in a slot keyed by its meter
+  label or its kind. A matching row morphs - its blocks fill or drain 12 ms apart in the
+  direction the value moves while its figure counts on the standard curve, and changed text
+  fades in - and a row that comes or goes opens or closes its slot (240 ms). What is under the
+  row depends only on the row's own height, so `#quota` eases to its new height and clips while
+  it does, and nothing under it jumps. A card that goes stays where it was, out of the row's
+  flow, and fades; one that arrives fades in at its place; a card that stays slides and resizes
+  to its new box. An answer that lands mid-way starts from wherever the last one got to. Closing rows and cards stay in the
+  DOM until they are gone, marked `data-leaving`, `aria-hidden` and `inert`; read what the
+  page shows with `:not([data-leaving])`. The intro
   class is removed only when no finite animation is still running - charts redraw on their
   first resize, so it looks again after each batch - with a 1.6 s cap, and a revision after the
   reveal ends the entrance before redrawing instead of restarting it. Updates change values
-  through transitions instead, `renderQuota` skips an identical rebuild (compared with the last
+  through transitions instead, `renderQuota` skips an identical patch (compared with the last
   generated string; the DOM re-serializes `<use/>`), and the hero figure pulses only when the
   reader changes the period or the filter.
 
@@ -414,6 +441,10 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 - The demo anchors every timestamp to generation time, so quota meters always show a live
   countdown; pass `-AsOf` to pin a run. Fixed past dates render every window as "about to
   reset" and the meters stop showing anything.
+- Start any scripted Edge with `--disable-sync --disable-extensions`. A fresh profile otherwise
+  signs in to the Windows user's Edge account and syncs extensions; about 28 s in, one of them
+  opened a welcome tab that sent the page under test to the background, which throttled its
+  polling to once a second and stopped its animation frames.
 - Capture screenshots through the DevTools Protocol with real time elapsing. Chromium's
   `--screenshot` with `--virtual-time-budget` does not advance CSS animation time, which
   leaves the sparkline stroke stuck at `stroke-dashoffset: 1` and silently publishes a

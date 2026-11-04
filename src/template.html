@@ -21,6 +21,13 @@
   try { motion = localStorage.getItem("ai-usage-ledger-motion"); } catch (e) {}
   if (motion === "full") document.documentElement.dataset.motion = "full";
   else if (motion === "off") document.documentElement.dataset.motion = "off";
+  /* The first frame waits for the pixel fonts and the first data read (showPage in the
+     page script), but never longer than this: a page that cannot get there still shows. */
+  document.documentElement.dataset.boot = "";
+  setTimeout(function () {
+    if (typeof window.__show__ === "function") window.__show__();
+    else delete document.documentElement.dataset.boot;
+  }, 1200);
 }
 </script>
 <style>
@@ -104,6 +111,9 @@
      paints its own white behind the first frame and the loader appears to sit
      on a different shade than the page it hands over to. */
   html { -webkit-text-size-adjust: 100%; background: var(--canvas); }
+  /* The scrollbar's lane is always reserved: the page crosses the window's height while it
+     loads, and a scrollbar that came and went shifted everything sideways each time. */
+  html { scrollbar-gutter: stable; }
   body {
     min-block-size: 100dvh;
     background: var(--canvas);
@@ -171,7 +181,7 @@
     min-block-size: 30px; padding-inline: .8rem; border-radius: var(--r-pill);
     display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
     color: var(--ink-2); cursor: pointer; font-size: .75rem; white-space: nowrap; border: 1px solid transparent;
-    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
   }
   .seg button:hover:not([aria-pressed="true"]) { color: var(--ink); background: color-mix(in oklab, var(--ink) 7%, transparent); }
   .seg button[aria-pressed="true"] { background: var(--ink); color: var(--card); border-color: var(--ink); font-weight: 600; box-shadow: 2px 2px 0 color-mix(in oklab, var(--edge) 55%, transparent); transform: translate(-1px, -1px); }
@@ -179,6 +189,8 @@
   /* A planned period whose report is still being collected: visible, not clickable. */
   .seg button[disabled] { opacity: .42; cursor: default; }
   .seg button[disabled]:hover { background: none; color: inherit; }
+  /* `display: inline-flex` above would otherwise override the hidden attribute. */
+  .seg button[hidden] { display: none; }
   .iconbtn {
     min-inline-size: 38px; min-block-size: 38px; display: grid; place-items: center;
     border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--card); color: var(--ink-2); cursor: pointer;
@@ -223,7 +235,6 @@
   .quota { padding: 1rem 1.1rem; display: grid; gap: .85rem; align-content: start; }
   .quota-head { display: flex; align-items: center; gap: .5rem; }
   .quota-head .dot { inline-size: 10px; block-size: 10px; border-radius: 1px; background: var(--p); flex: none; box-shadow: 2px 2px 0 color-mix(in oklab, var(--p) 35%, transparent); }
-  .quota-unavailable { overflow: hidden; }
   .quota-offline {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem;
     padding: .75rem; border: 1px solid color-mix(in oklab, var(--p) 28%, var(--line));
@@ -243,7 +254,8 @@
   .quota-local-ok::before { content: ""; inline-size: 7px; block-size: 7px; border-radius: 1px; background: var(--good); }
 
   .meter-row { display: grid; gap: .4rem; }
-  .meter-top { display: flex; align-items: flex-end; gap: .5rem; flex-wrap: wrap; }
+  /* As tall as the figure, so a row keeps its height whether it shows one or "已重置". */
+  .meter-top { display: flex; align-items: flex-end; gap: .5rem; flex-wrap: wrap; min-block-size: 1.5rem; }
   .meter-label { color: var(--ink-2); font-size: .75rem; font-weight: 600; }
   .meter-pct { color: var(--sev, var(--good)); font: 700 1.5rem/1 var(--mono); font-variant-numeric: tabular-nums; }
   /* A relay names its own plan, so the note has to shrink rather than overflow. */
@@ -404,6 +416,9 @@
   .empty { display: grid; place-items: center; min-block-size: 4rem; padding: .9rem; border-radius: var(--r-item); background: var(--card-2); color: var(--muted); font-size: .75rem; text-align: center; text-wrap: pretty; }
   /* Paired quota cards share a baseline; a filtered single card keeps its natural height. */
   #quota { align-items: stretch; }
+  /* What is under the quota row depends only on the row's own height, so the row eases to
+     its new height and clips while it does. The margin keeps the cards' offset shadows. */
+  #quota { position: relative; overflow: clip; overflow-clip-margin: 6px; }
 
   footer { margin-block-start: 1.5rem; display: flex; flex-wrap: wrap; gap: .3rem 1rem; color: var(--muted); font-size: .75rem; padding-inline: .3rem; }
   footer .grow { margin-inline-start: auto; overflow-wrap: anywhere; }
@@ -461,15 +476,17 @@
   #app.intro .series-line.draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-line var(--dur-long) var(--ease-out) forwards; }
   #app.intro .marker { animation: section-in var(--dur) var(--ease-out) var(--dur-long) backwards; }
   #app.intro .rank { animation: row-in var(--dur-slow) var(--ease-out) backwards; animation-delay: calc(var(--row-i, 0) * var(--stagger)); }
-  /* Quota meters are placed block by block once, when their first answer replaces the
-     remembered placeholder: the same gesture as the beads below them. */
-  #quota .quota.placing .blocks i { animation: place 1ms steps(1, end) backwards; animation-delay: calc(var(--i, 0) * var(--stagger-fine)); }
+  /* Quota answers patch the row in place: a meter's blocks fill or drain one after another
+     (each block's delay is set by the script, 12 ms apart, in the direction the value
+     moves), the same gesture as the beads below them, and its figure turns to the new
+     severity colour. */
+  #quota .blocks i { transition: background-color var(--dur-fast) var(--ease-out); }
+  #quota .meter-pct { transition: color var(--dur) var(--ease-out); }
 
   @keyframes section-in { from { opacity: 0; } }
   @keyframes row-in { from { opacity: 0; translate: 0 4px; } }
   @keyframes grow-x { from { scale: 0 1; } }
   @keyframes draw-line { to { stroke-dashoffset: 0; } }
-  @keyframes place { from { opacity: 0; } }
   @keyframes live-pulse { 0%, 100% { opacity: .45; scale: .8; } 50% { opacity: 1; scale: 1; } }
   @keyframes port-blink { 0%, 45% { opacity: 1; } 46%, 100% { opacity: .38; } }
 }
@@ -572,7 +589,13 @@
     transition: grid-template-rows var(--dur-slow) var(--ease-out), opacity var(--dur) var(--ease-out);
   }
   .quota[data-open="0"] .quota-body { grid-template-rows: 0fr; opacity: 0; }
-  .quota-clip { min-block-size: 0; overflow: hidden; display: grid; gap: .7rem; }
+  /* Each row sits in its own slot so it can open and close; the slot's inner top padding
+     is the row gap, and the clip's negative margin cancels the first one, so the gap never
+     jumps when the first row comes or goes. A card clips while it eases to a new height. */
+  .quota-clip { min-block-size: 0; overflow: hidden; display: grid; margin-block-start: -.7rem; }
+  .q-slot { min-block-size: 0; overflow: clip; }
+  .q-in { padding-block-start: .7rem; }
+  #quota .quota { overflow: clip; }
   /* Two open quota cards stay equal height; a folded one shrinks to its head. */
   #quota .quota[data-open="0"] { align-self: start; }
 
@@ -587,6 +610,12 @@
   .peg { transition: opacity var(--dur) linear; }
   .wait-status .caret { animation: caret var(--caret-blink) linear infinite; }
   @keyframes caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+  /* Until the first frame is ready the canvas shows alone and nothing transitions, so
+     every state lands where it belongs; then the page fades in once. */
+  html[data-boot] #app { opacity: 0; }
+  html[data-boot] #app *, html[data-boot] #app *::before, html[data-boot] #app *::after { transition: none !important; }
+  #app { transition: opacity var(--dur-fast) var(--ease-out); }
 
   /* Reveal: only the usage slot and the bead boards travel. The root is not captured, so
      the quota above stays live and clickable, and the morph stays within Carbon's 240 ms. */
@@ -620,6 +649,14 @@
   @media (pointer: coarse) { .seg button, .iconbtn { min-block-size: 42px; } }
 }
 </style>
+<script>
+/* Both pixel faces start loading now, side by side. Otherwise Fusion is requested only after
+   Ark has loaded and a glyph Ark lacks asks for it, and regular text lands after bold text.
+   A preload link would do the same on file://, but its CORS mode is easy to get wrong. */
+if (document.fonts && typeof document.fonts.load === "function") {
+  ['12px "Ark Pixel 12px"', '12px "Fusion Pixel 12px"'].forEach(function (font) { document.fonts.load(font).catch(function () {}); });
+}
+</script>
 </head>
 <body>
 <a class="skip" href="#app">跳到主要内容</a>
@@ -1266,11 +1303,14 @@ addEventListener("error", function (event) {
   };
   var message = document.getElementById("bootMessage");
   if (message) message.textContent = "页面加载失败，请重新启动";
+  // A failing page script must not leave the first frame waiting for it.
+  try { if (typeof window.__show__ === "function") window.__show__(); }
+  finally { delete document.documentElement.dataset.boot; }
 });
 (function () {
   "use strict";
 
-  var data = null, filter = "all", period = "30days", charts = [], terminalFailure = false, stalled = false;
+  var data = null, filter = "all", period = "30days", charts = [], terminalFailure = false, stalled = false, pageShown = false;
   var lastRunId = null, lastRevision = -1, lastRevisionAt = Date.now(), desiredPeriod = null;
   var PERIOD_LABEL = { today: "今天", week: "近 7 天", "30days": "近 30 天", month: "本月", all: "全部", lifetime: "全部" };
 
@@ -1766,8 +1806,7 @@ addEventListener("error", function (event) {
     var out = "";
     for (var i = 0; i < blocks; i++) {
       var at = (i + 1) / blocks * 100;
-      // --i orders the one-time placement when the first real answer lands.
-      out += '<i style="--i:' + i + ";background:" + (i < filled ? sevColor(at) : "var(--card-2)") + '"></i>';
+      out += '<i style="background:' + (i < filled ? sevColor(at) : "var(--card-2)") + '"></i>';
     }
     return '<div class="blocks" style="--off:var(--card-2)" aria-hidden="true">' + out + "</div>";
   }
@@ -1897,10 +1936,10 @@ addEventListener("error", function (event) {
     });
     var head = "";
     if (off.stale === true) {
+      // A record shown while the live answer is on its way is labelled in the card's head
+      // (codexRefreshing); only one that stays gets a line of its own.
       var offReason = (terminalFailure || stalled) && off.staleReason === "loading" ? "not_collected" : off.staleReason;
-      head = staleLine(offReason === "loading"
-        ? "正在刷新，先显示 " + dayClock(off.observedAt) + " 的本地记录"
-        : codexQuotaReason(offReason) + "，显示 " + dayClock(off.observedAt) + " 的本地记录");
+      if (offReason !== "loading") head = staleLine(codexQuotaReason(offReason) + "，显示 " + dayClock(off.observedAt) + " 的本地记录");
     } else if (off.source === "session") {
       head = '<p class="stale-hint">本地记录 · ' + esc(dayClock(off.observedAt)) + "</p>";
     }
@@ -1908,11 +1947,12 @@ addEventListener("error", function (event) {
   }
 
   // Both quota cards share one structure so the fold behaves identically: the head
-  // always stays readable, the body animates between 0fr and 1fr.
+  // always stays readable, the body animates between 0fr and 1fr. The summary keeps its
+  // place even when empty, so the toggle never moves when a summary arrives.
   function quotaCard(key, name, accent, body, summary, open, extraClass) {
     return '<article class="card quota' + (extraClass ? " " + extraClass : "") + '" data-q="' + key + '" data-open="' + (open ? "1" : "0") + '" style="--p:' + accent + '">' +
       '<div class="quota-head"><span class="dot"></span><h3>' + esc(name) + "</h3>" +
-      (summary ? '<span class="quota-note">' + esc(summary) + "</span>" : "") +
+      '<span class="quota-note">' + esc(summary || "") + "</span>" +
       '<button type="button" class="quota-toggle" aria-expanded="' + (open ? "true" : "false") +
       '" aria-controls="quota-body-' + key + '">' +
       '<svg width="14" height="14" aria-hidden="true"><use href="#i-chev"/></svg>' +
@@ -1942,15 +1982,25 @@ addEventListener("error", function (event) {
     if (cq && cq.ok) {
       var relayWindow = list(cq.windows).filter(function (w) { return w && w.percent != null; })[0];
       if (relayWindow) used = n(relayWindow.percent);
-    } else if (off && off.primary && off.primary.used_percent != null) {
-      used = n(off.primary.used_percent);
+    } else if (off) {
+      // A recorded window that has rolled over says "已重置" below; it has no remainder, so
+      // the first window still open speaks for the card.
+      var live = off.source === "app_server" && off.stale !== true;
+      var open = [off.primary, off.secondary].filter(function (w) {
+        return w && w.used_percent != null && (live || !windowExpired(w.resets_at, off.observedAt, n(w.window_minutes)));
+      })[0];
+      if (open) used = n(open.used_percent);
     }
     return used == null ? "" : "剩余 " + Math.max(0, 100 - used).toFixed(0) + "%";
+  }
+  // A local record shown only until the live answer lands: it is not yet the answer.
+  function quotaRefreshing(record, reason) {
+    return !!record && record.ok === true && record.stale === true && reason === "loading" && !terminalFailure && !stalled;
   }
 
   var lastQuotaHtml = null;
   function renderQuota() {
-    var host = $("quota"), out = [];
+    var out = [];
     var q = (data.limits && data.limits.claudeQuota) || {};
     // Once the run has failed or stopped answering, nothing is still loading.
     var stopped = terminalFailure || stalled;
@@ -1992,12 +2042,13 @@ addEventListener("error", function (event) {
       } else {
         rows = '<p class="empty">' + esc(quotaReason(settled(q.reason))) + (usageReady() ? "，本地用量统计仍可查看。" : "") + "</p>";
       }
-      if (q.ok && q.stale) {
-        var source = CLAUDE_SOURCE[q.source] || "缓存";
-        var staleReason = settled(q.staleReason);
-        rows = staleLine(staleReason === "loading"
-          ? "正在刷新，先显示" + source + " " + dayClock(q.cachedAt) + " 的记录"
-          : quotaReason(staleReason) + "，显示" + source + " " + dayClock(q.cachedAt) + " 的记录") + rows;
+      // A record shown while the live answer is on its way is labelled in the head, so the
+      // card keeps its size and the live figures morph in; a record that stays (no login,
+      // a failed read) explains itself in a line of its own.
+      var source = CLAUDE_SOURCE[q.source] || "缓存";
+      var claudeRefreshing = quotaRefreshing(q, q.staleReason);
+      if (q.ok && q.stale && !claudeRefreshing) {
+        rows = staleLine(quotaReason(settled(q.staleReason)) + "，显示" + source + " " + dayClock(q.cachedAt) + " 的记录") + rows;
       }
       if (needsClaudeLogin(q.ok ? q.staleReason : q.reason)) {
         hint = '<p class="stale-hint">在终端运行 claude auth login 可显示实时额度</p>';
@@ -2032,11 +2083,13 @@ addEventListener("error", function (event) {
       }
 
       var claudeSummary = !q.ok && settled(q.reason) === "loading" ? "正在获取额度" : "";
-      if (q.ok && q.fiveHour && q.fiveHour.utilization != null) {
+      // A recorded window that has rolled over says "已重置" below; it has no remainder.
+      if (q.ok && q.fiveHour && q.fiveHour.utilization != null && !(q.stale === true && windowExpired(q.fiveHour.resetsAt, q.cachedAt, 300))) {
         claudeSummary = "剩余 " + Math.max(0, 100 - n(q.fiveHour.utilization)).toFixed(0) + "%";
       }
+      if (claudeRefreshing) claudeSummary = "刷新中 · " + source + " " + dayClock(q.cachedAt);
       out.push(quotaCard("claude", "Claude 额度", "var(--claude)",
-        alarm + rows + hint + extra, claudeSummary, quotaOpenFor("claude", true)));
+        alarm + rows + hint + extra, claudeSummary, quotaOpenFor("claude", true), claudeRefreshing ? "is-refreshing" : ""));
     }
 
     if (filter === "all" || filter === "codex") {
@@ -2099,23 +2152,26 @@ addEventListener("error", function (event) {
       }
       var codexWindowMetered = codexMetered(off, cq);
       var codexPlanLabel = CODEX_PLAN[String(off.planType || "").toLowerCase()] || "";
-      var codexSettled = off.ok === true || cq.ok === true;
+      var codexRefreshing = !cq.ok && quotaRefreshing(off, off.staleReason);
+      var codexSettled = cq.ok === true || (off.ok === true && !codexRefreshing);
       // A plan with no metered window cannot block anything, so the card is not part of
       // the page at all. Until the first quota answer lands the previous run's answer
-      // decides, which keeps the row from appearing and disappearing on every launch.
+      // decides, which keeps the row from appearing and disappearing on every launch. A
+      // local record shown while the live answer is on its way is not that answer: an old
+      // session's windows made a Free plan's card appear for a moment on every launch.
       var codexSeen = prefs.lastQuota && prefs.lastQuota.codex;
-      var codexShow = codexWindowMetered || (!codexSettled && codexSeen === true);
+      var codexShow = codexSettled ? codexWindowMetered : codexSeen === true;
       if (codexSettled && codexSeen !== codexWindowMetered) {
         prefs.lastQuota = prefs.lastQuota || {};
         prefs.lastQuota.codex = codexWindowMetered;
         savePrefs();
       }
       if (codexShow) {
-        var codexSummary = quotaLoading ? "正在获取额度" : codexWindowMetered
+        var codexSummary = quotaLoading ? "正在获取额度" : codexRefreshing ? "刷新中 · 本地记录 " + dayClock(off.observedAt) : codexWindowMetered
           ? codexHeadline(off, cq)
           : (codexPlanLabel ? codexPlanLabel + " · " : "") + "无计量额度";
         out.push(quotaCard("codex", "Codex 额度", "var(--codex)", body, codexSummary,
-          quotaOpenFor("codex", true), populated ? "" : "quota-unavailable"));
+          quotaOpenFor("codex", true), !populated ? "quota-unavailable" : codexRefreshing ? "is-refreshing" : ""));
       }
     }
 
@@ -2124,14 +2180,7 @@ addEventListener("error", function (event) {
     // markup (`<use/>` comes back as `<use></use>`), so the DOM never equals the string.
     if (nextQuotaHtml === lastQuotaHtml) return;
     lastQuotaHtml = nextQuotaHtml;
-    var fresh = ["claude", "codex"].filter(function (key) {
-      var card = host.querySelector('.quota[data-q="' + key + '"]');
-      return !!card && (card.classList.contains("is-placeholder") || !!card.querySelector(".is-skeleton"));
-    });
-    host.innerHTML = nextQuotaHtml;
-    holdQuotaBoxes();
-    rememberQuotaShape();
-    if (motionEffective()) placeQuota(fresh);
+    applyQuota(nextQuotaHtml);
   }
 
   /* ─────────────────────────────── ② hero ── */
@@ -2714,7 +2763,10 @@ addEventListener("error", function (event) {
       // so nothing restarts from zero.
       if (revealTransition) usageRenderPending = true;
       else { stopIntro(); renderUsage(true); }
-    } else if (ready) beadFinish();
+    } else if (ready) {
+      // Usage that is readable before the first frame is simply there when it shows.
+      if (pageShown) beadFinish(); else revealUsage();
+    }
     syncSegs();
   }
   function render() {
@@ -2856,6 +2908,12 @@ addEventListener("error", function (event) {
   function beadFrame() {
     bead.frame = 0;
     if (bead.stopped) return;
+    // The startup step's clock starts when the page is first seen, not before.
+    if (!pageShown) {
+      if (bead.doneAt[0] == null) bead.startAt[0] = performance.now();
+      bead.frame = requestAnimationFrame(beadFrame);
+      return;
+    }
     // A script error is reported in the status line and turns the card red, but the boards
     // keep going: usage that becomes readable must still be revealed.
     if (window.__BOOT_ERROR__ && !bead.broken) { bead.broken = true; $("usageWait").classList.add("failed"); }
@@ -3002,7 +3060,9 @@ addEventListener("error", function (event) {
           var box = chip && chip.getBoundingClientRect();
           if (box && box.bottom > 0 && box.top < innerHeight) name(chip, "bead-" + p);
         });
-        playIntro();
+        // With reduced motion the entrance has nothing to show: its 0.01 ms fade would still
+        // paint one empty frame of the usage area first.
+        if (motionEffective()) playIntro();
       } catch (error) {
         // Inside a view transition an exception never reaches the page's error handler;
         // report it the same way as any other script error.
@@ -3014,7 +3074,7 @@ addEventListener("error", function (event) {
       revealTransition = null;
       if (usageRenderPending) { usageRenderPending = false; syncUsage(); }
     }
-    if (typeof document.startViewTransition === "function" && motionEffective() && !document.hidden) {
+    if (typeof document.startViewTransition === "function" && motionEffective() && !document.hidden && pageShown) {
       name($("usageWait"), "usage-slot");
       if (fly) Object.keys(token.boards).forEach(function (p) { name(token.boards[p].pegboard, "bead-" + p); });
       var transition = document.startViewTransition(update);
@@ -3101,13 +3161,21 @@ addEventListener("error", function (event) {
         '<div class="meter-foot"><span>&nbsp;</span><span>&nbsp;</span></div></div>';
     }).join("") + (withStats && shape.stats ? statsRow(shape.stats.map(function (label) { return [esc(label), "—"]; }), true) : "");
   }
+  // What a card shows now: a row whose slot is closing is already gone.
+  function shownRows(card, selector) {
+    return Array.prototype.slice.call(card.querySelectorAll(".q-slot:not([data-leaving]) " + selector));
+  }
+  // A record on its way to being replaced counts too: the box it shows now is not its last one.
+  function cardLoading(card) {
+    return card.classList.contains("is-placeholder") || card.classList.contains("is-refreshing") || shownRows(card, ".is-skeleton").length > 0;
+  }
   function rememberQuotaShape() {
     var changed = false;
-    $("quota").querySelectorAll(".quota[data-q]").forEach(function (card) {
+    $("quota").querySelectorAll(".quota[data-q]:not([data-leaving])").forEach(function (card) {
       var key = card.dataset.q;
-      if (!QUOTA_SHAPE[key] || card.classList.contains("is-placeholder") || card.querySelector(".is-skeleton")) return;
-      var labels = Array.prototype.map.call(card.querySelectorAll(".meter-label"), function (el) { return el.textContent; });
-      var stats = Array.prototype.map.call(card.querySelectorAll(".prov-stats > div > span"), function (el) { return el.textContent; });
+      if (!QUOTA_SHAPE[key] || cardLoading(card)) return;
+      var labels = shownRows(card, ".meter-label").map(function (el) { return el.textContent; });
+      var stats = shownRows(card, ".prov-stats > div > span").map(function (el) { return el.textContent; });
       var shape = {
         labels: labels.length ? labels.slice(0, 6) : QUOTA_SHAPE[key].labels,
         stats: stats.length ? stats.slice(0, 3) : null,
@@ -3120,15 +3188,31 @@ addEventListener("error", function (event) {
     });
     if (changed) savePrefs();
   }
+  // The shape is read once the row has settled: mid-way a card is between two heights.
+  function quotaBusy() {
+    var host = $("quota");
+    if (host.querySelector("[data-leaving]")) return true;
+    return typeof host.getAnimations === "function" && host.getAnimations({ subtree: true }).some(function (animation) {
+      var timing = animation.effect && animation.effect.getComputedTiming ? animation.effect.getComputedTiming() : null;
+      return timing && isFinite(timing.endTime) && animation.playState === "running";
+    });
+  }
+  var shapeTimer = 0;
+  function rememberQuotaShapeSoon() {
+    clearTimeout(shapeTimer);
+    shapeTimer = setTimeout(function settle() {
+      if (quotaBusy()) { shapeTimer = setTimeout(settle, motionMs("--dur-slow")); return; }
+      rememberQuotaShape();
+    }, motionMs("--dur-slow"));
+  }
   // A placeholder or a still-loading card takes the box its card had last time, if the
   // card is as wide and folded the same way; otherwise it keeps its own natural height.
   function holdQuotaBoxes() {
-    $("quota").querySelectorAll(".quota[data-q]").forEach(function (card) {
-      if (!card.classList.contains("is-placeholder") && !card.querySelector(".is-skeleton")) return;
+    $("quota").querySelectorAll(".quota[data-q]:not([data-leaving])").forEach(function (card) {
+      if (!cardLoading(card)) return;
       var shape = quotaShape(card.dataset.q);
       if (!shape.h || Math.abs(card.offsetWidth - shape.w) > 2 || shape.open !== (card.dataset.open === "1")) return;
       card.style.blockSize = shape.h + "px";
-      card.style.overflow = "hidden";
     });
   }
   function bootQuota(note) {
@@ -3139,26 +3223,323 @@ addEventListener("error", function (event) {
       return key === "claude" || !!(prefs.lastQuota && prefs.lastQuota.codex === true);
     });
     lastQuotaHtml = null;
-    $("quota").innerHTML = keys.map(function (key) {
+    applyQuota(keys.map(function (key) {
       return quotaCard(key, key === "claude" ? "Claude 额度" : "Codex 额度", "var(--" + key + ")",
         skeletonRows(key, true), note || "读取中", quotaOpenFor(key, true), "is-placeholder");
-    }).join("");
-    $("quota").querySelectorAll(".is-placeholder").forEach(function (card) { card.inert = true; });
-    holdQuotaBoxes();
+    }).join(""));
   }
-  // Meters are placed block by block once, only on the cards whose real answer just
-  // replaced a placeholder or a loading card; a card already showing stays still.
-  function placeQuota(keys) {
-    keys.forEach(function (key) {
-      var card = $("quota").querySelector('.quota[data-q="' + key + '"]');
-      if (!card || !card.querySelector(".blocks") || card.querySelector(".is-skeleton")) return;
-      card.classList.add("placing");
-      setTimeout(function () { card.classList.remove("placing"); }, 700);
+
+  /* ── quota row: patched in place, never rebuilt ──
+     Cards and rows persist, so an answer changes what is already on screen. Each row sits
+     in a slot under a key: a meter by its label, a note by its kind. A matching row is
+     morphed: its figure counts to the new value while its blocks fill or drain one after
+     another, and text that changed fades in. A row that appears or goes away opens or
+     closes its slot and a card eases to its new height, so the card, and the usage slot
+     under it, moves instead of jumping. An answer that lands mid-way starts from wherever
+     the last one got to. */
+  function motionToken(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  function motionMs(name) {
+    var value = parseFloat(motionToken(name));
+    return isFinite(value) ? value : 0;
+  }
+  // The same cubic-bezier as the CSS token, for the one value CSS cannot tween: a figure.
+  function easing(name) {
+    var match = /cubic-bezier\(([^)]*)\)/.exec(motionToken(name));
+    var p = match ? match[1].split(",").map(Number) : [];
+    if (p.length !== 4 || !p.every(isFinite)) return function (x) { return x; };
+    function at(a, b, t) { var u = 1 - t; return 3 * a * u * u * t + 3 * b * u * t * t + t * t * t; }
+    return function (x) {
+      var lo = 0, hi = 1, t = x;
+      for (var i = 0; i < 24; i++) { t = (lo + hi) / 2; if (at(p[0], p[2], t) < x) lo = t; else hi = t; }
+      return at(p[1], p[3], t);
+    };
+  }
+  var OFF_BLOCK = (function () { var probe = document.createElement("i"); probe.style.background = "var(--card-2)"; return probe.style.background; })();
+
+  function rowKey(row, seen) {
+    var label = row.classList.contains("meter-row") && row.querySelector(".meter-label");
+    var key = label ? "meter:" + label.textContent : String(row.className).split(" ")[0] || row.tagName;
+    seen[key] = (seen[key] || 0) + 1;
+    return key + "#" + seen[key];
+  }
+  function quotaSlot(row, key) {
+    var slot = document.createElement("div"), inner = document.createElement("div");
+    slot.className = "q-slot";
+    slot.dataset.key = key;
+    inner.className = "q-in";
+    inner.appendChild(row);
+    slot.appendChild(inner);
+    return slot;
+  }
+  function wrapRows(clip) {
+    var rows = Array.prototype.slice.call(clip.children), seen = {};
+    clip.textContent = "";
+    rows.forEach(function (row) { clip.appendChild(quotaSlot(row, rowKey(row, seen))); });
+  }
+  function haltMotion(el) {
+    if (el.sizing) { el.sizing.cancel(); el.sizing = null; }
+    if (el.fading) { el.fading.cancel(); el.fading = null; }
+  }
+  function syncAttributes(live, next) {
+    var i, name;
+    for (i = live.attributes.length - 1; i >= 0; i--) {
+      name = live.attributes[i].name;
+      if (!next.hasAttribute(name)) live.removeAttribute(name);
+    }
+    for (i = 0; i < next.attributes.length; i++) {
+      name = next.attributes[i].name;
+      if (live.getAttribute(name) !== next.attributes[i].value) live.setAttribute(name, next.attributes[i].value);
+    }
+  }
+  // Brings a live element to a parsed one's markup without replacing it. Changed text
+  // fades in; children whose structure changed are swapped as a whole and fade in.
+  function morphNode(live, next, fx) {
+    // A count still running would write its figure over whatever this element becomes.
+    if (live.countFrame) { cancelAnimationFrame(live.countFrame); live.countFrame = 0; }
+    if (live.classList.contains("blocks") && next.classList.contains("blocks")) { morphBlocks(live, next, fx); return; }
+    var figure = live.classList.contains("meter-pct") && next.classList.contains("meter-pct"), before = live.textContent;
+    syncAttributes(live, next);
+    if (figure) { morphFigure(live, before, next.textContent, fx); return; }
+    var a = live.childNodes, b = next.childNodes, same = a.length === b.length, i;
+    for (i = 0; same && i < a.length; i++) {
+      same = a[i].nodeType === b[i].nodeType && (a[i].nodeType !== 1 || a[i].tagName === b[i].tagName);
+    }
+    if (!same) {
+      live.replaceChildren.apply(live, Array.prototype.slice.call(b));
+      fx.faded.push(live);
+      return;
+    }
+    for (i = 0; i < a.length; i++) {
+      if (a[i].nodeType === 1) morphNode(a[i], b[i], fx);
+      else if (a[i].nodeValue !== b[i].nodeValue) {
+        a[i].nodeValue = b[i].nodeValue;
+        if (fx.faded.indexOf(live) < 0) fx.faded.push(live);
+      }
+    }
+  }
+  // The front moves the way the value does: a fill runs left to right, a drain right to left.
+  function morphBlocks(live, next, fx) {
+    syncAttributes(live, next);
+    var a = live.children, b = next.children, changed = [], i;
+    if (a.length !== b.length) {
+      live.replaceChildren.apply(live, Array.prototype.slice.call(b));
+      fx.faded.push(live);
+      return;
+    }
+    for (i = 0; i < a.length; i++) if (a[i].style.background !== b[i].style.background) changed.push(i);
+    if (!changed.length) return;
+    var drain = b[changed[0]].style.background === OFF_BLOCK;
+    changed.forEach(function (index, order) {
+      var rank = drain ? changed.length - 1 - order : order;
+      a[index].style.background = b[index].style.background;
+      a[index].style.transitionDelay = fx.motion ? rank * fx.fine + "ms" : "";
+      fx.blocks.push(a[index]);
     });
+    if (fx.motion) fx.sweep = Math.max(fx.sweep, (changed.length - 1) * fx.fine + fx.fast);
+  }
+  function morphFigure(live, before, text, fx) {
+    var from = parseFloat(before), to = parseFloat(text);
+    if (!fx.motion || !isFinite(to)) {
+      if (before !== text) { live.textContent = text; fx.faded.push(live); }
+      return;
+    }
+    if (before === text) return;
+    fx.counts.push({ el: live, from: isFinite(from) ? from : 0, to: to, text: text, suffix: text.replace(/^[\d.]+/, ""), ms: fx.fast });
+  }
+  // Rows are matched in order: a row found further on closes the ones it skipped, a row
+  // not found opens a new slot, and a closing row that comes back reopens from where it is.
+  function morphRows(clip, rows, fx) {
+    var slots = Array.prototype.slice.call(clip.children), at = 0, seen = {}, k;
+    rows.forEach(function (row) {
+      var key = rowKey(row, seen), found = -1;
+      for (k = at; k < slots.length; k++) if (slots[k].dataset.key === key) { found = k; break; }
+      if (found < 0) {
+        var slot = quotaSlot(row, key);
+        clip.insertBefore(slot, slots[at] || null);
+        fx.enter.push(slot);
+        return;
+      }
+      for (k = at; k < found; k++) if (!slots[k].dataset.leaving) fx.leave.push(slots[k]);
+      at = found + 1;
+      var kept = slots[found];
+      if (kept.dataset.leaving) {
+        delete kept.dataset.leaving;
+        kept.inert = false;
+        kept.removeAttribute("aria-hidden");
+        fx.enter.push(kept);
+      }
+      fx.sweep = 0;
+      var counted = fx.counts.length;
+      morphNode(kept.firstChild.firstChild, row, fx);
+      for (k = counted; k < fx.counts.length; k++) fx.counts[k].ms = Math.max(fx.sweep, fx.fast);
+    });
+    for (k = at; k < slots.length; k++) if (!slots[k].dataset.leaving) fx.leave.push(slots[k]);
+  }
+  function applyQuota(html) {
+    var host = $("quota"), template = document.createElement("template");
+    template.innerHTML = html;
+    var fx = {
+      motion: pageShown && motionEffective() && !document.hidden,
+      enter: [], leave: [], gone: [], faded: [], counts: [], blocks: [], sweep: 0,
+      fast: motionMs("--dur-fast"), slow: motionMs("--dur-slow"), fine: motionMs("--stagger-fine")
+    };
+    var cards = Array.prototype.slice.call(host.querySelectorAll(":scope > .quota[data-q]"));
+    // Where everything is now, before anything changes: motion starts from there.
+    var before = new Map();
+    if (fx.motion) {
+      before.set(host, { h: host.getBoundingClientRect().height });
+      cards.forEach(function (card) {
+        var box = card.getBoundingClientRect();
+        before.set(card, { h: box.height, w: box.width, top: box.top, left: box.left, o: Number(getComputedStyle(card).opacity) });
+      });
+      host.querySelectorAll(".q-slot").forEach(function (slot) {
+        before.set(slot, { h: slot.getBoundingClientRect().height, o: Number(getComputedStyle(slot).opacity) });
+      });
+    }
+    var live = {}, prev = null, fresh = [];
+    cards.forEach(function (card) { live[card.dataset.q] = card; });
+    Array.prototype.slice.call(template.content.children).forEach(function (next) {
+      var key = next.dataset.q, card = live[key];
+      delete live[key];
+      if (card) {
+        syncAttributes(card, next);
+        morphNode(card.querySelector(".quota-head"), next.querySelector(".quota-head"), fx);
+        syncAttributes(card.querySelector(".quota-body"), next.querySelector(".quota-body"));
+        morphRows(card.querySelector(".quota-clip"), Array.prototype.slice.call(next.querySelector(".quota-clip").children), fx);
+      } else {
+        card = next;
+        wrapRows(card.querySelector(".quota-clip"));
+        fresh.push(card);
+      }
+      if (card.parentNode !== host) { if (prev) prev.after(card); else host.prepend(card); }
+      else if (prev && (prev.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_PRECEDING)) prev.after(card);
+      prev = card;
+      card.inert = card.classList.contains("is-placeholder");
+    });
+    // A card no longer offered steps out of the row and fades; rows that went away close.
+    Object.keys(live).forEach(function (key) {
+      var card = live[key];
+      if (card.dataset.leaving) return;
+      card.dataset.leaving = "1";
+      // Focus stays in the row when the card holding it goes, instead of falling to the body.
+      if (card.contains(document.activeElement)) {
+        var stay = host.querySelector(".quota:not([data-leaving]) .quota-toggle");
+        if (stay) stay.focus({ preventScroll: true });
+      }
+      card.inert = true;
+      card.setAttribute("aria-hidden", "true");
+      if (fx.motion) fx.gone.push(card); else card.remove();
+    });
+    fx.leave.forEach(function (slot) {
+      slot.dataset.leaving = "1";
+      slot.inert = true;
+      slot.setAttribute("aria-hidden", "true");
+    });
+    holdQuotaBoxes();
+
+    if (!fx.motion) {
+      // Without motion whatever is closing is simply gone, a card still fading out included.
+      host.querySelectorAll("[data-leaving]").forEach(function (el) { el.remove(); });
+      haltMotion(host);
+      host.querySelectorAll(".quota[data-q], .q-slot").forEach(haltMotion);
+      rememberQuotaShapeSoon();
+      return;
+    }
+
+    // Where everything ends: whatever is closing out of the way, and every slot and fold still
+    // moving from an earlier answer read at its end, then put back.
+    var gone = Array.prototype.slice.call(host.querySelectorAll("[data-leaving]"));
+    var moving = cards.filter(function (card) { return card.parentNode === host && !card.dataset.leaving; }).concat(fx.enter);
+    moving.concat(fx.leave, fx.gone, [host]).forEach(haltMotion);
+    var midway = host.getAnimations({ subtree: true }).filter(function (animation) {
+      var target = animation.effect && animation.effect.target;
+      return !!target && animation.playState === "running" && target.matches(".quota-body, .q-slot:not([data-leaving])");
+    }).map(function (animation) {
+      var at = animation.currentTime;
+      animation.currentTime = animation.effect.getComputedTiming().endTime;
+      return [animation, at];
+    });
+    gone.forEach(function (el) { el.style.display = "none"; });
+    var after = new Map();
+    moving.concat([host]).forEach(function (el) {
+      var box = el.getBoundingClientRect();
+      after.set(el, { h: box.height, w: box.width, top: box.top, left: box.left });
+    });
+    gone.forEach(function (el) { el.style.display = ""; });
+    midway.forEach(function (pair) { pair[0].currentTime = pair[1]; });
+    // Layout above has started every block's transition with its own delay; a later theme
+    // change must not stagger them again.
+    fx.blocks.forEach(function (block) { block.style.transitionDelay = ""; });
+
+    var ease = motionToken("--ease"), easeOut = motionToken("--ease-out");
+    function settleOn(el) { return function () { el.sizing = null; }; }
+    // The row eases to its new height, which is all that what is under it depends on.
+    var hostFrom = before.get(host).h, hostTo = after.get(host).h;
+    if (Math.abs(hostFrom - hostTo) >= 0.5) {
+      host.sizing = host.animate({ blockSize: [hostFrom + "px", hostTo + "px"] }, { duration: fx.slow, easing: ease });
+      host.sizing.onfinish = settleOn(host);
+    }
+    // A card is held on its own path whenever anything in the row opens or closes: a slot
+    // starts from nothing, and a card stretched to its neighbour would otherwise drop to that
+    // height for a frame before growing back. A card that stays also slides and resizes to
+    // its new place when a neighbour comes or goes.
+    var reshaped = fx.enter.length > 0 || fx.leave.length > 0 || fresh.length > 0 || fx.gone.length > 0;
+    moving.forEach(function (el) {
+      var from = before.get(el), to = after.get(el), opening = fx.enter.indexOf(el) >= 0;
+      var h0 = from ? from.h : 0, o0 = from && from.o != null ? from.o : opening ? 0 : 1;
+      var isCard = !opening && from && from.left != null;
+      var dx = isCard ? from.left - to.left : 0, dy = isCard ? from.top - to.top : 0;
+      var widened = isCard && Math.abs(from.w - to.w) >= 0.5, moved = Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5;
+      if (!opening && !reshaped && Math.abs(h0 - to.h) < 0.5 && o0 === 1 && !widened && !moved) return;
+      var first = { blockSize: h0 + "px", opacity: o0 }, last = { blockSize: to.h + "px", opacity: 1 };
+      if (moved) { first.translate = dx + "px " + dy + "px"; last.translate = "0px 0px"; }
+      if (widened) { first.inlineSize = from.w + "px"; last.inlineSize = to.w + "px"; }
+      el.sizing = el.animate([first, last], { duration: fx.slow, easing: ease });
+      el.sizing.onfinish = settleOn(el);
+    });
+    // A row that goes fades before its slot is fully shut, so it is never seen squeezed.
+    fx.leave.forEach(function (slot) {
+      var from = before.get(slot) || { h: slot.getBoundingClientRect().height, o: 1 };
+      slot.fading = slot.animate({ opacity: [from.o, 0] }, { duration: fx.fast, easing: easeOut, fill: "forwards" });
+      slot.sizing = slot.animate({ blockSize: [from.h + "px", "0px"] }, { duration: fx.slow, easing: ease, fill: "forwards" });
+      slot.sizing.onfinish = function () { slot.remove(); };
+    });
+    // A card that goes stays where it was, out of the row's flow, and fades; one that arrives
+    // fades in at its place, so a swap reads as one card changing, not one closing and
+    // another opening with the page bouncing between them.
+    var origin = after.get(host);
+    fx.gone.forEach(function (card) {
+      var from = before.get(card);
+      card.style.position = "absolute";
+      card.style.insetBlockStart = from.top - origin.top + "px";
+      card.style.insetInlineStart = from.left - origin.left + "px";
+      card.style.inlineSize = from.w + "px";
+      card.style.blockSize = from.h + "px";
+      card.sizing = card.animate({ opacity: [from.o, 0] }, { duration: fx.fast, easing: easeOut, fill: "forwards" });
+      card.sizing.onfinish = function () { card.remove(); };
+    });
+    fresh.forEach(function (card) { card.animate({ opacity: [0, 1] }, { duration: fx.fast, easing: easeOut }); });
+    fx.faded.forEach(function (el) {
+      var inside = fresh.concat(fx.enter, fx.faded).some(function (owner) { return owner !== el && owner.contains(el); });
+      if (!inside && el.isConnected) el.animate({ opacity: [0, 1] }, { duration: fx.fast, easing: easeOut });
+    });
+    var curve = easing("--ease");
+    fx.counts.forEach(function (count) {
+      var start = performance.now();
+      (function step(now) {
+        var t = Math.min(1, Math.max(0, (now - start) / count.ms));
+        count.el.textContent = t < 1 ? Math.round(count.from + (count.to - count.from) * curve(t)) + count.suffix : count.text;
+        count.el.countFrame = t < 1 ? requestAnimationFrame(step) : 0;
+      })(start);
+    });
+    rememberQuotaShapeSoon();
   }
 
   function pulse(node) {
-    if (!node) return;
+    // With reduced motion its 0.01 ms fade would only blank the figure for a frame.
+    if (!node || !motionEffective()) return;
     node.classList.remove("is-new");
     void node.offsetWidth;
     node.classList.add("is-new");
@@ -3170,14 +3551,19 @@ addEventListener("error", function (event) {
     if (!button) return;
     var card = button.closest(".quota");
     var open = card.dataset.open !== "1";
+    // The fold owns the card's height from here: no remembered box, no answer's easing.
+    if (card.sizing) { card.sizing.cancel(); card.sizing = null; }
+    card.style.blockSize = "";
     card.dataset.open = open ? "1" : "0";
     button.setAttribute("aria-expanded", String(open));
     prefs.quota = prefs.quota || {};
     prefs.quota[card.dataset.q] = open ? "open" : "closed";
     savePrefs();
     // The next launch's placeholder takes the folded or opened box, once the fold settles.
-    setTimeout(rememberQuotaShape, 300);
+    rememberQuotaShapeSoon();
   });
+  // A page closed right after an answer still leaves the next launch its box.
+  addEventListener("pagehide", function () { if (!quotaBusy()) rememberQuotaShape(); });
 
   function toggleProviderView(card) {
     var next = card.dataset.view === "tokens" ? "cost" : "tokens";
@@ -3203,8 +3589,14 @@ addEventListener("error", function (event) {
   function syncPressed(nodes, isOn) { nodes.forEach(function (b) { b.setAttribute("aria-pressed", String(isOn(b))); }); }
   function renderStamp() {
     if (!data) return;
-    $("stamp").textContent = "生成于 " + stampAt(data.generatedAt) + " · " + (PERIOD_LABEL[period] || period) +
+    var stamp = $("stamp"), text = "生成于 " + stampAt(data.generatedAt) + " · " + (PERIOD_LABEL[period] || period) +
       (data.generationError ? " · 部分更新失败，请重新启动" : data.complete === false ? " · 更新中" : " · 更新完成");
+    if (stamp.textContent === text) return;
+    stamp.textContent = text;
+    // A new status fades in like any other changed text.
+    if (pageShown && motionEffective() && !document.hidden) {
+      stamp.animate({ opacity: [0, 1] }, { duration: motionMs("--dur-fast"), easing: motionToken("--ease-out") });
+    }
   }
 
   /* The selector is a local re-expression of the same snapshot: the configured
@@ -3250,7 +3642,10 @@ addEventListener("error", function (event) {
     document.querySelectorAll(".seg").forEach(syncSeg);
   }
 
+  // Patched in place: the planned buttons from the first frame stay, and a period simply
+  // brightens when its report lands. Only a different plan rebuilds the row.
   function buildPeriodSeg() {
+    var seg = $("periodSeg");
     var focusedPeriod = document.activeElement && document.activeElement.dataset
       ? document.activeElement.dataset.period : null;
     var ready = data.periods && data.periods.length ? data.periods : [];
@@ -3265,26 +3660,34 @@ addEventListener("error", function (event) {
     if (ready.length && ready.indexOf(period) < 0) {
       period = ready.indexOf(data.period) >= 0 ? data.period : ready[0];
     }
-    $("periodSeg").innerHTML = keys.map(function (k) {
-      return '<button type="button" data-period="' + esc(k) + '" aria-pressed="' + (k === period) + '"' +
-        (ready.indexOf(k) < 0 ? " disabled" : "") + ">" + esc(PERIOD_LABEL[k] || k) + "</button>";
-    }).join("");
-    $("periodSeg").querySelectorAll("[data-period]").forEach(function (b) {
-      b.addEventListener("click", function () {
-        desiredPeriod = b.dataset.period;
-        period = b.dataset.period;
-        syncPressed(Array.from($("periodSeg").querySelectorAll("[data-period]")), function (x) { return x === b; });
-        syncSeg($("periodSeg")); syncUrl(); renderStamp(); render();
-      });
+    var buttons = Array.from(seg.querySelectorAll("[data-period]"));
+    var rebuilt = buttons.length !== keys.length || buttons.some(function (b, i) { return b.dataset.period !== keys[i]; });
+    if (rebuilt) {
+      seg.innerHTML = keys.map(function (k) {
+        return '<button type="button" data-period="' + esc(k) + '">' + esc(PERIOD_LABEL[k] || k) + "</button>";
+      }).join("");
+    }
+    seg.querySelectorAll("[data-period]").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.period === period));
+      b.disabled = ready.indexOf(b.dataset.period) < 0;
     });
-    syncSeg($("periodSeg"));
-    if (focusedPeriod) {
-      var replacement = Array.from($("periodSeg").querySelectorAll("[data-period]")).filter(function (b) {
+    syncSeg(seg);
+    if (rebuilt && focusedPeriod) {
+      var replacement = Array.from(seg.querySelectorAll("[data-period]")).filter(function (b) {
         return b.dataset.period === focusedPeriod;
       })[0];
       if (replacement) replacement.focus({ preventScroll: true });
     }
   }
+  // Delegated, so the buttons from the first frame work as soon as their report lands.
+  $("periodSeg").addEventListener("click", function (event) {
+    var b = event.target.closest && event.target.closest("[data-period]");
+    if (!b || b.disabled || !data) return;
+    desiredPeriod = b.dataset.period;
+    period = b.dataset.period;
+    syncPressed(Array.from($("periodSeg").querySelectorAll("[data-period]")), function (x) { return x === b; });
+    syncSeg($("periodSeg")); syncUrl(); renderStamp(); render();
+  });
   function syncUrl() {
     var url = new URL(location.href);
     filter === "all" ? url.searchParams.delete("provider") : url.searchParams.set("provider", filter);
@@ -3502,17 +3905,42 @@ addEventListener("error", function (event) {
     script.onload = function () {
       script.remove();
       attempts = 0;
+      readSettled();
       if (terminalFailure) return;
       if (!data || data.complete === false) probeFailure();
     };
     script.onerror = function () {
       script.remove();
+      readSettled();
       if (terminalFailure) return;
       attempts += 1;
       probeFailure();
     };
     document.body.appendChild(script);
   }
+
+  // The first painted frame is the page as it stays. The canvas shows alone until the
+  // pixel fonts are in and the first data read has settled; then the shell, with whatever
+  // answer was already there, fades in once. Text never lands after its box, the pill
+  // never slides to a re-measured width, and a page reopened on finished data shows its
+  // usage at once instead of a wait card that leaves straight away. The head script
+  // calls window.__show__ at its cap, so a page that cannot get its fonts shows anyway.
+  var fontsIn = false, firstRead = false;
+  // A task of its own: a failure while showing the page must not stop the polling that follows.
+  function readSettled() { if (!firstRead) { firstRead = true; if (fontsIn) setTimeout(showPage); } }
+  function showPage() {
+    if (pageShown) return;
+    pageShown = true;
+    try {
+      syncSegs();
+      if (!data) holdQuotaBoxes();
+      // Everything measured with the real glyphs is in place before transitions come back.
+      void document.body.offsetHeight;
+    } finally {
+      delete document.documentElement.dataset.boot;
+    }
+  }
+  window.__show__ = showPage;
 
   // The page is its own first frame: the shell, the planned periods, the remembered
   // quota shape and the usage boards render before the first snapshot is read.
@@ -3524,12 +3952,17 @@ addEventListener("error", function (event) {
     bootQuota();
     beadStart();
     syncSegs();
-    // The pixel fonts load after the first frame; the pill under each pressed button and
-    // the remembered quota boxes are measured again once the real glyph widths exist.
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () {
-      syncSegs();
-      if (!data) holdQuotaBoxes();
-    });
+    var faces = document.fonts && typeof document.fonts.load === "function"
+      ? Promise.all(['12px "Ark Pixel 12px"', '12px "Fusion Pixel 12px"'].map(function (font) { return document.fonts.load(font); }))
+      : Promise.resolve();
+    // Fonts slower than the head script's cap land on a page already showing: the pill and the
+    // remembered boxes are measured again with the real glyphs.
+    function arrived() {
+      fontsIn = true;
+      if (pageShown) { syncSegs(); if (!data) holdQuotaBoxes(); }
+      else if (firstRead) showPage();
+    }
+    faces.then(arrived, arrived);
   })();
   load();
 })();
