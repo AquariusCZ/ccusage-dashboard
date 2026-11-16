@@ -21,7 +21,7 @@
   try { motion = localStorage.getItem("ai-usage-ledger-motion"); } catch (e) {}
   if (motion === "full") document.documentElement.dataset.motion = "full";
   else if (motion === "off") document.documentElement.dataset.motion = "off";
-  /* The first frame waits for the pixel fonts and the first data read (showPage in the
+  /* The first frame waits for the pixel font and the first data read (showPage in the
      page script), but never longer than this: a page that cannot get there still shows. */
   document.documentElement.dataset.boot = "";
   setTimeout(function () {
@@ -31,13 +31,6 @@
 }
 </script>
 <style>
-@font-face {
-  font-family: "Ark Pixel 12px";
-  src: url("ark-pixel-12px-monospaced-zh_cn.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 400;
-  font-display: block;
-}
 @font-face {
   font-family: "Fusion Pixel 12px";
   src: url("fusion-pixel-12px-monospaced-zh_hans.woff2") format("woff2");
@@ -98,8 +91,8 @@
     --s4: light-dark(#c52e52, #ff8582);
     --s5: light-dark(#63225f, #ffd0e8);
 
-    --font: "Ark Pixel 12px", "Fusion Pixel 12px", "Cascadia Mono", "Microsoft YaHei", monospace;
-    --mono: "Ark Pixel 12px", "Fusion Pixel 12px", "Cascadia Mono", Consolas, monospace;
+    --font: "Fusion Pixel 12px", "Cascadia Mono", "Microsoft YaHei", monospace;
+    --mono: "Fusion Pixel 12px", "Cascadia Mono", Consolas, monospace;
 
     --r-card: 6px;
     --r-item: 3px;
@@ -650,11 +643,10 @@
 }
 </style>
 <script>
-/* Both pixel faces start loading now, side by side. Otherwise Fusion is requested only after
-   Ark has loaded and a glyph Ark lacks asks for it, and regular text lands after bold text.
-   A preload link would do the same on file://, but its CORS mode is easy to get wrong. */
+/* The pixel face starts loading now, from the head, rather than when the body's first text is
+   styled. A preload link would do the same on file://, but its CORS mode is easy to get wrong. */
 if (document.fonts && typeof document.fonts.load === "function") {
-  ['12px "Ark Pixel 12px"', '12px "Fusion Pixel 12px"'].forEach(function (font) { document.fonts.load(font).catch(function () {}); });
+  document.fonts.load('12px "Fusion Pixel 12px"').catch(function () {});
 }
 </script>
 </head>
@@ -1500,7 +1492,7 @@ addEventListener("error", function (event) {
   }
 
   /* ── 5x7 bitmap type ───────────────────────────────────────────────
-     The whole UI uses the bundled 12px pixel stack. Large display figures
+     The whole UI uses the bundled 12px pixel font. Large display figures
      remain hand-drawn 5x7 bitmaps so their cells stay square at every scale.
      Display numerals are drawn as pixel grids rather than set in a font: the
      look needs real square pixels at any size. Latin and numeric only, so
@@ -3920,11 +3912,11 @@ addEventListener("error", function (event) {
   }
 
   // The first painted frame is the page as it stays. The canvas shows alone until the
-  // pixel fonts are in and the first data read has settled; then the shell, with whatever
+  // pixel font is in and the first data read has settled; then the shell, with whatever
   // answer was already there, fades in once. Text never lands after its box, the pill
   // never slides to a re-measured width, and a page reopened on finished data shows its
   // usage at once instead of a wait card that leaves straight away. The head script
-  // calls window.__show__ at its cap, so a page that cannot get its fonts shows anyway.
+  // calls window.__show__ at its cap, so a page that cannot get its font shows anyway.
   var fontsIn = false, firstRead = false;
   // A task of its own: a failure while showing the page must not stop the polling that follows.
   function readSettled() { if (!firstRead) { firstRead = true; if (fontsIn) setTimeout(showPage); } }
@@ -3953,9 +3945,9 @@ addEventListener("error", function (event) {
     beadStart();
     syncSegs();
     var faces = document.fonts && typeof document.fonts.load === "function"
-      ? Promise.all(['12px "Ark Pixel 12px"', '12px "Fusion Pixel 12px"'].map(function (font) { return document.fonts.load(font); }))
+      ? document.fonts.load('12px "Fusion Pixel 12px"')
       : Promise.resolve();
-    // Fonts slower than the head script's cap land on a page already showing: the pill and the
+    // A font slower than the head script's cap lands on a page already showing: the pill and the
     // remembered boxes are measured again with the real glyphs.
     function arrived() {
       fontsIn = true;

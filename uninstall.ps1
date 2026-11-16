@@ -7,6 +7,10 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 $uninstallGateContents = "throw 'AI Usage uninstall is in progress. Run install.ps1 to recover an interrupted uninstall.'`r`n"
 $uninstallTransactionId = [guid]::NewGuid().ToString('N')
 $uninstallOwnerStartUtcTicks = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks
+# Runtime files an earlier release installed and the current src no longer lists. A
+# repository-mode uninstall takes its inventory from src, so these are named here.
+# Keep this list in step with install.ps1.
+$retiredRuntimeFiles = @('fonts\ark-pixel-12px-monospaced-zh_cn.woff2')
 $isolatedUninstallTest = $false
 if (-not [string]::IsNullOrWhiteSpace($env:AI_USAGE_UNINSTALL_TEST_ROOT)) {
   $testRoot = [IO.Path]::GetFullPath($env:AI_USAGE_UNINSTALL_TEST_ROOT)
@@ -334,6 +338,9 @@ try {
         $relative = $sourceItem.FullName.Substring($safetySourceRoot.Length).TrimStart([IO.Path]::DirectorySeparatorChar)
         Assert-NoReparsePath (Join-Path $dest $relative)
       }
+      foreach ($relative in $retiredRuntimeFiles) {
+        Assert-NoReparsePath (Join-Path $dest $relative)
+      }
     } else {
       Assert-NoReparseTree $dest
     }
@@ -465,6 +472,14 @@ if (Test-Path -LiteralPath (Join-Path $dest '.git')) {
   foreach ($relative in $managedRelativeFiles) {
     if ($relative -eq 'icon.ico') { continue }
     Remove-ManagedPath (Join-Path $dest $relative)
+  }
+  foreach ($relative in $retiredRuntimeFiles) {
+    $retiredPath = Join-Path $dest $relative
+    if (Test-Path -LiteralPath $retiredPath -PathType Leaf) {
+      Remove-ManagedPath $retiredPath
+    } elseif (Test-Path -LiteralPath $retiredPath) {
+      Write-Warning "Left $retiredPath in place: it is not a file this app installed."
+    }
   }
   foreach ($ownedIcon in @($ownedIcons | Select-Object -Unique)) {
     Remove-ManagedPath $ownedIcon

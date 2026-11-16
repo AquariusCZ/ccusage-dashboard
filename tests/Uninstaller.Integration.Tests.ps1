@@ -188,6 +188,9 @@ try {
   }
   Write-Ascii (Join-Path $destination 'fonts\font.woff2') 'managed font'
   Write-Ascii (Join-Path $destination 'src\fonts\font.woff2') 'source font'
+  # An earlier release installed this font and src no longer lists it, so only the
+  # uninstaller's retired list can find it; without that, fonts\ would stay non-empty.
+  Write-Ascii (Join-Path $destination 'fonts\ark-pixel-12px-monospaced-zh_cn.woff2') 'retired managed font'
   Write-Ascii (Join-Path $destination 'extra-managed.txt') 'managed from source inventory'
   Write-Ascii (Join-Path $destination 'src\extra-managed.txt') 'source inventory extension'
   Write-Ascii (Join-Path $destination 'repository-sentinel.txt') 'keep'
@@ -417,7 +420,8 @@ while (-not (Test-Path -LiteralPath $ReleasePath)) { Start-Sleep -Milliseconds 2
 
   foreach ($removed in @(
     'Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.html', 'dashboard.bat',
-    'dashboard.vbs', 'extra-managed.txt', 'icon.ico', 'fonts'
+    'dashboard.vbs', 'extra-managed.txt', 'icon.ico',
+    'fonts\ark-pixel-12px-monospaced-zh_cn.woff2', 'fonts'
   )) {
     if (Test-Path -LiteralPath (Join-Path $destination $removed)) {
       throw "Uninstaller retained managed runtime path $removed."

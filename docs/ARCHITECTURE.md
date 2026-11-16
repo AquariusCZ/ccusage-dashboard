@@ -14,7 +14,7 @@ Desktop shortcut
           a normal launch reuses a period-compatible active page when another generator owns it;
           a launch waiting behind a failed owner requests a bounded early close for that runId
        2. after owning Global, recheck the marker before taking Local or reading any collector
-       3. copy template.html and bundled pixel fonts to %TEMP%\ClaudeUsage
+       3. copy template.html and the bundled pixel font to %TEMP%\ClaudeUsage
        4. after uncontended preflight, open the page before starting collectors
        5. start ccusage blocks for Claude window metadata, priced from the current public
           catalogue (may overlap)
@@ -35,7 +35,8 @@ Desktop shortcut
           then falls back to an independent runId-bound failure.js if data.js remains unwritable
       13. in finally, retry deletion of raw scratch on every path and delete final browser
           files after the normal read grace period; label an unreleased Windows lock as
-          cleanup_failed so the next launch cleans it before opening a page
+          cleanup_failed so the next launch cleans it before opening a page (a retired
+          font copy an older release left behind is removed best effort with them)
       14. release the mutex only after cleanup
 
 report.html polls data.js until complete and serially probes failure.js while data is
@@ -560,7 +561,8 @@ app's login for live Claude quota (another client's protected credential).
 One 2026-08-29 observation on this Windows host measured 33.045 seconds from process launch to
 the only `data.js` write. The
 twelve CodeBurn calls accounted for 29.396 seconds; parsing the 203 KB snapshot in Node
-took about 0.364 ms, and the two local fonts total 1.19 MB. The browser was waiting for
+took about 0.364 ms, and the two local fonts then totalled 1.19 MB (one 0.96 MB font since
+2026-11). The browser was waiting for
 aggregation, not loading a heavy page.
 
 Several upstream-first alternatives were measured before changing the orchestration:
@@ -843,6 +845,12 @@ the live root and the whole Job, waits for the root handle to signal, and requir
 Job observations before closing handles. A missing membership or exit proof raises
 `InstallJobCleanupException`: later probes and npm commands are refused, npm rollback stops before
 another mutation, and the same-SID fallback scan must prove quiescence.
+Publishing only overwrites, so a runtime file the new release no longer ships is listed in
+`$retiredRuntimeFiles` and deleted after commit, best effort, like a previous managed icon.
+Nothing in the new runtime reads it, so a rollback never has to restore it, and a copy that is
+locked or cannot be deleted is reported as a warning and retried by the next install instead of
+failing an upgrade (a delete inside the transaction would also have to undo itself on rollback,
+which fails on the same lock and would strand the install behind its pending marker).
 A caught failure restores package versions, runtime files, shortcut, and icon in reverse order. Old
 icons are retired under the lock and only when the previous shortcut proves ownership; an
 already existing target-hash icon is backed up and restored if a later step fails. The
@@ -865,7 +873,9 @@ the local and canonical installation markers.
 
 When the repository itself is checked out at `%LOCALAPPDATA%\ClaudeUsage`, root-level runtime
 copies are ignored by Git. The uninstall script detects `.git` and removes only those runtime
-copies, preserving the repository.
+copies, preserving the repository. Its inventory is the current `src/`, so a file an earlier
+release installed and `src/` no longer ships (Ark Pixel's woff2 since 2026-11) is named in the
+`$retiredRuntimeFiles` list both scripts share and removed with the mirror.
 
 Uninstall is a serialized transaction rather than a best-effort file sweep. It takes
 `Global\AIUsage-Install-<SID>`, writes `.install-pending`, and atomically replaces the canonical
@@ -923,13 +933,25 @@ control states from [98.css](https://github.com/jdan/98.css), pixel restraint fr
 - **No scanline overlay.** A 1px repeating stripe across the page reads as
   texture in a mockup and as a legibility problem in daily use. It was removed
   for exactly that reason; do not reintroduce it.
-- **One pixel stack for the whole UI.** Ark Pixel Font 12px monospaced `zh_cn`
-  is primary; Fusion Pixel Font 12px monospaced `zh_hans` is the per-glyph
-  fallback. Both are bundled locally under OFL-1.1, copied beside the disposable
-  report, and deleted with it. Ark's upstream README explicitly warns that its
-  12px face still lacks many Han characters and recommends Fusion as the
-  transition. A FontTools audit against `src/template.html` found six Han
-  characters missing from Ark and zero missing from the combined stack. Browser
+- **One pixel font for the whole UI.** Fusion Pixel Font 12px monospaced
+  `zh_hans` 2026.11.10 (the TrueType-flavoured woff2) is the only webfont, the
+  same font file the author's other pixel-UI projects ship. It is bundled
+  locally with the license texts of the fonts it is built from, copied beside
+  the disposable report, and deleted with it. Until 2026-11 the page loaded Ark
+  Pixel Font `zh_cn` 2026.07.20 first and Fusion 2026.07.20 as a per-glyph
+  fallback, because Ark's 12px face lacks many Han characters (five that this
+  page shows: 势 即 热 燃 窗). Fusion is Ark with those gaps filled: the
+  2026.11.10 release contains every code point of that Ark release with the
+  same metrics, so the second face only cost a second download and a second
+  wait. Rendered at 10x on whole pixels, 385 of the 389 characters in the
+  template and the demo snapshot keep their bitmap; upstream redrew `–` and three Han
+  characters (在 开 该). At 12px the strokes are a little lighter, because the
+  old files had CFF outlines and this one has TrueType outlines, which
+  DirectWrite antialiases differently. Its contextual alternates are left on: a
+  colon between digits sits at the digits' middle (`calt`, so every `HH:mm`
+  changed) and `——` joins (`ccmp`). A cmap audit of `src/template.html` finds
+  one missing character, `≥` (the lower-bound prefix), which falls through to
+  the system stack exactly as it did before, since neither old face had it. Browser
   synthesis is disabled so requested emphasis cannot blur the bitmap strokes;
   prose stays on the native 12px grid and larger numeric emphasis uses whole
   multiples where the bundled face is used.
@@ -965,8 +987,8 @@ answers patch the row in place rather than rebuilding it: a meter's blocks trans
 cards and its rows animate `block-size` through the Web Animations API from wherever they are,
 so an answer that lands mid-way retargets instead of restarting. What is under the row depends
 only on the row's own height, so the row eases and clips while its cards come, go and resize.
-The first painted frame waits for the pixel fonts and the first data read and then fades in
-once, so unless the fonts take longer than that wait's 1.2 s cap no frame shows boxes without
+The first painted frame waits for the pixel font and the first data read and then fades in
+once, so unless the font takes longer than that wait's 1.2 s cap no frame shows boxes without
 their text. The usage reveal is a same-document View Transition of the usage slot and, on a wide screen,
 the bead boards; the root is not captured, so the rest of the page stays live during it.
 `prefers-reduced-motion` reduces both durations and delays to effectively
@@ -1039,6 +1061,9 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 - Run `tests/Installer.Integration.Tests.ps1` against an isolated destination, desktop, and
   stub npm root. It covers successful commit, local-mutex and cross-Session process waiting,
   runtime replacement failure, existing-pending recovery, strict stable Node version parsing,
+  retired runtime files (deleted after every committed upgrade, untouched by every rollback,
+  and a locked one reported without failing the upgrade, then removed read-only by the next
+  install),
   a correct-version/nonzero PATH shim,
   post-shortcut rollback including a preexisting target-hash icon, full-installer force termination
   and forward recovery, literal-percent npm paths, two concurrent complete installers, residue
@@ -1049,7 +1074,8 @@ than a fixed `foreignObject`, which silently clipped wider totals.
 - Run `tests/Uninstaller.Integration.Tests.ps1` against an isolated destination and desktop. It
   covers install-lock serialization, gate publication failure, the late-launch gate after process
   drain, Global-then-Local waiting, partial managed deletion with a retained failed marker, direct
-  retry, repository preservation, junction rejection, and shortcut-backed icon ownership. The
+  retry, repository preservation, removal of a retired runtime file `src/` no longer lists,
+  junction rejection, and shortcut-backed icon ownership. The
   test directly extracts the uninstaller's own process helpers to verify Same/Other/Unknown SID
   classification in Session 0 and two stable empty scans after ccusage. Cross-Session enumeration
   is exercised through the same SID/CIM code path, but CI does not create a second

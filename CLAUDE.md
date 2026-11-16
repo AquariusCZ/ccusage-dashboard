@@ -7,7 +7,7 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 ## Stack
 
 - Windows PowerShell / PowerShell launcher and data assembly
-- Local HTML, bundled pixel webfonts, CSS, and vanilla JavaScript dashboard
+- Local HTML, a bundled pixel webfont, CSS, and vanilla JavaScript dashboard
 - CodeBurn for normalized Claude/Codex usage and API reference-price estimates
 - OpenCode's own SQLite store (`opencode.db`, read-only) for the DeepSeek API account's
   per-call cost and tokens, backed by a durable USD ledger, shown as a third provider when
@@ -321,11 +321,11 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   first snapshot ends startup (quota reads started, the local DeepSeek ledger read), then the
   default period's Claude report, then its Codex report - and `stage` names the step that is
   running. The page is its own first frame: there is no full-screen loader. That frame waits,
-  at most 1.2 s, for the pixel fonts (both requested from the head, side by side; Fusion
-  would otherwise wait for Ark) and the first data read - until then the canvas shows
+  at most 1.2 s, for the pixel font (requested from the head, before the body's first text is
+  styled) and the first data read - until then the canvas shows
   alone and nothing transitions - and then fades in once (110 ms). Inside that cap text never
-  lands after its box and the period pill never slides to a re-measured width (fonts slower
-  than the cap land on a page already showing, and it measures again); usage that is already
+  lands after its box and the period pill never slides to a re-measured width (a font slower
+  than the cap lands on a page already showing, and it measures again); usage that is already
   readable is simply there instead of a wait card that leaves at once. The quota row
   shows first, and the usage area waits in the hero's slot with one perler-bead board per step
   (DeepSeek for startup, then Claude, then Codex; boards sit in the provider cards' order). A
@@ -369,9 +369,21 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
 
 ## Type and visual rules
 
-- Use the bundled 12px pixel stack for the whole interface: Ark Pixel Font `zh_cn`
-  first, Fusion Pixel Font `zh_hans` as the broader-coverage fallback. Keep the hand-drawn
-  5x7 bitmap figures for large totals and tile values.
+- Use one bundled pixel font for the whole interface: Fusion Pixel Font 12px monospaced
+  `zh_hans` 2026.11.10 (the TrueType-flavoured woff2), the same font file the author's other
+  pixel-UI projects ship. It is Ark Pixel with its Han gaps filled, so Ark is not loaded
+  alongside it; a glyph it lacks falls through to the system stack (today only `≥` on the
+  page). Its default contextual alternates stay on, as they are wherever the font is shaped:
+  a colon between digits is raised to the digits' middle (`calt`) and `——` joins (`ccmp`).
+  Ship every license text from the release archive with it (`src/fonts/README.md`). Keep the
+  hand-drawn 5x7 bitmap figures for large totals and tile values.
+- A runtime file a release stops shipping goes into `$retiredRuntimeFiles` in both
+  `install.ps1` and `uninstall.ps1`: publishing only overwrites, so the installer deletes it
+  after commit, best effort like a previous icon (nothing reads it; a copy that cannot be
+  deleted is a warning and the next install retries it, never a failed or rolled-back
+  upgrade), and a repository-mode uninstall (which takes its inventory from `src/`) removes
+  it too. Retiring a whole directory also needs its emptied directory removed.
+  `Static.Tests.ps1` keeps both one-line lists, and the installer test's copy, equal.
 - One radius scale, one accent per provider, one theme for the whole page.
 - The root reserves the scrollbar's lane (`scrollbar-gutter: stable`): the page crosses the
   window's height while it loads, and a scrollbar that came and went shifted everything

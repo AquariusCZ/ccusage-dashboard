@@ -380,7 +380,7 @@ async function main() {
       var seg = document.getElementById("periodSeg");
       var pressed = seg && seg.querySelector('button[aria-pressed="true"]');
       window.__firstFrame = {
-        ark: document.fonts.check('12px "Ark Pixel 12px"'),
+        faces: Array.from(document.fonts, function (face) { return face.family.replace(/"/g, "") + ":" + face.status; }).join(),
         fusion: document.fonts.check('12px "Fusion Pixel 12px"'),
         pill: !!pressed && seg.dataset.indicator === "1" && seg.style.getPropertyValue("--seg-w") === pressed.offsetWidth + "px"
       };
@@ -395,7 +395,7 @@ async function main() {
   // The page is its own first frame: shell, planned periods and the usage boards render
   // before any snapshot, and there is no full-screen loader to hide them. It shows complete:
   // text never lands after its box, and the pill is already under the pressed button.
-  assert.deepEqual(await evaluate("window.__firstFrame"), { ark: true, fusion: true, pill: true }, "The first visible frame was not complete");
+  assert.deepEqual(await evaluate("window.__firstFrame"), { faces: "Fusion Pixel 12px:loaded", fusion: true, pill: true }, "The first visible frame was not complete");
   const waitingState = await evaluate(`({
     shellVisible: getComputedStyle(document.querySelector('#app')).opacity === '1' &&
       getComputedStyle(document.querySelector('.topbar')).display !== 'none',

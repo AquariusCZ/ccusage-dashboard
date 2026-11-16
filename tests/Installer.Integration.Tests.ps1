@@ -2,6 +2,8 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $installerPath = Join-Path $root 'install.ps1'
 $srcDir = Join-Path $root 'src'
+# Files an earlier release installed and src no longer ships (install.ps1's retired list).
+$retiredRuntimeFiles = @('fonts\ark-pixel-12px-monospaced-zh_cn.woff2')
 $sandbox = Join-Path ([IO.Path]::GetTempPath()) ('ai-usage-installer-test-[literal]-' + [guid]::NewGuid().ToString('N'))
 $activeProcesses = New-Object Collections.Generic.List[Diagnostics.Process]
 $environmentNames = @(
@@ -211,8 +213,10 @@ function Set-ScenarioEnvironment([pscustomobject]$Scenario) {
 
 function Seed-OldRuntime([pscustomobject]$Scenario) {
   $hashes = @{}
-  foreach ($source in @(Get-ChildItem -LiteralPath $srcDir -File -Recurse)) {
-    $relative = $source.FullName.Substring($srcDir.Length).TrimStart([IO.Path]::DirectorySeparatorChar)
+  $relatives = @(Get-ChildItem -LiteralPath $srcDir -File -Recurse | ForEach-Object {
+    $_.FullName.Substring($srcDir.Length).TrimStart([IO.Path]::DirectorySeparatorChar)
+  }) + $retiredRuntimeFiles
+  foreach ($relative in $relatives) {
     $target = Join-Path $Scenario.Destination $relative
     Write-Ascii $target ("old-runtime:$relative")
     $hashes[$relative] = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
@@ -243,6 +247,11 @@ function Assert-PublishedRuntime([pscustomobject]$Scenario) {
     $targetHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
     if ($sourceHash -ne $targetHash) {
       throw "[$($Scenario.Name)] Published runtime hash differs for ${relative}: expected $sourceHash, actual $targetHash."
+    }
+  }
+  foreach ($relative in $retiredRuntimeFiles) {
+    if (Test-Path -LiteralPath (Join-Path $Scenario.Destination $relative)) {
+      throw "[$($Scenario.Name)] Installer left the retired runtime file $relative behind."
     }
   }
 }
@@ -1238,6 +1247,39 @@ while (-not (Test-Path -LiteralPath $ReleasePath)) { Start-Sleep -Milliseconds 2
     throw 'Post-shortcut rollback left a new pending marker behind.'
   }
   Assert-NoTransactionResidue $shortcutRollback
+
+  # A retired runtime file is removed only after commit and best effort: one that cannot be
+  # deleted is reported, never fails or rolls back the upgrade, and the next install removes it.
+  $retiredLocked = New-Scenario 'retired-file-locked'
+  Set-ScenarioEnvironment $retiredLocked
+  Set-FakePackage $retiredLocked 'codeburn' '0.9.27'
+  Set-FakePackage $retiredLocked 'ccusage' '20.0.20'
+  [void](Seed-OldRuntime $retiredLocked)
+  $retiredTarget = Join-Path $retiredLocked.Destination $retiredRuntimeFiles[0]
+  $retiredLock = [IO.File]::Open($retiredTarget, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $retiredLockedResult = Wait-Installer (Start-Installer $retiredLocked)
+  } finally {
+    $retiredLock.Dispose()
+  }
+  if ($retiredLockedResult.ExitCode -ne 0) {
+    throw "An undeletable retired runtime file failed the upgrade: $($retiredLockedResult.Output)"
+  }
+  if ($retiredLockedResult.Output -notmatch 'Could not remove the retired') {
+    throw 'An undeletable retired runtime file was not reported.'
+  }
+  if (-not (Test-Path -LiteralPath $retiredTarget)) { throw 'The locked retired runtime file disappeared.' }
+  if (Test-Path -LiteralPath (Join-Path $retiredLocked.Destination '.install-pending')) {
+    throw 'An undeletable retired runtime file left the pending marker behind.'
+  }
+  [IO.File]::SetAttributes($retiredTarget, [IO.FileAttributes]::ReadOnly)
+  $retiredRetryResult = Wait-Installer (Start-Installer $retiredLocked)
+  if ($retiredRetryResult.ExitCode -ne 0) {
+    throw "The install after a retained retired file failed: $($retiredRetryResult.Output)"
+  }
+  if ($retiredRetryResult.Output -notmatch 'removed retired') { throw 'The next install did not report removing the retired file.' }
+  Assert-PublishedRuntime $retiredLocked
+  Assert-NoTransactionResidue $retiredLocked
 
   $corruptRepair = New-Scenario 'corrupt-manifest-repair'
   Set-ScenarioEnvironment $corruptRepair

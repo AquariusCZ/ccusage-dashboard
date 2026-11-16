@@ -1318,7 +1318,8 @@ function Invoke-NormalLifecycleScenario(
   [bool]$LockRawScratch,
   [string]$OwnerPeriod = '30days',
   [string]$RecoveryPeriod = '30days',
-  [bool]$LockRunStateOnComplete = $false
+  [bool]$LockRunStateOnComplete = $false,
+  [bool]$LockRetiredFont = $false
 ) {
   $scenarioRoot = Join-Path $sandbox $Name
   $scenarioTemp = Join-Path $scenarioRoot 'temp'
@@ -1372,7 +1373,16 @@ if ($Period) {
   $stateLock = $null
   $ownerCallCount = @(@($OwnerPeriod, 'week', '30days', 'all') | Select-Object -Unique).Count * 4
   $recoveryCallCount = @(@($RecoveryPeriod, 'week', '30days', 'all') | Select-Object -Unique).Count * 4
+  # An older release also copied Ark Pixel beside the report. A copy it left behind goes with
+  # this run's own fonts, and one that stays locked never turns cleanup into cleanup_failed.
+  $retiredFontPath = Join-Path $runtimeRoot 'ark-pixel-12px-monospaced-zh_cn.woff2'
+  New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+  [IO.File]::WriteAllText($retiredFontPath, 'retired font copy', [Text.Encoding]::ASCII)
+  $retiredFontLock = $null
   try {
+    if ($LockRetiredFont) {
+      $retiredFontLock = [IO.File]::Open($retiredFontPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    }
     $owner = Start-NormalGenerator $wrapperPath $ownerLaunchLog 1 $OwnerPeriod
     $first = $null
     $firstDeadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -1477,8 +1487,14 @@ if ($Period) {
     foreach ($path in @($dataPath, $failurePath, $htmlPath, $statePath, $leasePath, $ownerPath, $rawPath)) {
       if (Test-Path -LiteralPath $path) { throw "Normal lifecycle retained burn-after-read file $([IO.Path]::GetFileName($path))." }
     }
+    if ($LockRetiredFont) {
+      if (-not (Test-Path -LiteralPath $retiredFontPath)) { throw 'A locked retired font copy disappeared.' }
+    } elseif (Test-Path -LiteralPath $retiredFontPath) {
+      throw 'Normal lifecycle kept a retired font copy an older release left behind.'
+    }
     Assert-NoFailureScriptResidue $runtimeRoot 'Normal lifecycle cleanup'
   } finally {
+    if ($retiredFontLock) { $retiredFontLock.Dispose() }
     if ($rawLock) { $rawLock.Dispose() }
     if ($stateLock) { $stateLock.Dispose() }
     foreach ($process in @($owner, $reuser, $recovery)) {
@@ -3865,7 +3881,7 @@ namespace AiUsage {
     if ($LifecycleScenario -eq 'all') {
       Invoke-StartingReuseScenario
       Invoke-UnplannedPeriodScenario
-      Invoke-NormalLifecycleScenario 'normal-lifecycle' $false
+      Invoke-NormalLifecycleScenario 'normal-lifecycle' $false '30days' '30days' $false $true
       Invoke-NormalLifecycleScenario 'cleanup-recovery' $true
       Invoke-NormalLifecycleScenario 'cross-period-cleanup-recovery' $true 'today' '30days'
       Invoke-NormalLifecycleScenario 'closing-write-recovery' $false '30days' '30days' $true

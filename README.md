@@ -175,6 +175,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 - OpenCode's own SQLite database supplies DeepSeek's per-call cost and tokens, opened read-only
   with no network call.
 - Anthropic's usage endpoint, the official Codex CLI and CC Switch supply the quota.
+- [Fusion Pixel Font](https://github.com/TakWolf/fusion-pixel-font) (12px monospaced, `zh_hans`)
+  is the one typeface on the page, bundled under the SIL Open Font License 1.1.
 
 The screenshots and the animation use synthetic data from `tests/New-DemoSnapshot.ps1`.
 

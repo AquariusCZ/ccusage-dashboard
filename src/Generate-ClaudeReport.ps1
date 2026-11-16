@@ -67,11 +67,13 @@ $exchangeRates = [pscustomobject]@{ base = 'USD'; rates = @{ USD = 1.0 }; stale 
 $OutHtml = Join-Path $OutDir 'report.html'
 $OutData = Join-Path $OutDir 'data.js'
 $OutFailure = Join-Path $OutDir 'failure.js'
-$FontNames = @(
-  'ark-pixel-12px-monospaced-zh_cn.woff2',
-  'fusion-pixel-12px-monospaced-zh_hans.woff2'
-)
+$FontNames = @('fusion-pixel-12px-monospaced-zh_hans.woff2')
 $OutFonts = @($FontNames | ForEach-Object { Join-Path $OutDir $_ })
+# Earlier releases also copied Ark Pixel beside the report. A copy a pre-upgrade run could
+# not delete is removed when this run deletes its own fonts, best effort: it is not this
+# run's output, so it never counts as a cleanup failure.
+$RetiredFontNames = @('ark-pixel-12px-monospaced-zh_cn.woff2')
+$OutRetiredFonts = @($RetiredFontNames | ForEach-Object { Join-Path $OutDir $_ })
 $ManagedPeriodKeys = @('today', 'week', '30days', 'month', 'all', 'lifetime')
 $ManagedScratchNames = @(
   '_claude-blocks.json', '_codex-rate-limits.json',
@@ -4067,6 +4069,7 @@ try {
           [void]$CleanupFailures.Add([IO.Path]::GetFileName($path))
         }
       }
+      foreach ($path in $OutRetiredFonts) { [void](Remove-FileWithRetry $path) }
     }
     if (-not $RetainedRun) {
       if ($CanDeleteFinal -and -not $CleanupFailures.Count) {

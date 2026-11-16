@@ -93,6 +93,43 @@ try {
   } catch {}
 }
 if (-not $installer.Contains("'ReportData.psm1'")) { throw 'The installer does not publish the reconciliation module.' }
+# Each list is declared on one line. $null means the declaration is missing; an empty list
+# stays an empty array (the leading comma stops PowerShell unrolling it into $null).
+function Get-QuotedListItems([string]$Text, [string]$Pattern) {
+  $list = [regex]::Match($Text, $Pattern)
+  if (-not $list.Success) { return $null }
+  return ,@([regex]::Matches($list.Groups[1].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+}
+# One webfont set: the faces the template declares are the files the generator copies
+# beside the report and the files src\fonts ships.
+$templateFonts = @([regex]::Matches($template, 'url\("([^"/\\]+\.woff2)"\)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+$generatorFonts = @((Get-QuotedListItems $generator '(?m)^\$FontNames = @\(([^\r\n]*)\)\r?$') | Sort-Object -Unique)
+$sourceFonts = @(Get-ChildItem -LiteralPath (Join-Path $root 'src\fonts') -File -Filter '*.woff2' | ForEach-Object { $_.Name } | Sort-Object -Unique)
+if (-not $templateFonts.Count -or ($templateFonts -join ',') -cne ($generatorFonts -join ',') -or
+    ($templateFonts -join ',') -cne ($sourceFonts -join ',')) {
+  throw 'The template, the generator and src\fonts do not ship the same webfonts.'
+}
+# A runtime file a release stops shipping is named in both transactions: publishing only
+# overwrites, and a repository uninstall takes its inventory from src.
+$retiredListPattern = '(?m)^\$retiredRuntimeFiles = @\(([^\r\n]*)\)\r?$'
+$installRetired = Get-QuotedListItems $installer $retiredListPattern
+$uninstallRetired = Get-QuotedListItems $uninstaller $retiredListPattern
+$installerTestRetired = Get-QuotedListItems ([IO.File]::ReadAllText((Join-Path $root 'tests\Installer.Integration.Tests.ps1'))) $retiredListPattern
+if ($null -eq $installRetired -or $null -eq $uninstallRetired -or $null -eq $installerTestRetired -or
+    ($installRetired -join ',') -cne ($uninstallRetired -join ',') -or
+    ($installRetired -join ',') -cne ($installerTestRetired -join ',')) {
+  throw 'install.ps1, uninstall.ps1 and the installer test must each declare $retiredRuntimeFiles on one line, with the same runtime files.'
+}
+foreach ($relative in $installRetired) {
+  if (Test-Path -LiteralPath (Join-Path (Join-Path $root 'src') $relative)) { throw "src still ships the retired runtime file $relative." }
+  if ($template.Contains((Split-Path $relative -Leaf))) { throw "The template still references the retired runtime file $relative." }
+}
+$retiredFontLeaves = @($installRetired | Where-Object { $_ -like 'fonts\*' } | ForEach-Object { Split-Path $_ -Leaf })
+$generatorRetiredFonts = Get-QuotedListItems $generator '(?m)^\$RetiredFontNames = @\(([^\r\n]*)\)\r?$'
+if ($null -eq $generatorRetiredFonts -or ($generatorRetiredFonts -join ',') -cne ($retiredFontLeaves -join ',') -or
+    -not $generator.Contains('foreach ($path in $OutRetiredFonts) { [void](Remove-FileWithRetry $path) }')) {
+  throw 'The generator does not clean up the retired font copies the installer retires.'
+}
 if (-not $uninstaller.Contains('$managedRelativeFiles = @(Get-ChildItem -LiteralPath $repositorySourceRoot -File -Recurse') -or
     -not $uninstaller.Contains('Remove-ManagedPath (Join-Path $dest $relative)')) {
   throw 'The repository uninstaller does not derive managed mirrors from the canonical src inventory.'

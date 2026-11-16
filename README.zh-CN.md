@@ -147,6 +147,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 - [ccusage](https://github.com/ccusage/ccusage)：提供当前 5 小时窗口和 Claude 按小时的用量分布。
 - OpenCode 自己的 SQLite 数据库：提供 DeepSeek 每次调用的费用和 Token，只读打开，不联网。
 - Anthropic 用量接口、官方 Codex 命令行和 CC Switch：提供额度数据。
+- [缝合像素字体 Fusion Pixel Font](https://github.com/TakWolf/fusion-pixel-font)（12px 等宽 `zh_hans`）：
+  整个页面唯一的字体，按 SIL Open Font License 1.1 随应用分发。
 
 截图和动画都使用 `tests/New-DemoSnapshot.ps1` 生成的模拟数据。
 

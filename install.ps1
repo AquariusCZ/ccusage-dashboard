@@ -36,6 +36,11 @@ $transactionCommitted = $false
 $rollbackComplete = $false
 $publishedFiles = @()
 $originalFiles = @{}
+# Runtime files an earlier release installed and this one no longer ships. Publishing
+# only overwrites, so a committed upgrade deletes these; nothing reads them, so a copy that
+# cannot be deleted is reported and retried by the next install, never a reason to fail or
+# roll back. Keep this list in step with uninstall.ps1.
+$retiredRuntimeFiles = @('fonts\ark-pixel-12px-monospaced-zh_cn.woff2')
 $toolStates = @()
 $shortcutPublished = $false
 $iconPath = $null
@@ -332,17 +337,41 @@ function Set-FileAtomically([string]$Source, [string]$Destination) {
   }
 }
 
+function Remove-RetiredRuntimeFile([string]$Path) {
+  for ($attempt = 0; $attempt -lt 8; $attempt++) {
+    Assert-NoReparsePath $Path
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Path is not a file." }
+    try {
+      $attributes = [IO.File]::GetAttributes($Path)
+      if ($attributes -band [IO.FileAttributes]::ReadOnly) {
+        [IO.File]::SetAttributes($Path, $attributes -band -bnot [IO.FileAttributes]::ReadOnly)
+      }
+      [IO.File]::Delete($Path)
+    } catch {
+      if ($attempt -ge 7) { throw }
+    }
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Start-Sleep -Milliseconds (40 * ($attempt + 1))
+  }
+  throw "Could not remove $Path."
+}
+
 function Test-StagedRuntime {
   Assert-NoReparseTree $stageRuntime
   $required = @(
     'Generate-ClaudeReport.ps1', 'ReportData.psm1', 'template.html', 'codex-rate-limits.mjs',
     'dashboard.bat', 'dashboard.vbs', 'icon.ico',
-    'fonts\ark-pixel-12px-monospaced-zh_cn.woff2',
     'fonts\fusion-pixel-12px-monospaced-zh_hans.woff2'
   )
   foreach ($relative in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $stageRuntime $relative))) {
       throw "Staged runtime is missing $relative."
+    }
+  }
+  foreach ($relative in $retiredRuntimeFiles) {
+    if (Test-Path -LiteralPath (Join-Path $stageRuntime $relative)) {
+      throw "Staged runtime still ships the retired $relative."
     }
   }
 
@@ -1271,6 +1300,22 @@ try {
       -not $previousManagedIconPath.Equals($iconPath, [StringComparison]::OrdinalIgnoreCase) -and
       (Test-Path -LiteralPath $previousManagedIconPath)) {
     try { [IO.File]::Delete($previousManagedIconPath) } catch {}
+  }
+  # Retire files the new runtime no longer ships only now, after commit, so a rollback never
+  # has to restore one. A failure here must not reach the rollback below.
+  foreach ($relative in $retiredRuntimeFiles) {
+    try {
+      $retiredPath = Join-Path $dest $relative
+      if (Test-Path -LiteralPath $retiredPath) {
+        Remove-RetiredRuntimeFile $retiredPath
+        Write-Host "  [ok] removed retired $relative" -ForegroundColor Green
+      }
+    } catch {
+      # A profile that turns warnings into errors must not turn this into a rollback either.
+      try {
+        Write-Warning "Could not remove the retired $relative; the next install retries it. $($_.Exception.Message)" -WarningAction Continue
+      } catch {}
+    }
   }
 } catch {
   $installError = $_.Exception.Message

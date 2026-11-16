@@ -26,8 +26,9 @@ $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 
 Copy-Item (Join-Path $root 'src\template.html') (Join-Path $OutputDirectory 'report.html') -Force
-foreach ($font in @('ark-pixel-12px-monospaced-zh_cn.woff2', 'fusion-pixel-12px-monospaced-zh_hans.woff2')) {
-  Copy-Item (Join-Path $root "src\fonts\$font") (Join-Path $OutputDirectory $font) -Force
+# The page loads every webfont src\fonts ships (Static.Tests.ps1 keeps them in step).
+foreach ($font in @(Get-ChildItem -LiteralPath (Join-Path $root 'src\fonts') -File -Filter '*.woff2')) {
+  Copy-Item -LiteralPath $font.FullName -Destination (Join-Path $OutputDirectory $font.Name) -Force
 }
 
 function New-DailyRows([int]$Days, [double]$Total, [int]$Seed) {
