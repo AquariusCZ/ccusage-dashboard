@@ -28,6 +28,12 @@ $MaxQuotaResponseBytes = [int64](1024 * 1024)
 $MaxLocalDocumentBytes = [int64](16 * 1024 * 1024)
 $CCUsageTimeoutMilliseconds = 120000
 $CodexQuotaTimeoutMilliseconds = 30000
+# CodeBurn 0.9.27 writes its durable day history only on a request without --provider
+# (0.9.19 wrote it on every request). The provider-scoped reports this script asks for
+# therefore never seal a finished day on 0.9.27, and deleting a transcript would take
+# its usage out of every later report. One all-provider hydration per run seals them.
+$CodeBurnSelfSealingVersions = @('0.9.19')
+$CodeBurnSealTimeoutMilliseconds = 120000
 $ClaudeQuotaTimeoutSeconds = 20
 $LocalQuotaMaxAgeMilliseconds = [int64](7 * 24 * 60 * 60 * 1000)
 $FxCacheMaxAgeMilliseconds = [int64](24 * 60 * 60 * 1000)
@@ -63,6 +69,7 @@ $RunStatePath = Join-Path $RuntimeRoot 'report-run.state'
 $RunOwnerPath = Join-Path $RuntimeRoot 'report-run.owner.json'
 $RetryRequestPath = Join-Path $RuntimeRoot 'report-retry.request'
 $FxCachePath = Join-Path $RuntimeRoot 'fx-rates.json'
+$CodeBurnSealStampPath = Join-Path $RuntimeRoot 'codeburn-seal.stamp'
 $exchangeRates = [pscustomobject]@{ base = 'USD'; rates = @{ USD = 1.0 }; stale = $true; fetchedAt = $null }
 $OutHtml = Join-Path $OutDir 'report.html'
 $OutData = Join-Path $OutDir 'data.js'
@@ -2299,6 +2306,81 @@ function Invoke-CodeBurnJson([string[]]$Arguments, [string]$Output, [string]$Lab
   }
 }
 
+# Sealing is CodeBurn's own all-provider hydration, written into a cache its other front
+# ends share, so it is all or nothing: a narrower parse would seal days without the other
+# tools' usage. It is therefore skipped outright where the full parse would cross this
+# app's network premise. CodeBurn sends a Vercel AI Gateway key found in the environment
+# to that gateway, and asks a local Antigravity language server for usage with a token it
+# reads from that server's command line.
+function Test-CodeBurnDaySealAllowed {
+  if ($CodeBurnVersion -in $CodeBurnSelfSealingVersions) { return $false }
+  foreach ($name in @('AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN')) {
+    if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { return $false }
+  }
+  try {
+    # An installer that has written its marker is waiting for every collector to drain.
+    if (@($InstallPendingPaths | Where-Object { Test-Path -LiteralPath $_ }).Count) { return $false }
+    $geminiHome = Join-Path $env:USERPROFILE '.gemini'
+    if ((Test-Path -LiteralPath $geminiHome -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $geminiHome -Directory -Filter 'antigravity*' -Force -ErrorAction Stop).Count) {
+      return $false
+    }
+  } catch { return $false }
+  return $true
+}
+
+# Before it hydrates, CodeBurn drops every stored day dated today or later, on the grounds
+# that only a clock moving backward can have put one there. A clock that reads earlier than
+# a day already sealed (a dead CMOS battery, a manual change) would therefore erase that
+# history, and what was only in the cache could not be rebuilt. The stamp holds the local
+# date of the last sealing request: sealing waits until the clock has caught up with it,
+# and with this script's own timestamp when no stamp exists yet. Returns the current local
+# time, or nothing when sealing must wait.
+function Get-CodeBurnSealClock {
+  $now = [DateTime]::Now
+  if ($now.ToUniversalTime() -lt [IO.File]::GetLastWriteTimeUtc($PSCommandPath)) { return $null }
+  if (Test-Path -LiteralPath $CodeBurnSealStampPath -PathType Leaf) {
+    if ([IO.FileInfo]::new($CodeBurnSealStampPath).Length -le 64) {
+      $stamp = [IO.File]::ReadAllText($CodeBurnSealStampPath).Trim()
+      $today = $now.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+      if ($stamp -cmatch '\A\d{4}-\d{2}-\d{2}\z' -and [string]::CompareOrdinal($today, $stamp) -lt 0) { return $null }
+    }
+  }
+  return $now
+}
+
+# Asks CodeBurn to seal every finished day into its own durable history. compare-periods
+# is the public command whose history check hydrates for all providers whatever its own
+# filter says, and unlike an unfiltered report it never starts CodeBurn's Cursor sync.
+# Nothing is rendered from this call, so its output goes to the NUL device and no scratch
+# file ever holds it. The page is already final when it runs: it must not publish, throw,
+# or change the run's outcome, and a failure or a timeout only leaves the sealing to the
+# next run. An unverified cleanup is not swallowed; the flag it sets is drained before
+# the mutex is released.
+function Invoke-CodeBurnDaySeal {
+  if ($script:CollectorCleanupUncertain) { return }
+  try {
+    $now = Get-CodeBurnSealClock
+    if (-not $now -or -not (Test-CodeBurnDaySealAllowed)) { return }
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    # Stamped before the request: without the stamp the next run could not tell that the
+    # clock had moved back, so a run that cannot write it does not seal.
+    if (-not (Write-TextFileWithRetry $CodeBurnSealStampPath $now.ToString('yyyy-MM-dd', $culture))) { return }
+    $yesterday = $now.AddDays(-1).ToString('yyyy-MM-dd', $culture)
+    $script:sealJob = Start-JsonCommand $CodeBurn @(
+      'compare-periods', '--provider', 'claude', '--from-a', $yesterday, '--to-a', $yesterday,
+      '--from-b', $yesterday, '--to-b', $yesterday, '--format', 'json'
+    ) 'NUL'
+    [void](Wait-ChildProcess $script:sealJob $CodeBurnSealTimeoutMilliseconds)
+  } catch {
+  } finally {
+    if ($script:sealJob) {
+      Close-CollectorProcess $script:sealJob
+      $script:sealJob = $null
+    }
+  }
+}
+
 $RunMutex = $null
 $RunMutexHeld = $false
 $RunMutexAbandoned = $false
@@ -2316,6 +2398,7 @@ $temporaryFailure = "$OutFailure.tmp"
 $backupFailure = "$OutFailure.bak"
 $blocksJob = $null
 $blocksDeadlineUtc = $null
+$sealJob = $null
 $script:CollectorCleanupUncertain = $false
 $scratch = @{}
 $RunId = [guid]::NewGuid().ToString('N')
@@ -4047,6 +4130,17 @@ try {
     )) {
       if ($path -and -not (Remove-FileWithRetry $path)) {
         [void]$CleanupFailures.Add([IO.Path]::GetFileName($path))
+      }
+    }
+
+    # Every figure is published, the page has stopped polling and the raw reports are
+    # gone, so sealing the finished days costs only this owner's lifetime. A seal whose
+    # cleanup cannot be proven is drained like any other collector before the mutex goes.
+    if ($RunCompleted -and -not $GenerationFailed -and -not $script:CollectorCleanupUncertain) {
+      Invoke-CodeBurnDaySeal
+      if ($script:CollectorCleanupUncertain) {
+        try { Wait-AbandonedCollectorProcesses $userSid }
+        catch { $collectorDrainFailed = $true }
       }
     }
 

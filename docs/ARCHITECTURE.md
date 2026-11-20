@@ -33,11 +33,13 @@ Desktop shortcut
       12. atomically publish each revision and mark the last one complete; a failed final
           publication enters the same classified failed state, retries the terminal revision,
           then falls back to an independent runId-bound failure.js if data.js remains unwritable
-      13. in finally, retry deletion of raw scratch on every path and delete final browser
-          files after the normal read grace period; label an unreleased Windows lock as
-          cleanup_failed so the next launch cleans it before opening a page (a retired
-          font copy an older release left behind is removed best effort with them)
-      14. release the mutex only after cleanup
+      13. in finally, retry deletion of raw scratch on every path
+      14. after a successful terminal revision, ask CodeBurn once to seal every finished day
+          into its durable history (output to NUL, never published, failure ignored)
+      15. delete final browser files after the normal read grace period; label an unreleased
+          Windows lock as cleanup_failed so the next launch cleans it before opening a page
+          (a retired font copy an older release left behind is removed best effort with them)
+      16. release the mutex only after cleanup
 
 report.html polls data.js until complete and serially probes failure.js while data is
 missing or incomplete
@@ -166,6 +168,10 @@ the pin. Any new app-owned upload remains a change to the product's premise.
 
 CodeBurn is a local reader apart from that shared public catalogue refresh; status
 reconciliation does not introduce another destination or send usage aggregates anywhere.
+The sealing request (see "Sealing finished days") is the one call that parses every provider
+CodeBurn recognises. It stays inside this boundary by construction: it uses a command with no
+Cursor sync, and it is skipped where the full parse would send a gateway key or read a local
+Antigravity server's token.
 ccusage `20.0.20` is a Node launcher around a native `ccusage.exe`. Without `--offline`, its
 blocks command GETs the public LiteLLM catalogue
 (`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`) and, only
@@ -400,6 +406,147 @@ total as unattributed instead of scaling or silently clipping named models.
 `costReconciliation` records `referenceCost`, `statusCost`, `modelSource`,
 `modelSourceCost`, `unattributedCost`, and `modelTokensPartial` for verification and
 future migrations. It contains aggregates only.
+
+## Sealing finished days
+
+CodeBurn keeps a durable per-day history (`daily-cache`, ten-year retention) that outlives
+the session files. A day sealed there keeps its cost, calls, tokens, models and projects
+after its transcripts are gone. A report's totals, `daily`, `models` and `projects` are built
+from it. CodeBurn calls a day *settled* once it is older than seven days: a settled day never
+shrinks when a later parse finds fewer calls, while inside those seven days the live parse
+wins, because upstream reads a recent shrink as a real change (the user deleted a
+transcript). So this history is what makes deleting a session harmless once its day has
+settled, and only if the day was sealed first.
+
+The 2026-11-19 inventory found that the 0.9.27 upgrade had silently stopped it advancing:
+
+- 0.9.19 hydrated the history on every request (`usage-aggregator.ts:286`,
+  `const cache = await hydrateCache()` at the top of `buildDurablePeriod`).
+- 0.9.27 hydrates only for an all-provider request (`usage-aggregator.ts:929`,
+  `pf === 'all' ? await hydrateCache() : await loadDailyCache()`), so that a provider tab
+  does not become a hidden all-provider scan. Every call this app makes carries `--provider`.
+- On the author's machine the cache file was last written on 2026-10-30 at 05:51, eight
+  minutes before 0.9.27 was installed. It held 2026-06-23 to 2026-10-29 and no watermark.
+  Three weeks of usage existed only in transcripts: deleting a session, which is what the
+  Claude desktop app's delete does to a transcript, would have removed its usage from every
+  total. Days up to 10-29 were safe, and the oldest transcript on disk dated from 08-04.
+
+So after a successful terminal revision the generator issues one sealing request:
+
+```text
+codeburn compare-periods --provider claude --from-a <yesterday> --to-a <yesterday>
+                         --from-b <yesterday> --to-b <yesterday> --format json  > NUL
+```
+
+- **Why `compare-periods`.** It cross-checks its report against the durable history, and for
+  that it runs the same cache writer as an unfiltered report, for all providers whatever
+  `--provider` says (`main.ts:2809-2820`). An unfiltered `report` or `status` would first
+  start CodeBurn's Cursor sync, which reads the Cursor app's session token and requests
+  `cursor.com` with it; `compare-periods` has no such call. Its own parse is one closed day
+  of one provider, and about 4 KB of output goes to the NUL device, so there is no scratch
+  file to burn.
+- **Why every run, with no "already sealed" shortcut.** CodeBurn exits 0 whether or not a
+  hydration completed (a busy database, a read-only fallback and a partial session parse all
+  hold its watermark back, and an exception in the history check is only a line on stderr)
+  and offers no public signal for "sealed through yesterday". Skipping a run because an
+  earlier one "sealed today" would trust a seal that may not have happened. A history that is
+  already sealed through yesterday is not parsed again: 1.7 s a call, against 6.1 s for the
+  first seal of the 20-day gap above.
+- **The clock guard.** Before it hydrates, CodeBurn drops every stored day dated today or
+  later, reasoning that only a clock moving backward can have put one there
+  (`daily-cache.ts:1733`). A clock that reads earlier than a day already sealed (a dead CMOS
+  battery, a manual change) would therefore erase that history, and what existed only in the
+  cache could not be rebuilt: with the clock reset to 2025, a 128-day history came back
+  empty. The scoped reports only read the cache, so before sealing the app could not trigger
+  this. Each sealing request therefore first writes the local date to
+  `%TEMP%\ClaudeUsage\codeburn-seal.stamp`, and a run seals only when today is not earlier
+  than that date and the clock is not earlier than the generator script's own timestamp
+  (which covers a first run without a stamp). A run that cannot write the stamp does not
+  seal. The cost is the mirror case: after a clock that ran ahead, sealing waits until the
+  real date catches up with the stamp.
+- **Why after the terminal revision.** Sealing changes nothing this run shows. It runs in
+  the owner's teardown when the page has stopped polling, so its only cost is the owner's
+  lifetime; a launch of the same period meanwhile reuses the finished page through the lease
+  as before. The raw reports are burned first: sealing needs none of them, and an owner that
+  is closed or killed while it seals must not leave them behind. It is skipped when
+  generation failed, and while an installer's `.install-pending` marker exists, because that
+  installer is waiting for every collector to drain.
+- **Failure.** It is an optional Job-contained collector with one absolute 120-second budget.
+  It never publishes, throws, or changes the run's outcome; a failure or a timeout leaves
+  the sealing to the next run. An unverified cleanup sets the usual flag and is drained
+  before the mutex is released.
+
+The history is shared with CodeBurn's other front ends, so sealing is all or nothing. A parse
+narrowed to two providers would seal each day without the other tools' usage, and a later
+full run does not re-derive a sealed day outside the seven-day settle window. The request is
+therefore never narrowed; it is skipped outright where the full parse would cross this
+app's network premise:
+
+| Condition | What the full parse would do |
+|---|---|
+| `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN` in the environment | send it as a bearer token to `ai-gateway.vercel.sh` (`vercel-gateway` provider) |
+| any `%USERPROFILE%\.gemini\antigravity*` directory | read a local Antigravity language server's CSRF token from its command line and call it over loopback |
+| CodeBurn 0.9.19 | nothing needed: it seals on every request |
+
+No other provider module holds a network, subprocess or credential primitive (checked across
+all of `providers/` in the 0.9.27 source map). The full parse also reads, locally and
+read-only, the stores of every other tool CodeBurn recognises on the machine (OpenCode,
+Copilot, Cline, Cursor's local usage and so on), spawns `wsl.exe --list` as a scoped run
+already does, and shares the public price catalogue request. Upgrading CodeBurn means
+repeating this audit, not just the version pin.
+
+What sealing does not cover:
+
+- **Today.** CodeBurn stores complete past days only. A session used and deleted before the
+  first run on a later day leaves nothing behind.
+- **The last seven days.** A provider-scoped report overlays the live parse on the cache and
+  lets it win inside the settle window (`overlayProviderDaySlices`). Deleting a session from
+  the last seven days therefore lowers that day at once. The sealed value is still in the
+  cache and comes back once the day is eight days old, unless CodeBurn rebuilt its history
+  in between (after an incomplete parse, a time-zone change or a pricing override), which
+  makes the lower figure permanent.
+- **Session-level rows.** `topSessions`, and the tool, MCP and shell breakdowns CodeBurn
+  derives per session, come from transcripts still on disk; so do ccusage's blocks.
+- **A cache that was never finalised.** Its first hydration re-derives up to 365 days. A day
+  whose sources are gone is carried whole, and a settled day keeps the cached slice when the
+  fresh one has fewer calls; a slice with equal or more calls is replaced, which is how a
+  repricing lands. A cache adopted from an older generation is the exception: for the
+  providers it lists as owed one re-derivation (Codex, Copilot and Cursor among them) the
+  first seal takes the fresh slice even when it is smaller. In a copy of the author's cache,
+  which lists Codex, the first seal left the Codex total unchanged ($5,024.43, 42,609 calls,
+  with 13 session files left on disk) and moved the Claude total only by the usage that
+  arrived during the test ($0.29).
+- **A seal that never lands.** Nothing reaches the page when sealing is skipped by a gate, or
+  when CodeBurn's history check fails: an exception from any one tool's parser is written to
+  a stderr nobody reads and the exit code stays 0.
+- **An unreadable cache file.** When CodeBurn cannot read its current history file it rebuilds
+  it from older generations and the live parse, and days that existed only in that file are
+  gone. The scoped reports take the same path; sealing does not add it, but it does make that
+  file the only record of deleted sessions.
+- **CodeBurn's own cache.** What CodeBurn parses stays in its session cache under
+  `%USERPROFILE%\.cache\codeburn`, each turn's user message included. Sealing extends that
+  from Claude and Codex to every tool CodeBurn recognises. It is local and nothing reads it
+  but CodeBurn.
+- **Zero rows.** A provider-scoped `daily` gains a zero row for each sealed date on which only
+  another tool was used, as it always had under 0.9.19.
+- **A killed seal.** CodeBurn's cache writes are atomic, and a lock left by a killed process
+  is taken over at once when its PID is dead; only a reused PID makes a later run wait (up to
+  90 seconds on the refresh lock).
+- **A history too large for the budget.** A first full parse that cannot finish in 120
+  seconds is stopped on every launch and nothing reports it. The Claude and Codex parts of
+  that parse are already cached by the scoped reports, so the budget covers the other tools'
+  stores and the aggregation; a cold parse of everything took 17.9 s on the author's machine.
+- **A longer owner.** The owner holds the report mutex for the seal as well, so a launch that
+  cannot reuse its page (another period, a debug run) and an installer's drain wait that much
+  longer inside their own five-minute limits.
+
+The same audit recorded one limitation that sealing did not introduce and does not fix:
+`status --format menubar-json` reads the Cursor app's access token from
+`%APPDATA%\Cursor\User\globalStorage\state.vscdb` when that file exists, before it checks
+whether Cursor sync is enabled (`cursorSyncStatus`). Nothing is sent, and
+`CODEBURN_CURSOR_SYNC=0` does not prevent the read. The status pass runs only for a period
+whose report does not reconcile or for a non-USD report without a rate, so 0.9.27 usually
+issues none.
 
 ## CodeBurn is not concurrency-safe
 
@@ -1053,7 +1200,15 @@ than a fixed `foreignObject`, which silently clipped wider totals.
   Direct tests cover the async
   Claude transport (pending, 401, redirect, malformed, timeout, oversized, unsendable header),
   Claude Code and desktop records including another account's data, and idempotent official
-  Codex DTO validation.
+  Codex DTO validation. Day-seal scenarios run the stub as CodeBurn 0.9.27: exactly one valid
+  sealing request ends a successful run and leaves no output file; a failed or hung request
+  (stopped with its process tree at the deadline) leaves the run complete; a failed
+  generation, a gateway key in the environment, an Antigravity folder, an install marker, a
+  stamp dated after today, and 0.9.19 each issue none; a sealing run stamps today's date and
+  replaces a stamp that is not a date; and while the owner seals, the raw reports are already
+  burned and a launch of the same period reuses the finished page. The parent-termination
+  probe seeds a local exchange-rate table: the public rate request between its two collector
+  starts could otherwise outlast the two-second marker it measures against.
 - Run `tests/InstallJob.Tests.ps1` to force-kill an installer harness and prove that the
   kernel terminates its descendant process tree; it also covers zero, nonzero, timeout, bounded
   capture, oversized-output exits, and a root that exits while sixteen descendants finish at

@@ -58,6 +58,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ## 你的数据只留在你的电脑上
 
 - AI Usage 只**读取** Claude Code、Codex、OpenCode 本来就记在本机的用量记录，从不修改，也从不打开 Claude 桌面版加密保存的登录信息。
+- 每次运行结束后，CodeBurn 会更新它自己的本地历史。为此它只在本机读取它认识的所有 AI 编程工具的记录，并把解析结果留在它自己的缓存里
+  （`%USERPROFILE%\.cache\codeburn`）；其他工具的数据不会显示，也不会发送。
 - 你的提问内容、工具参数、API Key 和服务商地址，不会显示、不会保存，也不会写进日志。
 - 报告是一个临时的本地页面，你看完后不久它会自动删除。
 - 只在必要时联网：用你已有的登录查询额度，以及获取公开的模型价格和汇率。
@@ -99,6 +101,15 @@ Claude 请求需要 Claude Code 命令行已登录；Codex app-server 查询需�
   （`%LOCALAPPDATA%\AIUsage\deepseek-ledger.json`），即使你删除了 OpenCode 会话，历史也还在；
   被删除的会话只保留按日、按模型的匿名合计。删掉这个文件即可清空重来。公司共享账号的余额没法按
   API Key 拆分，所以只统计 OpenCode 能归到你名下的调用。
+- **删了会话怎么办？** 一周以前的用量不受影响。每次运行结束后，CodeBurn 会把每个完整的日子封存进它自己的本地历史
+  （`%USERPROFILE%\.cache\codeburn`）；某一天过去超过七天后，不管你删什么，总额、每日成本、模型和项目里都仍然算着它。
+  不在保护范围内的有：
+  - 最近七天内的会话：删掉后，那一天的数字会马上变少；通常等这一天满八天，封存的数字会回来。
+  - 今天的用量：要等之后某天第一次运行才会封存。
+  - 按会话生成的列表（Top 会话、5 小时窗口）：只看得到还在磁盘上的会话。
+
+  在 Claude 桌面版里，归档会保留会话记录，删除则会移除。如果环境变量里配了 Vercel AI Gateway 的 Key，或者装了
+  Google Antigravity，封存会跳过，因为那样 CodeBurn 会去联系这些服务。
 - **各模型成本加起来总是等于总额。** 对不上模型的部分显示为"未归属成本"，不完整的 Token 数会标成下限（`≥`）。
   如果当前 5 小时窗口用到了价目表里还没有的模型，会显示"未定价"而不是 $0.00，或者把能定价的部分作为下限显示。
 - **用了代理？** ccusage 下载价目表走 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量，不走 Windows 系统代理。
@@ -110,7 +121,7 @@ Claude 请求需要 Claude Code 命令行已登录；Codex app-server 查询需�
 2. [CodeBurn](https://github.com/getagentseal/codeburn) 和 [ccusage](https://github.com/ccusage/ccusage)
    从本地日志统计 Claude 和 Codex 的用量；DeepSeek 的数据来自 OpenCode 自己的数据库。
 3. 额度查询同时进行，某个服务器慢也不会拖住其他部分。
-4. 页面每完成一部分就补上一部分，全部完成后停止检查更新，临时文件随后删除。
+4. 页面每完成一部分就补上一部分，全部完成后停止检查更新。随后 CodeBurn 把过完的日子封存进自己的历史，临时文件再删除。
 
 出错时页面会立刻说明，不会一直空等；已经显示出来的面板照常可用。数据流、成本核对、并发和故障处理
 的细节见[实现细节](docs/ARCHITECTURE.md)。

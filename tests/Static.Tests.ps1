@@ -242,6 +242,52 @@ if (-not $generator.Contains('$MaxCollectorOutputBytes = [int64](16 * 1024 * 102
     -not $generator.Contains('Wait-ChildProcess $run 120000 $Output $MaxCollectorOutputBytes { Receive-CollectorSlice }')) {
   throw 'Collector output is not bounded to the audited 16 MiB limit while the process is running.'
 }
+# CodeBurn 0.9.27 seals its durable day history only on an all-provider hydration, so one
+# must follow a successful terminal revision: in the owner's teardown, after the raw reports
+# are burned and before the read grace, with no scratch file, nothing that could publish a
+# second terminal revision, and its own cleanup drain. It goes through compare-periods,
+# never an unfiltered report or status (those start CodeBurn's Cursor sync), and is skipped
+# where the full parse would send a gateway key or read another client's token, while an
+# installer waits for collectors to drain, and while the clock reads earlier than the last
+# seal (CodeBurn would drop every stored day dated today or later).
+$sealFunction = [regex]::Match($generator, '(?s)\nfunction Invoke-CodeBurnDaySeal \{(.*?)\n\}')
+$sealGate = [regex]::Match($generator, '(?s)\nfunction Test-CodeBurnDaySealAllowed \{(.*?)\n\}')
+$sealClock = [regex]::Match($generator, '(?s)\nfunction Get-CodeBurnSealClock \{(.*?)\n\}')
+$generatorNewline = if ($generator.Contains("`r`n")) { "`r`n" } else { "`n" }
+$scratchBurnIndex = $generator.IndexOf('    foreach ($path in @($scratch.Values) + @(')
+$sealCallIndex = $generator.IndexOf(
+  '    if ($RunCompleted -and -not $GenerationFailed -and -not $script:CollectorCleanupUncertain) {' +
+  $generatorNewline + '      Invoke-CodeBurnDaySeal' + $generatorNewline)
+$sealDrainIndex = $generator.IndexOf('        try { Wait-AbandonedCollectorProcesses $userSid }', [Math]::Max(0, $sealCallIndex))
+$readGraceIndex = $generator.IndexOf('    if (-not $RetainedRun -and -not $ReadGraceObserved) {')
+if (-not $sealFunction.Success -or -not $sealGate.Success -or
+    -not $sealFunction.Groups[1].Value.Contains("'compare-periods', '--provider', 'claude', '--from-a', `$yesterday, '--to-a', `$yesterday,") -or
+    -not $sealFunction.Groups[1].Value.Contains("'--from-b', `$yesterday, '--to-b', `$yesterday, '--format', 'json'") -or
+    -not $sealFunction.Groups[1].Value.Contains(") 'NUL'") -or
+    -not $sealFunction.Groups[1].Value.Contains('Wait-ChildProcess $script:sealJob $CodeBurnSealTimeoutMilliseconds') -or
+    -not $sealFunction.Groups[1].Value.Contains('if ($script:CollectorCleanupUncertain) { return }') -or
+    -not $sealFunction.Groups[1].Value.Contains('if (-not $now -or -not (Test-CodeBurnDaySealAllowed)) { return }') -or
+    $sealFunction.Groups[1].Value.IndexOf('$now = Get-CodeBurnSealClock') -lt 0 -or
+    $sealFunction.Groups[1].Value.IndexOf('if (-not (Write-TextFileWithRetry $CodeBurnSealStampPath $now.ToString(') -lt 0 -or
+    $sealFunction.Groups[1].Value.IndexOf('if (-not (Write-TextFileWithRetry $CodeBurnSealStampPath $now.ToString(') -gt
+      $sealFunction.Groups[1].Value.IndexOf('Start-JsonCommand $CodeBurn') -or
+    -not $sealClock.Success -or
+    -not $sealClock.Groups[1].Value.Contains('if ($now.ToUniversalTime() -lt [IO.File]::GetLastWriteTimeUtc($PSCommandPath)) { return $null }') -or
+    -not $sealClock.Groups[1].Value.Contains('[string]::CompareOrdinal($today, $stamp) -lt 0) { return $null }') -or
+    -not $generator.Contains("`$CodeBurnSealStampPath = Join-Path `$RuntimeRoot 'codeburn-seal.stamp'") -or
+    $sealFunction.Groups[1].Value -match "'report'|'status'|Write-Snapshot|Publish-|Receive-CollectorSlice|GenerationStage" -or
+    -not $sealGate.Groups[1].Value.Contains('if ($CodeBurnVersion -in $CodeBurnSelfSealingVersions) { return $false }') -or
+    -not $sealGate.Groups[1].Value.Contains("@('AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN')") -or
+    -not $sealGate.Groups[1].Value.Contains("-Filter 'antigravity*'") -or
+    -not $sealGate.Groups[1].Value.Contains('} catch { return $false }') -or
+    -not $sealGate.Groups[1].Value.Contains('if (@($InstallPendingPaths | Where-Object { Test-Path -LiteralPath $_ }).Count) { return $false }') -or
+    -not $generator.Contains("`$CodeBurnSelfSealingVersions = @('0.9.19')") -or
+    -not $generator.Contains('$CodeBurnSealTimeoutMilliseconds = 120000') -or
+    ([regex]::Matches($generator, 'Invoke-CodeBurnDaySeal')).Count -ne 2 -or
+    $scratchBurnIndex -lt $generationCatchIndex -or $sealCallIndex -lt $scratchBurnIndex -or
+    $sealDrainIndex -lt $sealCallIndex -or $readGraceIndex -lt $sealDrainIndex) {
+  throw 'CodeBurn day sealing is not one silent, bounded, gated hydration after the terminal revision.'
+}
 $codexHelper = [IO.File]::ReadAllText((Join-Path $root 'src\codex-rate-limits.mjs'))
 if (-not $generator.Contains('$official.Job = Start-OptionalJsonCommand $node @($CodexHelperScript, $codex) $codexQuotaOutput') -or
     -not $generator.Contains('$CodexQuotaTimeoutMilliseconds = 30000') -or

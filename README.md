@@ -67,6 +67,9 @@ counted.
 
 - AI Usage only **reads** the usage records Claude Code, Codex and OpenCode already keep on your
   PC. It never changes them, and it never opens the Claude desktop app's encrypted login.
+- After each run CodeBurn updates its own local history. For that it reads, on your PC only, the
+  records of every AI coding tool it recognises and keeps what it parsed in its own cache
+  (`%USERPROFILE%\.cache\codeburn`); nothing from the others is shown or sent.
 - Your prompts, tool arguments, API keys and provider addresses are never shown, saved or logged.
 - The report is a temporary local page that deletes itself shortly after you have read it.
 - It goes online only for what you would expect: checking your quota with the logins you already
@@ -117,6 +120,19 @@ so it may refresh its own login in `auth.json`; AI Usage itself never writes tha
   sessions, keeping only anonymous daily totals per model for deleted ones; delete that file to
   start over. A shared company account's balance cannot be split per API key, so only the calls
   OpenCode attributes to you are counted.
+- **Deleted a session?** Usage older than a week stays. After each run CodeBurn seals every
+  completed day into its own local history (`%USERPROFILE%\.cache\codeburn`), and once a day
+  is more than seven days old, totals, daily cost, models and projects keep counting it
+  whatever you delete. What is not covered:
+  - A session from the last seven days: deleting it lowers that day right away. The sealed
+    figure normally returns when the day is eight days old.
+  - Today's usage, until the first run on a later day has sealed it.
+  - The lists built per session (top sessions, the 5-hour window), which only see sessions
+    still on disk.
+
+  In the Claude desktop app, archiving a session keeps its record and deleting removes it.
+  Sealing is skipped when a Vercel AI Gateway key is set in your environment or Google
+  Antigravity is installed, because CodeBurn would then contact those services.
 - **Model costs always add up to the total.** Anything that cannot be matched to a model is shown
   as *unattributed cost*, and incomplete token counts are marked as a lower bound (`≥`). If the
   current 5-hour window uses models the price list does not know yet, it reads *unpriced*
@@ -132,8 +148,8 @@ so it may refresh its own login in `auth.json`; AI Usage itself never writes tha
 2. [CodeBurn](https://github.com/getagentseal/codeburn) and [ccusage](https://github.com/ccusage/ccusage)
    count your Claude and Codex usage from local logs; OpenCode's own database supplies DeepSeek.
 3. Quota checks run at the same time, so a slow server never holds up the rest.
-4. The page fills in as each part finishes, then stops checking for updates, and the temporary
-   files are removed.
+4. The page fills in as each part finishes, then stops checking for updates. CodeBurn then
+   seals the finished days into its own history, and the temporary files are removed.
 
 If something fails, the page says so at once instead of waiting forever, and a dashboard that is
 already showing stays usable. The [architecture notes](docs/ARCHITECTURE.md) cover the data flow,

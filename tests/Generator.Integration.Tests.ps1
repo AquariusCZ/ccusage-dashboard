@@ -1313,6 +1313,305 @@ function Start-Process {
   }
 }
 
+# The shared stub manifest says 0.9.19, which seals its day history on every request and
+# therefore gets no sealing call. CodeBurn 0.9.27 seals only on a request without
+# --provider, so these scenarios run the same stub under the newer version.
+function Invoke-WithCodeBurnVersion([string]$Version, [scriptblock]$Body) {
+  $manifestPath = Join-Path $stubs 'node_modules\codeburn\package.json'
+  $previousManifest = [IO.File]::ReadAllText($manifestPath)
+  [IO.File]::WriteAllText($manifestPath, '{"name":"codeburn","version":"' + $Version + '"}', [Text.Encoding]::ASCII)
+  try {
+    & $Body
+  } finally {
+    [IO.File]::WriteAllText($manifestPath, $previousManifest, [Text.Encoding]::ASCII)
+  }
+}
+
+function Invoke-DaySealScenarios {
+  Invoke-WithCodeBurnVersion '0.9.27' {
+    $env:AI_USAGE_STUB_RECONCILED = '1'
+    try {
+      $sealed = Invoke-Scenario 'day-seal' '' 0
+      Assert-ProgressiveContract $sealed 'Day-seal generator scenario'
+      if ($sealed.Final.generationError -or $sealed.CodeBurnCalls.Count -ne 7 -or
+          $sealed.CodeBurnCalls[-1] -ne 'compare-periods||claude' -or
+          @($sealed.CodeBurnCalls | Where-Object { $_ -like 'compare-periods|*' }).Count -ne 1) {
+        throw 'A CodeBurn 0.9.27 run did not end with exactly one valid sealing request.'
+      }
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Verify-Snapshot.ps1') -DataPath $sealed.DataPath | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw 'The sealed run did not retain a valid snapshot.' }
+      $sealedDirectory = Split-Path $sealed.DataPath -Parent
+      if (@(Get-ChildItem -LiteralPath $sealedDirectory -File -Force | Where-Object { $_.Name -like '_*' -or $_.Name -eq 'NUL' }).Count) {
+        throw 'The sealing request left an output file behind.'
+      }
+      $today = [DateTime]::Now.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+      $sealStamp = Join-Path $sandbox 'day-seal\temp\ClaudeUsage\codeburn-seal.stamp'
+      if (-not (Test-Path -LiteralPath $sealStamp) -or [IO.File]::ReadAllText($sealStamp).Trim() -ne $today) {
+        throw 'The sealing request did not record the local date it ran on.'
+      }
+
+      # CodeBurn drops every stored day dated today or later before it hydrates, so a clock
+      # that reads earlier than the last seal must not seal: it would erase that history.
+      $behindRoot = Join-Path $sandbox 'day-seal-clock-behind\temp\ClaudeUsage'
+      New-Item -ItemType Directory -Force -Path $behindRoot | Out-Null
+      $behindStamp = Join-Path $behindRoot 'codeburn-seal.stamp'
+      [IO.File]::WriteAllText($behindStamp, '2099-01-01', [Text.Encoding]::ASCII)
+      $clockBehind = Invoke-Scenario 'day-seal-clock-behind' '' 0
+      if ($clockBehind.Final.generationError -or $clockBehind.CodeBurnCalls.Count -ne 6 -or
+          @($clockBehind.CodeBurnCalls | Where-Object { $_ -like 'compare-periods|*' }).Count -or
+          [IO.File]::ReadAllText($behindStamp).Trim() -ne '2099-01-01') {
+        throw 'Sealing ran although the clock read earlier than the previous seal.'
+      }
+      # A stamp that is not a date proves nothing and is replaced.
+      $garbledRoot = Join-Path $sandbox 'day-seal-garbled-stamp\temp\ClaudeUsage'
+      New-Item -ItemType Directory -Force -Path $garbledRoot | Out-Null
+      $garbledStamp = Join-Path $garbledRoot 'codeburn-seal.stamp'
+      [IO.File]::WriteAllText($garbledStamp, 'yesterday-ish', [Text.Encoding]::ASCII)
+      $garbled = Invoke-Scenario 'day-seal-garbled-stamp' '' 0
+      if ($garbled.Final.generationError -or $garbled.CodeBurnCalls[-1] -ne 'compare-periods||claude' -or
+          [IO.File]::ReadAllText($garbledStamp).Trim() -ne $today) {
+        throw 'An unreadable seal stamp blocked sealing or was not replaced.'
+      }
+
+      # A sealing request that fails is retried by the next run; it never reaches the page.
+      $sealFailed = Invoke-Scenario 'day-seal-failure' 'compare-periods||claude' 0
+      Assert-ProgressiveContract $sealFailed 'Failed day-seal generator scenario'
+      if ($sealFailed.Final.generationError -or $sealFailed.CodeBurnCalls[-1] -ne 'compare-periods||claude') {
+        throw 'A failed sealing request changed the outcome of a finished run.'
+      }
+
+      $sealSkipped = Invoke-Scenario 'day-seal-after-failure' 'report|week|claude' 0
+      if (-not $sealSkipped.Final.generationError -or
+          @($sealSkipped.CodeBurnCalls | Where-Object { $_ -like 'compare-periods|*' }).Count) {
+        throw 'A failed generation still asked CodeBurn to seal its day history.'
+      }
+
+      # The full all-provider parse would send a gateway key found in the environment, or
+      # read a local Antigravity server's token. Sealing is skipped rather than narrowed.
+      foreach ($gatewayVariable in @('AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN')) {
+        $previousGatewayValue = [Environment]::GetEnvironmentVariable($gatewayVariable)
+        [Environment]::SetEnvironmentVariable($gatewayVariable, 'stub-gateway-credential')
+        try {
+          $gatewayRun = Invoke-Scenario ('day-seal-' + $gatewayVariable.ToLowerInvariant()) '' 0
+        } finally {
+          [Environment]::SetEnvironmentVariable($gatewayVariable, $previousGatewayValue)
+        }
+        if ($gatewayRun.Final.generationError -or $gatewayRun.CodeBurnCalls.Count -ne 6 -or
+            @($gatewayRun.CodeBurnCalls | Where-Object { $_ -like 'compare-periods|*' }).Count) {
+          throw "Sealing ran although $gatewayVariable would have been sent to the gateway."
+        }
+      }
+      $antigravityRun = Invoke-Scenario 'day-seal-antigravity' '' 0 $false 'before' '' $false '' '' {
+        param($profile, $appData, $localAppData)
+        New-Item -ItemType Directory -Force -Path (Join-Path $profile '.gemini\antigravity-cli\conversations') | Out-Null
+      }
+      if ($antigravityRun.Final.generationError -or $antigravityRun.CodeBurnCalls.Count -ne 6 -or
+          @($antigravityRun.CodeBurnCalls | Where-Object { $_ -like 'compare-periods|*' }).Count) {
+        throw 'Sealing ran although the full parse would read an Antigravity server token.'
+      }
+
+      # A sealing request that never returns is stopped with its whole process tree at one
+      # absolute deadline. The stub needs up to 1.5 s to start; it would write the poison
+      # file two seconds after that if it survived.
+      $deadlineGenerator = Join-Path $runtime 'Generate-ClaudeReport-seal-deadline.ps1'
+      $generatorText = [IO.File]::ReadAllText((Join-Path $runtime 'Generate-ClaudeReport.ps1'))
+      $instrumentedText = $generatorText.Replace(
+        '$CodeBurnSealTimeoutMilliseconds = 120000',
+        '$CodeBurnSealTimeoutMilliseconds = 1500'
+      )
+      if ($instrumentedText -ceq $generatorText) { throw 'Could not instrument the sealing deadline.' }
+      [IO.File]::WriteAllText($deadlineGenerator, $instrumentedText, [Text.Encoding]::ASCII)
+      $sealPidPath = Join-Path $sandbox 'day-seal-deadline.pid'
+      $sealPoisonPath = Join-Path $sandbox 'day-seal-deadline.poison'
+      $env:AI_USAGE_CODEBURN_HANG = 'compare-periods||claude'
+      $env:AI_USAGE_CODEBURN_PID = $sealPidPath
+      $env:AI_USAGE_CODEBURN_POISON = $sealPoisonPath
+      try {
+        $sealHung = Invoke-Scenario 'day-seal-deadline' '' 0 $false 'before' '' $false '' $deadlineGenerator
+        Assert-ProgressiveContract $sealHung 'Hung day-seal generator scenario'
+        if ($sealHung.Final.generationError -or $sealHung.CodeBurnCalls[-1] -ne 'compare-periods||claude') {
+          throw 'A hung sealing request changed the outcome of a finished run.'
+        }
+        if (-not (Test-Path -LiteralPath $sealPidPath)) { throw 'The hung sealing request never started an observable process.' }
+        $sealPid = [int]([IO.File]::ReadAllText($sealPidPath).Trim())
+        if (Get-Process -Id $sealPid -ErrorAction SilentlyContinue) {
+          throw 'A hung sealing request outlived the generator.'
+        }
+        Start-Sleep -Milliseconds 2300
+        if (Test-Path -LiteralPath $sealPoisonPath) { throw 'A hung sealing request survived its absolute deadline.' }
+      } finally {
+        $env:AI_USAGE_CODEBURN_HANG = ''
+        $env:AI_USAGE_CODEBURN_PID = ''
+        $env:AI_USAGE_CODEBURN_POISON = ''
+        if (Test-Path -LiteralPath $deadlineGenerator) { [IO.File]::Delete($deadlineGenerator) }
+      }
+    } finally {
+      $env:AI_USAGE_STUB_RECONCILED = ''
+    }
+  }
+
+  # 0.9.19 seals on every request by itself: no extra all-provider scan is issued for it.
+  $env:AI_USAGE_STUB_RECONCILED = '1'
+  try {
+    $selfSealing = Invoke-Scenario 'day-seal-legacy' '' 0
+  } finally {
+    $env:AI_USAGE_STUB_RECONCILED = ''
+  }
+  if ($selfSealing.CodeBurnCalls.Count -ne 6 -or
+      @($selfSealing.CodeBurnCalls | Where-Object { $_ -like 'compare-periods|*' }).Count) {
+    throw 'CodeBurn 0.9.19 received a sealing request it does not need.'
+  }
+}
+
+# While the sealing request runs the page is already final and stays reusable: a second
+# launch of the same period opens it at once instead of waiting for the owner.
+function Invoke-DaySealReuseScenario {
+  $scenarioRoot = Join-Path $sandbox 'day-seal-reuse'
+  $scenarioTemp = Join-Path $scenarioRoot 'temp'
+  $profile = Join-Path $scenarioRoot 'profile'
+  New-Item -ItemType Directory -Force -Path $scenarioTemp, $profile | Out-Null
+  foreach ($log in @($codeBurnLog, $ccusageLog)) {
+    if (Test-Path -LiteralPath $log) { [IO.File]::Delete($log) }
+  }
+  $env:TEMP = $scenarioTemp
+  $env:TMP = $scenarioTemp
+  $env:USERPROFILE = $profile
+  $env:AI_USAGE_STUB_FAILURE = ''
+  $env:AI_USAGE_STUB_FAILURE_MODE = 'before'
+  $env:AI_USAGE_CCUSAGE_EXIT = '0'
+  $env:AI_USAGE_CCUSAGE_MODE = ''
+
+  $wrapperPath = Join-Path $scenarioRoot 'normal-wrapper.ps1'
+  [IO.File]::WriteAllText($wrapperPath, @'
+param(
+  [Parameter(Mandatory = $true)][string]$GeneratorPath,
+  [Parameter(Mandatory = $true)][int]$DeleteAfter,
+  [string]$Period = ''
+)
+function Start-Process {
+  param([Parameter(Position = 0)][string]$FilePath)
+  [IO.File]::AppendAllText($env:AI_USAGE_TEST_LAUNCH_LOG, $FilePath + "`r`n", [Text.Encoding]::ASCII)
+}
+& $GeneratorPath -DeleteAfter $DeleteAfter -Period $Period
+'@, [Text.Encoding]::ASCII)
+
+  $runtimeRoot = Join-Path $scenarioTemp 'ClaudeUsage'
+  $dataPath = Join-Path $runtimeRoot 'data.js'
+  $statePath = Join-Path $runtimeRoot 'report-run.state'
+  $readyPath = Join-Path $scenarioRoot 'seal.ready'
+  $releasePath = Join-Path $scenarioRoot 'seal.release'
+  $ownerLog = Join-Path $scenarioRoot 'owner-launch.log'
+  $reuseLog = Join-Path $scenarioRoot 'reuse-launch.log'
+  $owner = $null
+  $reuser = $null
+  try {
+    $owner = Start-NormalGenerator $wrapperPath $ownerLog 1 '30days' @{
+      AI_USAGE_STUB_RECONCILED = '1'
+      AI_USAGE_CODEBURN_BARRIER_MATCH = 'compare-periods||claude'
+      AI_USAGE_CODEBURN_BARRIER_READY = $readyPath
+      AI_USAGE_CODEBURN_BARRIER_RELEASE = $releasePath
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (-not (Test-Path -LiteralPath $readyPath) -and [DateTime]::UtcNow -lt $deadline) {
+      if ($owner.HasExited) { break }
+      Start-Sleep -Milliseconds 20
+      $owner.Refresh()
+    }
+    if (-not (Test-Path -LiteralPath $readyPath)) {
+      $early = Get-CompletedProcessResult $owner 1000
+      throw "The owner never started its sealing request: $($early.Output)"
+    }
+    $published = Read-Snapshot $dataPath
+    if (-not $published -or $published.complete -ne $true -or $published.generationError -or
+        @($published.periods).Count -ne 3) {
+      throw 'The sealing request started before the terminal revision was published.'
+    }
+    if (-not (Test-Path -LiteralPath $statePath) -or [IO.File]::ReadAllText($statePath).Trim() -ne 'active') {
+      throw 'The page was not active while its owner sealed.'
+    }
+    # Raw reports hold fields kept out of data.js. They are burned before the seal starts,
+    # so an owner that is closed or killed while it seals leaves none behind.
+    if (@(Get-ChildItem -LiteralPath $runtimeRoot -File -Force | Where-Object { $_.Name -like '_*' }).Count) {
+      throw 'Raw collector output was still on disk while the finished owner sealed.'
+    }
+
+    $reuser = Start-NormalGenerator $wrapperPath $reuseLog 1 '30days'
+    $reuseResult = Get-CompletedProcessResult $reuser 10000
+    if ($reuseResult.ExitCode -ne 0) { throw "Page reuse during sealing failed: $($reuseResult.Output)" }
+    $owner.Refresh()
+    if ($owner.HasExited) { throw 'The sealing owner exited before its barrier was released.' }
+    $reuseTargets = @(Get-Content -LiteralPath $reuseLog -ErrorAction SilentlyContinue)
+    if ($reuseTargets.Count -ne 1 -or $reuseTargets[0] -notmatch '\?period=30days$') {
+      throw 'A launch during sealing did not reuse the finished page.'
+    }
+
+    [IO.File]::WriteAllText($releasePath, 'release', [Text.Encoding]::ASCII)
+    $ownerResult = Get-CompletedProcessResult $owner 45000
+    if ($ownerResult.ExitCode -ne 0) { throw "The sealing owner failed: $($ownerResult.Output)" }
+    $calls = @(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue)
+    if ($calls.Count -ne 7 -or $calls[-1] -ne 'compare-periods||claude') {
+      throw 'Page reuse during sealing triggered another aggregation or a second sealing request.'
+    }
+    if (Test-Path -LiteralPath $dataPath) { throw 'The sealed normal run did not burn its page after the read grace.' }
+  } finally {
+    foreach ($process in @($owner, $reuser)) {
+      if ($process -and -not $process.HasExited) {
+        try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+      }
+      if ($process) { try { $process.Dispose() } catch {} }
+    }
+  }
+
+  # An installer writes its marker and then waits for every collector to drain. A run that
+  # is finishing at that moment must not start one more CodeBurn process for sealing.
+  $pendingRoot = Join-Path $sandbox 'day-seal-pending-install'
+  $pendingTemp = Join-Path $pendingRoot 'temp'
+  $pendingProfile = Join-Path $pendingRoot 'profile'
+  New-Item -ItemType Directory -Force -Path $pendingTemp, $pendingProfile | Out-Null
+  foreach ($log in @($codeBurnLog, $ccusageLog)) {
+    if (Test-Path -LiteralPath $log) { [IO.File]::Delete($log) }
+  }
+  $env:TEMP = $pendingTemp
+  $env:TMP = $pendingTemp
+  $env:USERPROFILE = $pendingProfile
+  $pendingReady = Join-Path $pendingRoot 'last-report.ready'
+  $pendingRelease = Join-Path $pendingRoot 'last-report.release'
+  $pendingMarker = Join-Path $runtime '.install-pending'
+  $owner = $null
+  try {
+    $owner = Start-NormalGenerator $wrapperPath (Join-Path $pendingRoot 'owner-launch.log') 1 '30days' @{
+      AI_USAGE_STUB_RECONCILED = '1'
+      AI_USAGE_CODEBURN_BARRIER_MATCH = 'report|all|codex'
+      AI_USAGE_CODEBURN_BARRIER_READY = $pendingReady
+      AI_USAGE_CODEBURN_BARRIER_RELEASE = $pendingRelease
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (-not (Test-Path -LiteralPath $pendingReady) -and [DateTime]::UtcNow -lt $deadline) {
+      if ($owner.HasExited) { break }
+      Start-Sleep -Milliseconds 20
+      $owner.Refresh()
+    }
+    if (-not (Test-Path -LiteralPath $pendingReady)) {
+      $early = Get-CompletedProcessResult $owner 1000
+      throw "The owner never reached its last report: $($early.Output)"
+    }
+    [IO.File]::WriteAllText($pendingMarker, "transaction=test`r`nstage=pending`r`n", [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText($pendingRelease, 'release', [Text.Encoding]::ASCII)
+    $pendingResult = Get-CompletedProcessResult $owner 45000
+    if ($pendingResult.ExitCode -ne 0) { throw "The run finishing under an install marker failed: $($pendingResult.Output)" }
+    $pendingCalls = @(Get-Content -LiteralPath $codeBurnLog -ErrorAction SilentlyContinue)
+    if ($pendingCalls.Count -ne 6 -or @($pendingCalls | Where-Object { $_ -like 'compare-periods|*' }).Count) {
+      throw 'A sealing request was started while an installer waited for collectors to drain.'
+    }
+  } finally {
+    if (Test-Path -LiteralPath $pendingMarker) { [IO.File]::Delete($pendingMarker) }
+    if ($owner -and -not $owner.HasExited) {
+      try { Stop-Process -Id $owner.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    if ($owner) { try { $owner.Dispose() } catch {} }
+  }
+}
+
 function Invoke-NormalLifecycleScenario(
   [string]$Name,
   [bool]$LockRawScratch,
@@ -1891,6 +2190,18 @@ function Invoke-CollectorParentTerminationScenario {
   $env:AI_USAGE_CODEBURN_OVERLAP_MUTEX = 'Global\AIUsage-Test-CodeBurn-' + [guid]::NewGuid().ToString('N')
   $env:AI_USAGE_CODEBURN_OVERLAP_MARKER = $overlapPath
 
+  # Each hung collector writes its poison file two seconds after it starts, and the
+  # generator is killed only once both have started. The public exchange-rate request the
+  # generator makes between those two starts can take most of that window on a slow link,
+  # so this probe runs from a fresh local rate table instead of the network.
+  $fxSeedDirectory = Join-Path $scenarioTemp 'ClaudeUsage'
+  New-Item -ItemType Directory -Force -Path $fxSeedDirectory | Out-Null
+  [IO.File]::WriteAllText(
+    (Join-Path $fxSeedDirectory 'fx-rates.json'),
+    ('{"fetchedAt":"' + [DateTimeOffset]::UtcNow.ToString('o') + '","rates":{"USD":1,"EUR":0.9,"CNY":7.1,"JPY":150,"GBP":0.8}}'),
+    [Text.Encoding]::ASCII
+  )
+
   $generator = $null
   $recovery = $null
   $identities = @()
@@ -2355,6 +2666,18 @@ if ($operation -eq 'status') {
     }
   } | ConvertTo-Json -Depth 20 -Compress
   if ($isFailure -and $env:AI_USAGE_STUB_FAILURE_MODE -eq 'after') { exit 17 }
+  exit 0
+}
+if ($operation -eq 'compare-periods') {
+  # The generator's sealing request: yesterday's local date as both closed periods.
+  $yesterday = [DateTime]::Now.AddDays(-1).ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+  $sealRange = @((Value-After '--from-a'), (Value-After '--to-a'), (Value-After '--from-b'), (Value-After '--to-b'))
+  if (@($sealRange | Where-Object { $_ -ne $yesterday }).Count -or (Value-After '--format') -ne 'json' -or
+      $provider -ne 'claude' -or $stubArgs.Count -ne 13) {
+    [IO.File]::AppendAllText($env:AI_USAGE_CODEBURN_LOG, "compare-periods|invalid|$provider`r`n", [Text.Encoding]::ASCII)
+    exit 23
+  }
+  Write-Output '{"provider":"claude"}'
   exit 0
 }
 exit 19
@@ -3742,6 +4065,7 @@ namespace AiUsage {
     }
     Invoke-CCUsageBoundaryScenario 'oversized-then-hang'
     Invoke-CCUsageBoundaryScenario 'deadline-hang'
+    Invoke-DaySealScenarios
 
     $currencyConflict = Invoke-Scenario 'currency-conflict' 'report|week|codex' 0 $false 'currency'
     Assert-ProgressiveContract $currencyConflict 'Currency-conflict generator scenario'
@@ -3881,6 +4205,7 @@ namespace AiUsage {
     if ($LifecycleScenario -eq 'all') {
       Invoke-StartingReuseScenario
       Invoke-UnplannedPeriodScenario
+      Invoke-WithCodeBurnVersion '0.9.27' { Invoke-DaySealReuseScenario }
       Invoke-NormalLifecycleScenario 'normal-lifecycle' $false '30days' '30days' $false $true
       Invoke-NormalLifecycleScenario 'cleanup-recovery' $true
       Invoke-NormalLifecycleScenario 'cross-period-cleanup-recovery' $true 'today' '30days'

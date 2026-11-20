@@ -128,6 +128,35 @@ This personal Windows utility creates a local, disposable Claude Code and OpenAI
   and every later one is not. It also drops `avgCostPerSession` from project rows, so that
   field is optional in the snapshot contract, and it offers no `status` need on a report that
   already reconciles - the durable pass must therefore stay conditional, never presumed.
+- CodeBurn `0.9.27` writes its durable day history only on an all-provider hydration
+  (`0.9.19` wrote it on every request), so the provider-scoped reports never seal a finished
+  day and a deleted transcript would take its usage out of every total. After a successful
+  terminal revision, issue exactly one sealing request per run, in the owner's teardown after
+  the raw scratch is burned and before the read grace: `compare-periods --provider
+  claude` with yesterday as both periods, `--format json`, stdout to `NUL`. Use that command,
+  never an unfiltered `report` or `status`: those start CodeBurn's Cursor sync, which reads
+  Cursor's session token and requests cursor.com. The cache is shared with CodeBurn's other
+  front ends, so never narrow the parse; skip the request instead where the full parse would
+  cross the network premise - `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN` in the environment
+  (sent to Vercel's gateway), any `%USERPROFILE%\.gemini\antigravity*` folder (a local server
+  token is read) - and for `0.9.19`, a failed generation, or an existing `.install-pending`
+  marker. It is an optional Job-contained collector with one
+  absolute 120-second budget that never publishes, throws, or changes the run's outcome. It
+  runs on every launch and never skips because an earlier run "already sealed": CodeBurn
+  exits 0 and gives no public signal that a hydration completed, and an already sealed
+  history is not parsed again.
+- Guard the sealing request against a clock that moved back. CodeBurn drops every stored day
+  dated today or later before it hydrates, so a clock reading earlier than a sealed day
+  would erase history that exists nowhere else. Write the local date to
+  `%TEMP%\ClaudeUsage\codeburn-seal.stamp` before each request, and seal only when today is
+  not earlier than that stamp and the clock is not earlier than the generator script's own
+  timestamp; a run that cannot write the stamp does not seal.
+- Do not promise more than CodeBurn keeps. A day is protected once it is sealed and older
+  than seven days. Inside those seven days the live parse wins, so deleting a recent session
+  lowers its day until the day settles (and for good if CodeBurn rebuilds its history
+  meanwhile). Today is never sealed, and top sessions, tool breakdowns and ccusage blocks
+  stay limited to sessions still on disk. See "Sealing finished days" in
+  `docs/ARCHITECTURE.md`.
 - The DeepSeek card is fed only by OpenCode's own per-call records. Current stores keep
   assistant messages in `session_message` joined to `session_v2`; the root-session
   expression groups child/subagent sessions under their parent, so the card counts
