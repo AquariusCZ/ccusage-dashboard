@@ -3701,6 +3701,9 @@ addEventListener("error", function (event) {
     $("trendTable").classList.toggle("hide", !asTable);
     chartBtn.setAttribute("aria-pressed", String(!asTable));
     tableBtn.setAttribute("aria-pressed", String(asTable));
+    // The pill is positioned from the pressed button; without this it stays under the
+    // other one and the pressed label (card-coloured) vanishes into the track.
+    syncSeg(chartBtn.parentNode);
     if (!asTable) repaintAll();
   }
   chartBtn.addEventListener("click", function () { trendView(false); });

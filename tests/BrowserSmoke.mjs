@@ -494,18 +494,24 @@ async function main() {
   assert.equal(duplicateProbe, "REVISION_PROBE", "A duplicate revision triggered a redraw.");
 
   const beforeChartRevision = await evaluate(`(function () {
-    document.querySelector('#trendTableBtn').click();
+    var tableBtn = document.querySelector('#trendTableBtn');
+    tableBtn.click();
+    var trendSeg = tableBtn.parentNode;
+    var pillOnTable = trendSeg.style.getPropertyValue('--seg-x') === tableBtn.offsetLeft + 'px' &&
+      trendSeg.style.getPropertyValue('--seg-w') === tableBtn.offsetWidth + 'px';
     document.querySelector('#themeBtn').click();
     var detail = document.querySelector('#details details:nth-of-type(2)');
     detail.open = true;
     var points = Array.from(document.querySelectorAll('#modelDonut [data-tip]'));
     points[Math.min(1, points.length - 1)].focus();
     return {
+      pillOnTable: pillOnTable,
       detailOpen: detail.open,
       chartFocused: document.querySelector('#modelDonut').contains(document.activeElement),
       chartIndex: points.indexOf(document.activeElement)
     };
   })()`);
+  assert.equal(beforeChartRevision.pillOnTable, true, "The trend switch's pill must follow the pressed button at once, not on the next redraw");
   assert.equal(beforeChartRevision.detailOpen, true);
   assert.equal(beforeChartRevision.chartFocused, true);
   assert.ok(beforeChartRevision.chartIndex >= 0);
